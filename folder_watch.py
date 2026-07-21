@@ -34,13 +34,17 @@ from typing import Any
 from fw_support import (
     DoneStore,
     atomic_copy,
+    clear_pidfile,
+    collect_watch_status,
     emit,
     file_identity,
     install_service,
+    is_partial_filename,
     service_status,
     set_json_mode,
     setup_logging,
     uninstall_service,
+    write_pidfile,
 )
 
 CONFIG_DIR = Path.home() / ".config" / "folder-watch"
@@ -255,6 +259,13 @@ def match_ext(name: str, exts: list[str] | None) -> bool:
     return any(lower.endswith("." + e.lower().lstrip(".")) for e in exts)
 
 
+def should_watch_name(name: str, exts: list[str] | None) -> bool:
+    """Extension match and not a partial/scratch filename."""
+    if is_partial_filename(name):
+        return False
+    return match_ext(name, exts)
+
+
 def parse_exts(raw: str) -> list[str] | None:
     if raw.strip() == "*":
         return None
@@ -332,14 +343,20 @@ class CopyAction(Action):
         *,
         notify_on_done: bool = True,
         retries: int = 5,
+        dry_run: bool = False,
     ) -> None:
         self.dest = dest.expanduser()
         self.notify_on_done = notify_on_done
         self.retries = retries
+        self.dry_run = dry_run
 
     def describe(self) -> str:
-        n = " notify" if self.notify_on_done else ""
-        return f"copy -> {self.dest}{n}"
+        bits = [f"copy -> {self.dest}"]
+        if self.notify_on_done:
+            bits.append("notify")
+        if self.dry_run:
+            bits.append("dry-run")
+        return " ".join(bits)
 
     def done_dest(self, src: Path) -> Path | None:
         return self.dest / src.name
@@ -349,6 +366,9 @@ class CopyAction(Action):
         size = path.stat().st_size
         if dest.is_file() and dest.stat().st_size == size:
             return "skip"
+        if self.dry_run:
+            emit("would_copy", name=path.name, size=size, to=dest)
+            return "would_copy"
         self.dest.mkdir(parents=True, exist_ok=True)
         try:
             atomic_copy(path, dest, retries=self.retries)
@@ -375,18 +395,27 @@ class UnzipAction(Action):
     default_ext = "zip"
     default_min_bytes = 1
 
-    def __init__(self, mode: str = "named", to: Path | None = None) -> None:
+    def __init__(
+        self,
+        mode: str = "named",
+        to: Path | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> None:
         if mode not in ("named", "same", "to"):
             raise ValueError(f"unknown unzip mode: {mode}")
         if mode == "to" and to is None:
             raise ValueError("--mode to requires --to DIR")
         self.mode = mode
         self.to = to.expanduser() if to else None
+        self.dry_run = dry_run
 
     def describe(self) -> str:
         if self.mode == "to":
-            return f"unzip mode=to -> {self.to}/<stem>/"
-        return f"unzip mode={self.mode}"
+            base = f"unzip mode=to -> {self.to}/<stem>/"
+        else:
+            base = f"unzip mode={self.mode}"
+        return f"{base} dry-run" if self.dry_run else base
 
     def done_mode(self) -> str | None:
         return self.mode
@@ -411,6 +440,10 @@ class UnzipAction(Action):
             return "fail"
 
         target = self._target_dir(path)
+        if self.dry_run:
+            emit("would_extract", name=path.name, dest=target, mode=self.mode)
+            return "would_extract"
+
         target.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -571,6 +604,9 @@ def apply_action(
         emit("skip", name=name, size=size)
     elif result == "copied":
         emit("copied", name=name, size=size)
+    elif result in ("would_copy", "would_extract"):
+        # dry-run: already emitted inside action; do not persist done
+        return
     elif result in ("extracted", "converted"):
         pass
     elif result == "fail":
@@ -706,7 +742,7 @@ def scan_once(
         names = [
             n
             for n in os.listdir(src_dir)
-            if match_ext(n, exts) and (src_dir / n).is_file()
+            if should_watch_name(n, exts) and (src_dir / n).is_file()
         ]
     except FileNotFoundError:
         emit("warn", reason="src_missing", src=src_dir)
@@ -741,7 +777,7 @@ def seed_baseline(
         names = [
             n
             for n in os.listdir(src_dir)
-            if match_ext(n, exts) and (src_dir / n).is_file()
+            if should_watch_name(n, exts) and (src_dir / n).is_file()
         ]
     except FileNotFoundError:
         emit("warn", reason="src_missing", src=src_dir)
@@ -881,7 +917,7 @@ def run_watch_event(
                 return
             if recursive and src_dir not in path.parents and path.parent != src_dir:
                 return
-            if not match_ext(path.name, exts):
+            if not should_watch_name(path.name, exts):
                 return
             # Ignore baseline files unless size changed (re-export)
             st = state.get(path.name)
@@ -916,7 +952,7 @@ def run_watch_event(
         )
         try:
             for n in os.listdir(src_dir):
-                if not match_ext(n, exts):
+                if not should_watch_name(n, exts):
                     continue
                 p = (src_dir / n).resolve()
                 if not p.is_file() or state.get(n, {}).get("done"):
@@ -1024,8 +1060,13 @@ def run_watch(
     recursive: bool = False,
     catch_up: bool = False,
     done_store: DoneStore | None = None,
+    watch_name: str | None = None,
+    log_path: Path | None = None,
+    preset: str | None = None,
+    to: str | None = None,
 ) -> int:
     src_dir = src_dir.expanduser().resolve()
+    name = watch_name or preset or f"{action.name}-{src_dir.name}"
 
     emit(
         "start",
@@ -1042,46 +1083,63 @@ def run_watch(
         done_store=(str(done_store.path) if done_store else None),
     )
 
-    if once:
-        state: dict[str, dict] = {}
-        scan_once(
-            src_dir,
-            action,
-            exts=exts,
-            min_bytes=min_bytes,
-            stable_needed=1,
-            settle_interval=0.05,
-            state=state,
-            wait=False,
-            done_store=done_store,
+    if not once:
+        write_pidfile(
+            name,
+            {
+                "name": name,
+                "preset": preset,
+                "src": str(src_dir),
+                "action": action.name,
+                "to": to,
+                "log": str(log_path) if log_path else None,
+            },
         )
-        emit("done")
-        return 0
 
-    if backend == "poll":
-        return run_watch_poll(
+    try:
+        if once:
+            state: dict[str, dict] = {}
+            scan_once(
+                src_dir,
+                action,
+                exts=exts,
+                min_bytes=min_bytes,
+                stable_needed=1,
+                settle_interval=0.05,
+                state=state,
+                wait=False,
+                done_store=done_store,
+            )
+            emit("done")
+            return 0
+
+        if backend == "poll":
+            return run_watch_poll(
+                src_dir,
+                action,
+                exts=exts,
+                poll=poll,
+                stable_needed=stable_needed,
+                min_bytes=min_bytes,
+                catch_up=catch_up,
+                done_store=done_store,
+            )
+
+        return run_watch_event(
             src_dir,
             action,
             exts=exts,
-            poll=poll,
+            debounce_ms=debounce_ms,
             stable_needed=stable_needed,
             min_bytes=min_bytes,
+            settle_interval=settle_interval,
+            recursive=recursive,
             catch_up=catch_up,
             done_store=done_store,
         )
-
-    return run_watch_event(
-        src_dir,
-        action,
-        exts=exts,
-        debounce_ms=debounce_ms,
-        stable_needed=stable_needed,
-        min_bytes=min_bytes,
-        settle_interval=settle_interval,
-        recursive=recursive,
-        catch_up=catch_up,
-        done_store=done_store,
-    )
+    finally:
+        if not once:
+            clear_pidfile(name)
 
 
 # ---------------------------------------------------------------------------
@@ -1103,6 +1161,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  unzip  SRC [--mode named|same|to] [--to DIR]\n"
             "  convx  SRC --format EXT [--ext png,jpg]   # → convx watch\n"
             "  service install|uninstall|status --preset NAME\n"
+            "  status [--preset NAME]   # running watchers\n"
         ),
     )
     p.add_argument("action", nargs="?", help="Action or 'service'")
@@ -1163,6 +1222,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="also process files already finished in SRC (default: new/in-progress only)",
     )
     p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="log would_copy/would_extract without writing or deleting",
+    )
+    p.add_argument(
         "--notify",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1204,17 +1268,50 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_action(name: str, args: argparse.Namespace) -> Action:
+    dry = getattr(args, "dry_run", False)
     if name == "copy":
         if not args.to:
             raise SystemExit("error: copy requires --to DEST")
         return CopyAction(
             Path(args.to),
-            notify_on_done=getattr(args, "notify", True),
+            notify_on_done=getattr(args, "notify", True) and not dry,
             retries=getattr(args, "retries", 5),
+            dry_run=dry,
         )
     if name == "unzip":
-        return UnzipAction(mode=args.mode, to=Path(args.to) if args.to else None)
+        return UnzipAction(
+            mode=args.mode,
+            to=Path(args.to) if args.to else None,
+            dry_run=dry,
+        )
     raise SystemExit(f"error: unknown action {name!r}")
+
+
+def run_status_cli(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="folder-watch status")
+    ap.add_argument("--preset", default=None, help="filter to one preset/watch name")
+    ap.add_argument("--tail", type=int, default=12, help="log lines to show")
+    args = ap.parse_args(argv)
+    rows = collect_watch_status(preset=args.preset, log_tail=args.tail)
+    if not rows:
+        print("no watchers (no pidfiles)")
+        return 1
+    alive_any = False
+    for row in rows:
+        alive = bool(row.get("alive"))
+        alive_any = alive_any or alive
+        flag = "RUNNING" if alive else "STOPPED"
+        print(f"[{flag}] {row.get('name')} pid={row.get('pid')}")
+        for k in ("preset", "action", "src", "to", "log", "pidfile", "note"):
+            if row.get(k) is not None:
+                print(f"  {k}: {row[k]}")
+        tail = row.get("tail") or []
+        if tail:
+            print("  log_tail:")
+            for ln in tail:
+                print(f"    {ln}")
+        print()
+    return 0 if alive_any else 1
 
 
 def run_service_cli(argv: list[str]) -> int:
@@ -1250,6 +1347,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "service":
         return run_service_cli(argv[1:])
+    if argv and argv[0] == "status":
+        return run_status_cli(argv[1:])
 
     args = build_parser().parse_args(argv)
     setup_logging(level=args.log_level, log_file=args.log, json_mode=args.json)
@@ -1265,6 +1364,7 @@ def main(argv: list[str] | None = None) -> int:
         print("convx — wrapper: exec `convx watch` (in-place convert; ConvX owns FSEvents)")
         print("         --format EXT and/or --convx-preset; --ext → --filter")
         print("service install|uninstall|status --preset NAME  — LaunchAgent")
+        print("status  [--preset NAME]  — running watchers (pidfile + log tail)")
         print("backend — copy/unzip only: event (default) | poll")
         return 0
 
@@ -1507,6 +1607,10 @@ def main(argv: list[str] | None = None) -> int:
             recursive=recursive,
             catch_up=args.catch_up,
             done_store=done_store,
+            watch_name=(args.preset or f"{action_name}-{src.name}"),
+            log_path=args.log,
+            preset=args.preset,
+            to=to,
         )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)

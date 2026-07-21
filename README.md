@@ -27,6 +27,9 @@ Watch a folder until files finish writing, then run a pluggable **action**.
 ## Reliability / logging
 
 ```bash
+# dry-run (no writes)
+folder-watch copy ./Out --to ./Drive --once --dry-run
+
 # log file + JSON lines
 folder-watch --preset la-chaise-v1 --log ~/.local/state/folder-watch/la-chaise.log --json
 
@@ -35,9 +38,16 @@ folder-watch copy ./Out --to ./Drive --no-done-store
 
 # copy retries (default 5)
 folder-watch copy ./Out --to ./Drive --retries 8
+
+# status of running watchers
+folder-watch status
+folder-watch status --preset la-chaise-v1
 ```
 
+Ignores partial/scratch names: `*.part`, `*.tmp`, `*.crdownload`, `._*`, `~$…`, etc.
+
 Done-state files: `~/.local/state/folder-watch/done-*.json`  
+Pidfiles: `~/.local/state/folder-watch/pids/*.json`  
 Key = action + src + dest/mode + size + mtime (scheme **B**).
 
 ## LaunchAgent

@@ -300,6 +300,39 @@ class TestConvxWrapper(unittest.TestCase):
         )
 
 
+class TestDryRunAndPartials(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = self.tmp / "src"
+        self.dest = self.tmp / "dest"
+        self.src.mkdir()
+        self.dest.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_partial_names(self):
+        from fw_support import is_partial_filename
+        from folder_watch import should_watch_name
+
+        self.assertTrue(is_partial_filename("Video.mp4.part"))
+        self.assertTrue(is_partial_filename("foo.tmp"))
+        self.assertTrue(is_partial_filename("._Video.mp4"))
+        self.assertTrue(is_partial_filename("~$draft.docx"))
+        self.assertFalse(is_partial_filename("Video-1-v4.mp4"))
+        self.assertFalse(should_watch_name("a.mp4.part", ["mp4"]))
+        self.assertTrue(should_watch_name("a.mp4", ["mp4"]))
+
+    def test_dry_run_copy(self):
+        from folder_watch import CopyAction
+
+        f = self.src / "a.mp4"
+        f.write_bytes(b"data")
+        action = CopyAction(self.dest, notify_on_done=False, dry_run=True)
+        self.assertEqual(action.run(f), "would_copy")
+        self.assertFalse((self.dest / "a.mp4").exists())
+
+
 class TestDoneStoreAndAtomic(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
