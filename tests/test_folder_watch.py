@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""Tests for folder_watch core + actions."""
+
+from __future__ import annotations
+
+import shutil
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from folder_watch import (  # noqa: E402
+    CopyAction,
+    UnzipAction,
+    match_ext,
+    parse_exts,
+    run_watch,
+)
+
+
+class TestHelpers(unittest.TestCase):
+    def test_match_ext(self):
+        self.assertTrue(match_ext("a.mp4", ["mp4"]))
+        self.assertTrue(match_ext("a.MP4", ["mp4"]))
+        self.assertFalse(match_ext("a.mov", ["mp4"]))
+        self.assertTrue(match_ext("a.mov", None))
+
+    def test_parse_exts(self):
+        self.assertIsNone(parse_exts("*"))
+        self.assertEqual(parse_exts("mp4,mov"), ["mp4", "mov"])
+
+
+class TestCopyAction(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = self.tmp / "src"
+        self.dest = self.tmp / "dest"
+        self.src.mkdir()
+        self.dest.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_copy_and_skip(self):
+        import folder_watch as fw
+
+        f = self.src / "clip.mp4"
+        f.write_bytes(b"x" * 100)
+        notes: list[tuple[str, str]] = []
+        old = fw.notify
+        fw.notify = lambda t, b, **_k: notes.append((t, b))
+        try:
+            action = CopyAction(self.dest, notify_on_done=True)
+            self.assertEqual(action.run(f), "copied")
+            self.assertTrue((self.dest / "clip.mp4").is_file())
+            self.assertEqual(len(notes), 1)
+            self.assertIn("clip.mp4", notes[0][1])
+            self.assertTrue(f.is_file())
+            self.assertEqual(action.run(f), "skip")
+            self.assertEqual(len(notes), 1)
+        finally:
+            fw.notify = old
+
+    def test_copy_via_watch_once(self):
+        import folder_watch as fw
+
+        f = self.src / "a.mp4"
+        f.write_bytes(b"hello-world")
+        old = fw.notify
+        fw.notify = lambda *_a, **_k: None
+        try:
+            action = CopyAction(self.dest, notify_on_done=False)
+            code = run_watch(
+                self.src,
+                action,
+                exts=["mp4"],
+                poll=0.1,
+                stable_needed=1,
+                min_bytes=1,
+                once=True,
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual((self.dest / "a.mp4").read_bytes(), b"hello-world")
+        finally:
+            fw.notify = old
+
+
+class TestUnzipAction(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.inbox = self.tmp / "inbox"
+        self.inbox.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_zip(self, name: str, payload: str = "payload.txt", content: bytes = b"hi") -> Path:
+        payload_path = self.tmp / payload
+        payload_path.write_bytes(content)
+        zpath = self.inbox / name
+        with zipfile.ZipFile(zpath, "w") as zf:
+            zf.write(payload_path, arcname=payload)
+        return zpath
+
+    def test_mode_named_default(self):
+        z = self._make_zip("demo.zip")
+        action = UnzipAction(mode="named")
+        self.assertEqual(action.run(z), "extracted")
+        self.assertFalse(z.exists())
+        out = self.inbox / "demo" / "payload.txt"
+        self.assertTrue(out.is_file())
+        self.assertEqual(out.read_bytes(), b"hi")
+
+    def test_mode_same(self):
+        z = self._make_zip("flat.zip", payload="flat.txt", content=b"flat")
+        action = UnzipAction(mode="same")
+        self.assertEqual(action.run(z), "extracted")
+        self.assertFalse(z.exists())
+        self.assertTrue((self.inbox / "flat.txt").is_file())
+
+    def test_mode_to(self):
+        z = self._make_zip("pack.zip", payload="p.txt", content=b"p")
+        dest = self.tmp / "unpacked"
+        action = UnzipAction(mode="to", to=dest)
+        self.assertEqual(action.run(z), "extracted")
+        self.assertFalse(z.exists())
+        self.assertTrue((dest / "pack" / "p.txt").is_file())
+
+    def test_bad_zip_not_deleted(self):
+        bad = self.inbox / "bad.zip"
+        bad.write_bytes(b"not-a-zip")
+        action = UnzipAction(mode="named")
+        self.assertEqual(action.run(bad), "fail")
+        self.assertTrue(bad.exists())
+
+    def test_path_traversal_blocked(self):
+        evil = self.inbox / "evil.zip"
+        with zipfile.ZipFile(evil, "w") as zf:
+            zf.writestr("../outside.txt", "nope")
+        action = UnzipAction(mode="named")
+        self.assertEqual(action.run(evil), "fail")
+        self.assertTrue(evil.exists())
+        self.assertFalse((self.tmp / "outside.txt").exists())
+
+    def test_watch_unzip_once(self):
+        self._make_zip("w.zip", payload="w.txt", content=b"watch")
+        action = UnzipAction(mode="named")
+        code = run_watch(
+            self.inbox,
+            action,
+            exts=["zip"],
+            poll=0.1,
+            stable_needed=1,
+            min_bytes=1,
+            once=True,
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse((self.inbox / "w.zip").exists())
+        self.assertTrue((self.inbox / "w" / "w.txt").is_file())
+
+
+class TestCLI(unittest.TestCase):
+    def test_list_actions(self):
+        from folder_watch import main
+
+        self.assertEqual(main(["--list-actions"]), 0)
+
+    def test_copy_cli_once(self):
+        from folder_watch import main
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            src = tmp / "src"
+            dest = tmp / "dest"
+            src.mkdir()
+            dest.mkdir()
+            (src / "v.mp4").write_bytes(b"12345")
+            code = main(
+                [
+                    "copy",
+                    str(src),
+                    "--to",
+                    str(dest),
+                    "--once",
+                    "--stable",
+                    "1",
+                    "--min-bytes",
+                    "1",
+                    "--poll",
+                    "0.1",
+                    "--ext",
+                    "mp4",
+                ]
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue((dest / "v.mp4").is_file())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_unzip_cli_named(self):
+        from folder_watch import main
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            inbox = tmp / "inbox"
+            inbox.mkdir()
+            payload = tmp / "a.txt"
+            payload.write_text("ok")
+            z = inbox / "t.zip"
+            with zipfile.ZipFile(z, "w") as zf:
+                zf.write(payload, arcname="a.txt")
+            code = main(
+                [
+                    "unzip",
+                    str(inbox),
+                    "--once",
+                    "--stable",
+                    "1",
+                    "--min-bytes",
+                    "1",
+                    "--poll",
+                    "0.1",
+                ]
+            )
+            self.assertEqual(code, 0)
+            self.assertFalse(z.exists())
+            self.assertTrue((inbox / "t" / "a.txt").is_file())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestConvxWrapper(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = self.tmp / "src"
+        self.src.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_requires_format_or_preset(self):
+        from folder_watch import build_convx_watch_cmd
+
+        with self.assertRaises(ValueError):
+            build_convx_watch_cmd(self.src)
+
+    def test_build_maps_flags(self):
+        from folder_watch import build_convx_watch_cmd
+
+        cmd = build_convx_watch_cmd(
+            self.src,
+            format="webp",
+            convx_preset="web-image",
+            quality=80,
+            width=1280,
+            fps=24.0,
+            max_size=1_000_000,
+            overwrite=True,
+            filter_exts=["png", "jpg"],
+            debounce_ms=250,
+            convx_bin="/fake/convx",
+        )
+        self.assertEqual(cmd[0], "/fake/convx")
+        self.assertEqual(cmd[1], "watch")
+        self.assertEqual(Path(cmd[2]), self.src.resolve())
+        self.assertIn("-t", cmd)
+        self.assertEqual(cmd[cmd.index("-t") + 1], "webp")
+        self.assertIn("-p", cmd)
+        self.assertEqual(cmd[cmd.index("-p") + 1], "web-image")
+        self.assertIn("--filter", cmd)
+        self.assertEqual(cmd[cmd.index("--filter") + 1], "*.png,*.jpg")
+        self.assertIn("--debounce", cmd)
+        self.assertEqual(cmd[cmd.index("--debounce") + 1], "250")
+        self.assertIn("-q", cmd)
+        self.assertIn("-w", cmd)
+        self.assertIn("--fps", cmd)
+        self.assertIn("--max-size", cmd)
+        self.assertIn("--overwrite", cmd)
+
+    def test_no_overwrite_omits_flag(self):
+        from folder_watch import build_convx_watch_cmd
+
+        cmd = build_convx_watch_cmd(self.src, format="mp3", overwrite=False)
+        self.assertNotIn("--overwrite", cmd)
+
+    def test_cli_rejects_to_and_once(self):
+        from folder_watch import main as fw_main
+
+        self.assertEqual(
+            fw_main(["convx", str(self.src), "--format", "webp", "--to", "/tmp/x"]),
+            2,
+        )
+        self.assertEqual(
+            fw_main(["convx", str(self.src), "--format", "webp", "--once"]),
+            2,
+        )
+
+
+class TestSettleNonBlocking(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_open_file_stays_waiting(self):
+        from folder_watch import settle_step
+        import folder_watch as fw
+
+        f = self.tmp / "enc.mp4"
+        f.write_bytes(b"x" * 100)
+        track: dict = {}
+        old = fw.is_open
+        fw.is_open = lambda _p: 1
+        try:
+            self.assertEqual(
+                settle_step(f, track, min_bytes=1, stable_needed=3), "waiting"
+            )
+            self.assertEqual(track.get("stable"), 0)
+        finally:
+            fw.is_open = old
+
+    def test_closed_file_reaches_ready(self):
+        from folder_watch import settle_step
+        import folder_watch as fw
+
+        f = self.tmp / "done.mp4"
+        f.write_bytes(b"x" * 100)
+        track: dict = {}
+        old = fw.is_open
+        fw.is_open = lambda _p: 0
+        try:
+            for _ in range(2):
+                self.assertEqual(
+                    settle_step(f, track, min_bytes=1, stable_needed=3), "waiting"
+                )
+            self.assertEqual(
+                settle_step(f, track, min_bytes=1, stable_needed=3), "ready"
+            )
+            self.assertEqual(track["size"], 100)
+        finally:
+            fw.is_open = old
+
+
+if __name__ == "__main__":
+    unittest.main()
