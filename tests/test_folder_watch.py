@@ -300,6 +300,41 @@ class TestConvxWrapper(unittest.TestCase):
         )
 
 
+class TestDoneStoreAndAtomic(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_done_store_roundtrip(self):
+        from fw_support import DoneStore, file_identity
+
+        store = DoneStore(self.tmp / "done.json")
+        src = self.tmp / "a.mp4"
+        dest = self.tmp / "out" / "a.mp4"
+        src.write_bytes(b"x" * 50)
+        dest.parent.mkdir()
+        size, mtime = file_identity(src)
+        key = DoneStore.make_key(
+            "copy", src, size=size, mtime_ns=mtime, dest=dest
+        )
+        self.assertFalse(store.is_done(key))
+        store.mark(key, name="a.mp4")
+        store2 = DoneStore(self.tmp / "done.json")
+        self.assertTrue(store2.is_done(key))
+
+    def test_atomic_copy(self):
+        from fw_support import atomic_copy
+
+        src = self.tmp / "src.bin"
+        dest = self.tmp / "dest" / "out.bin"
+        src.write_bytes(b"hello-atomic")
+        atomic_copy(src, dest, retries=2)
+        self.assertEqual(dest.read_bytes(), b"hello-atomic")
+        self.assertFalse(any(self.tmp.joinpath("dest").glob("*.tmp")))
+
+
 class TestSettleNonBlocking(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

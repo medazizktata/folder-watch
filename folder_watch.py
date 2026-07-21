@@ -31,6 +31,18 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from fw_support import (
+    DoneStore,
+    atomic_copy,
+    emit,
+    file_identity,
+    install_service,
+    service_status,
+    set_json_mode,
+    setup_logging,
+    uninstall_service,
+)
+
 CONFIG_DIR = Path.home() / ".config" / "folder-watch"
 PRESETS_PATH = CONFIG_DIR / "presets.json"
 LEGACY_PRESETS = Path.home() / ".config" / "watch-copy" / "presets.json"
@@ -43,7 +55,7 @@ DEFAULT_PRESETS: dict[str, dict[str, Any]] = {
             "/Users/MAC/Library/CloudStorage/"
             "GoogleDrive-you@example.com/"
             ".shortcut-targets-by-id/SHORTCUT_ID/"
-            "Client/Project/Batch 2/Output/Videos /V1"
+            "Client/Project/Batch 2/Output/Videos /V2"
         ),
         "ext": ["mp4"],
         "poll": 30,
@@ -301,19 +313,36 @@ class Action(ABC):
     def describe(self) -> str:
         return self.name
 
+    def done_dest(self, src: Path) -> Path | None:
+        """Destination path for done-state key (scheme B), if any."""
+        return None
+
+    def done_mode(self) -> str | None:
+        return None
+
 
 class CopyAction(Action):
     name = "copy"
     default_ext = "mp4"
     default_min_bytes = 1_000_000
 
-    def __init__(self, dest: Path, *, notify_on_done: bool = True) -> None:
+    def __init__(
+        self,
+        dest: Path,
+        *,
+        notify_on_done: bool = True,
+        retries: int = 5,
+    ) -> None:
         self.dest = dest.expanduser()
         self.notify_on_done = notify_on_done
+        self.retries = retries
 
     def describe(self) -> str:
         n = " notify" if self.notify_on_done else ""
         return f"copy -> {self.dest}{n}"
+
+    def done_dest(self, src: Path) -> Path | None:
+        return self.dest / src.name
 
     def run(self, path: Path) -> str:
         dest = self.dest / path.name
@@ -321,8 +350,14 @@ class CopyAction(Action):
         if dest.is_file() and dest.stat().st_size == size:
             return "skip"
         self.dest.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, dest)
-        if dest.stat().st_size != size:
+        try:
+            atomic_copy(path, dest, retries=self.retries)
+        except OSError as e:
+            emit("fail", name=path.name, reason="copy_error", err=str(e))
+            if self.notify_on_done:
+                notify("folder-watch copy failed", path.name, reveal=dest)
+            return "fail"
+        if not dest.is_file() or dest.stat().st_size != size:
             if self.notify_on_done:
                 notify("folder-watch copy failed", path.name, reveal=dest)
             return "fail"
@@ -352,6 +387,12 @@ class UnzipAction(Action):
         if self.mode == "to":
             return f"unzip mode=to -> {self.to}/<stem>/"
         return f"unzip mode={self.mode}"
+
+    def done_mode(self) -> str | None:
+        return self.mode
+
+    def done_dest(self, src: Path) -> Path | None:
+        return self._target_dir(src)
 
     def _target_dir(self, zip_path: Path) -> Path:
         stem = zip_path.stem
@@ -490,33 +531,59 @@ def apply_action(
     state: dict[str, dict],
     size: int,
     stable_needed: int,
+    done_store: DoneStore | None = None,
 ) -> None:
     name = src.name
+    try:
+        size_now, mtime_ns = file_identity(src)
+    except OSError:
+        return
+    size = size_now
+
     prev_state = state.get(name, {})
     if prev_state.get("done") and prev_state.get("size") == size:
         return
 
+    dest = action.done_dest(src)
+    mode = action.done_mode()
+    key = None
+    if done_store is not None:
+        key = DoneStore.make_key(
+            action.name,
+            src,
+            size=size,
+            mtime_ns=mtime_ns,
+            dest=dest,
+            mode=mode,
+        )
+        if done_store.is_done(key):
+            state[name] = {"size": size, "stable": stable_needed, "done": True}
+            emit("skip", name=name, size=size, reason="done_store")
+            return
+
     try:
         result = action.run(src)
     except Exception as e:  # noqa: BLE001
-        print(f"error name={name} err={e}", flush=True)
+        emit("error", name=name, err=str(e))
         return
 
     if result == "skip":
-        print(f"skip name={name} size={size}", flush=True)
+        emit("skip", name=name, size=size)
     elif result == "copied":
-        print(f"copied name={name} size={size}", flush=True)
+        emit("copied", name=name, size=size)
     elif result in ("extracted", "converted"):
         pass
     elif result == "fail":
-        print(f"fail name={name}", flush=True)
+        emit("fail", name=name)
         return
     else:
-        print(f"result name={name} status={result}", flush=True)
+        emit("result", name=name, status=result)
         if result == "error":
             return
 
     state[name] = {"size": size, "stable": stable_needed, "done": True}
+    if done_store is not None and key is not None:
+        done_store.mark(key, name=name, result=result)
 
 
 def settle_step(
@@ -544,7 +611,7 @@ def settle_step(
         track["prev"] = size
         now = time.monotonic()
         if now - track.get("last_log", 0) >= 2.0:
-            print(f"progress name={src.name} size={size} open={open_n}", flush=True)
+            emit("progress", name=src.name, size=size, open=open_n)
             track["last_log"] = now
         return "waiting"
 
@@ -570,6 +637,7 @@ def process_file(
     stable_needed: int,
     settle_interval: float,
     wait: bool = True,
+    done_store: DoneStore | None = None,
 ) -> None:
     """Settle then action.
 
@@ -579,7 +647,6 @@ def process_file(
     track: dict[str, Any] = {}
 
     if not wait:
-        # Quick path: bail immediately if still encoding; otherwise collect stable ticks.
         for _ in range(stable_needed + 5):
             status = settle_step(
                 src, track, min_bytes=min_bytes, stable_needed=stable_needed
@@ -591,6 +658,7 @@ def process_file(
                     state=state,
                     size=int(track["size"]),
                     stable_needed=stable_needed,
+                    done_store=done_store,
                 )
                 return
             if status == "gone":
@@ -616,51 +684,10 @@ def process_file(
                 state=state,
                 size=int(track["size"]),
                 stable_needed=stable_needed,
+                done_store=done_store,
             )
             return
         time.sleep(settle_interval)
-
-
-def seed_baseline(
-    src_dir: Path,
-    *,
-    exts: list[str] | None,
-    min_bytes: int,
-    state: dict[str, dict],
-) -> list[Path]:
-    """Ignore finished files already in SRC. Return paths still being written."""
-    unsettled: list[Path] = []
-    ignored = 0
-    try:
-        names = [
-            n
-            for n in os.listdir(src_dir)
-            if match_ext(n, exts) and (src_dir / n).is_file()
-        ]
-    except FileNotFoundError:
-        print(f"warn: src missing: {src_dir}", flush=True)
-        return unsettled
-
-    for name in names:
-        path = src_dir / name
-        try:
-            size = path.stat().st_size
-            resolved = path.resolve()
-        except OSError:
-            continue
-        # Actively encoding (write handle) or not a finished export yet
-        if is_open(path) or size < min_bytes:
-            unsettled.append(resolved)
-            continue
-        state[name] = {"size": size, "done": True, "baseline": True}
-        ignored += 1
-
-    print(
-        f"baseline ignored={ignored} encoding={len(unsettled)} "
-        f"(old finished skipped; only new + active encodes)",
-        flush=True,
-    )
-    return unsettled
 
 
 def scan_once(
@@ -673,6 +700,7 @@ def scan_once(
     settle_interval: float,
     state: dict[str, dict],
     wait: bool = False,
+    done_store: DoneStore | None = None,
 ) -> None:
     try:
         names = [
@@ -681,7 +709,7 @@ def scan_once(
             if match_ext(n, exts) and (src_dir / n).is_file()
         ]
     except FileNotFoundError:
-        print(f"warn: src missing: {src_dir}", flush=True)
+        emit("warn", reason="src_missing", src=src_dir)
         return
 
     for name in names:
@@ -693,7 +721,61 @@ def scan_once(
             stable_needed=stable_needed,
             settle_interval=settle_interval,
             wait=wait,
+            done_store=done_store,
         )
+
+
+def seed_baseline(
+    src_dir: Path,
+    action: Action,
+    *,
+    exts: list[str] | None,
+    min_bytes: int,
+    state: dict[str, dict],
+    done_store: DoneStore | None = None,
+) -> list[Path]:
+    """Ignore finished files already in SRC. Return paths still being written."""
+    unsettled: list[Path] = []
+    ignored = 0
+    try:
+        names = [
+            n
+            for n in os.listdir(src_dir)
+            if match_ext(n, exts) and (src_dir / n).is_file()
+        ]
+    except FileNotFoundError:
+        emit("warn", reason="src_missing", src=src_dir)
+        return unsettled
+
+    for name in names:
+        path = src_dir / name
+        try:
+            size, mtime_ns = file_identity(path)
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if is_open(path) or size < min_bytes:
+            unsettled.append(resolved)
+            continue
+        state[name] = {"size": size, "done": True, "baseline": True}
+        if done_store is not None:
+            done_store.mark_baseline_file(
+                action.name,
+                path,
+                size=size,
+                mtime_ns=mtime_ns,
+                dest=action.done_dest(path),
+                mode=action.done_mode(),
+            )
+        ignored += 1
+
+    emit(
+        "baseline",
+        ignored=ignored,
+        encoding=len(unsettled),
+        note="old finished skipped; only new + active encodes",
+    )
+    return unsettled
 
 
 def run_watch_poll(
@@ -705,10 +787,18 @@ def run_watch_poll(
     stable_needed: int,
     min_bytes: int,
     catch_up: bool = False,
+    done_store: DoneStore | None = None,
 ) -> int:
     state: dict[str, dict] = {}
     if not catch_up:
-        seed_baseline(src_dir, exts=exts, min_bytes=min_bytes, state=state)
+        seed_baseline(
+            src_dir,
+            action,
+            exts=exts,
+            min_bytes=min_bytes,
+            state=state,
+            done_store=done_store,
+        )
     while True:
         scan_once(
             src_dir,
@@ -719,6 +809,7 @@ def run_watch_poll(
             settle_interval=min(poll, 1.0),
             state=state,
             wait=False,
+            done_store=done_store,
         )
         time.sleep(poll)
 
@@ -734,6 +825,7 @@ def run_watch_event(
     settle_interval: float,
     recursive: bool,
     catch_up: bool = False,
+    done_store: DoneStore | None = None,
 ) -> int:
     try:
         from watchdog.events import FileSystemEventHandler
@@ -753,6 +845,7 @@ def run_watch_event(
             stable_needed=stable_needed,
             min_bytes=min_bytes,
             catch_up=catch_up,
+            done_store=done_store,
         )
 
     state: dict[str, dict] = {}
@@ -802,7 +895,7 @@ def run_watch_event(
             with lock:
                 pending[key] = time.monotonic()
                 watching.pop(key, None)
-                print(f"event name={path.name}", flush=True)
+                emit("event", name=path.name)
 
     handler = Handler()
     observer = Observer()
@@ -819,6 +912,7 @@ def run_watch_event(
             settle_interval=settle_interval,
             state=state,
             wait=False,
+            done_store=done_store,
         )
         try:
             for n in os.listdir(src_dir):
@@ -833,7 +927,12 @@ def run_watch_event(
             pass
     else:
         unsettled = seed_baseline(
-            src_dir, exts=exts, min_bytes=min_bytes, state=state
+            src_dir,
+            action,
+            exts=exts,
+            min_bytes=min_bytes,
+            state=state,
+            done_store=done_store,
         )
         now = time.monotonic()
         with lock:
@@ -899,6 +998,7 @@ def run_watch_event(
                     state=state,
                     size=int(track["size"]),
                     stable_needed=stable_needed,
+                    done_store=done_store,
                 )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)
@@ -923,17 +1023,23 @@ def run_watch(
     settle_interval: float = 0.5,
     recursive: bool = False,
     catch_up: bool = False,
+    done_store: DoneStore | None = None,
 ) -> int:
     src_dir = src_dir.expanduser().resolve()
 
-    print(
-        f"folder-watch src={src_dir} action={action.describe()} "
-        f"ext={exts or '*'} backend={backend} "
-        f"debounce_ms={debounce_ms} stable={stable_needed} "
-        f"settle={settle_interval}s min_bytes={min_bytes} "
-        f"catch_up={catch_up if not once else 'n/a'} "
-        f"mode={'once' if once else 'watch'}",
-        flush=True,
+    emit(
+        "start",
+        src=src_dir,
+        action=action.describe(),
+        ext=exts or "*",
+        backend=backend,
+        debounce_ms=debounce_ms,
+        stable=stable_needed,
+        settle=settle_interval,
+        min_bytes=min_bytes,
+        catch_up=(catch_up if not once else "n/a"),
+        mode=("once" if once else "watch"),
+        done_store=(str(done_store.path) if done_store else None),
     )
 
     if once:
@@ -947,8 +1053,9 @@ def run_watch(
             settle_interval=0.05,
             state=state,
             wait=False,
+            done_store=done_store,
         )
-        print("done", flush=True)
+        emit("done")
         return 0
 
     if backend == "poll":
@@ -960,6 +1067,7 @@ def run_watch(
             stable_needed=stable_needed,
             min_bytes=min_bytes,
             catch_up=catch_up,
+            done_store=done_store,
         )
 
     return run_watch_event(
@@ -972,6 +1080,7 @@ def run_watch(
         settle_interval=settle_interval,
         recursive=recursive,
         catch_up=catch_up,
+        done_store=done_store,
     )
 
 
@@ -993,10 +1102,11 @@ def build_parser() -> argparse.ArgumentParser:
             "  copy   SRC --to DEST\n"
             "  unzip  SRC [--mode named|same|to] [--to DIR]\n"
             "  convx  SRC --format EXT [--ext png,jpg]   # → convx watch\n"
+            "  service install|uninstall|status --preset NAME\n"
         ),
     )
-    p.add_argument("action", nargs="?", choices=list(ACTION_NAMES), help="Action")
-    p.add_argument("src", nargs="?", help="Folder to watch")
+    p.add_argument("action", nargs="?", help="Action or 'service'")
+    p.add_argument("src", nargs="?", help="Folder to watch (or service subcommand)")
     p.add_argument("--to", dest="to", help="Destination / output directory (copy/unzip)")
     p.add_argument(
         "--mode",
@@ -1058,6 +1168,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="macOS notification on copy success/fail (default: on)",
     )
+    p.add_argument(
+        "--log",
+        type=Path,
+        default=None,
+        help="also write logs to this file",
+    )
+    p.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="log level (default INFO)",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable JSON lines on stdout",
+    )
+    p.add_argument(
+        "--no-done-store",
+        action="store_true",
+        help="disable persistent done-state (scheme B)",
+    )
+    p.add_argument(
+        "--retries",
+        type=int,
+        default=5,
+        help="copy: retries on OSError (default 5)",
+    )
     p.add_argument("--preset", help="folder-watch JSON preset")
     p.add_argument("--list-presets", action="store_true")
     p.add_argument("--list-actions", action="store_true")
@@ -1072,15 +1210,51 @@ def build_action(name: str, args: argparse.Namespace) -> Action:
         return CopyAction(
             Path(args.to),
             notify_on_done=getattr(args, "notify", True),
+            retries=getattr(args, "retries", 5),
         )
     if name == "unzip":
         return UnzipAction(mode=args.mode, to=Path(args.to) if args.to else None)
     raise SystemExit(f"error: unknown action {name!r}")
 
 
+def run_service_cli(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="folder-watch service")
+    ap.add_argument("cmd", choices=("install", "uninstall", "status"))
+    ap.add_argument("--preset", required=True, help="preset name to run under launchd")
+    ap.add_argument("--log", type=Path, default=None, help="LaunchAgent stdout/err log")
+    args = ap.parse_args(argv)
+    bin_path = Path(__file__).resolve().parent / "bin" / "folder-watch"
+    if not bin_path.is_file():
+        bin_path = Path(sys.executable)
+    try:
+        if args.cmd == "install":
+            plist = install_service(
+                preset=args.preset, program=bin_path, log_path=args.log
+            )
+            print(f"installed {plist}")
+            return 0
+        if args.cmd == "uninstall":
+            plist = uninstall_service(preset=args.preset)
+            print(f"uninstalled {plist}" if plist else "nothing to uninstall")
+            return 0
+        st = service_status(preset=args.preset)
+        for k, v in st.items():
+            print(f"{k}: {v}")
+        return 0 if st.get("loaded") or st.get("plist_exists") else 1
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "service":
+        return run_service_cli(argv[1:])
+
     args = build_parser().parse_args(argv)
+    setup_logging(level=args.log_level, log_file=args.log, json_mode=args.json)
+    set_json_mode(args.json)
+
     presets = load_presets()
     passed = {a.split("=")[0] for a in argv}
 
@@ -1090,6 +1264,7 @@ def main(argv: list[str] | None = None) -> int:
         print("         --mode named (default) | same | to")
         print("convx — wrapper: exec `convx watch` (in-place convert; ConvX owns FSEvents)")
         print("         --format EXT and/or --convx-preset; --ext → --filter")
+        print("service install|uninstall|status --preset NAME  — LaunchAgent")
         print("backend — copy/unzip only: event (default) | poll")
         return 0
 
@@ -1184,6 +1359,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not action_name or src is None:
         build_parser().print_help()
+        return 2
+
+    if action_name not in ACTION_NAMES:
+        print(f"error: unknown action {action_name!r}", file=sys.stderr)
         return 2
 
     # convx watch has no output dir; ignore legacy preset "to" unless user passed --to
@@ -1305,6 +1484,14 @@ def main(argv: list[str] | None = None) -> int:
 
     exts = parse_exts(exts_raw)
 
+    done_store = None
+    if not args.no_done_store and action_name in ("copy", "unzip"):
+        to_s = str(Path(to).expanduser()) if to else None
+        mode_s = mode if action_name == "unzip" else None
+        done_store = DoneStore(
+            DoneStore.path_for(action_name, src, to=to_s, mode=mode_s)
+        )
+
     try:
         return run_watch(
             src,
@@ -1319,6 +1506,7 @@ def main(argv: list[str] | None = None) -> int:
             settle_interval=settle,
             recursive=recursive,
             catch_up=args.catch_up,
+            done_store=done_store,
         )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)
