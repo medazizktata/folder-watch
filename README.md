@@ -5,6 +5,22 @@ Watch a folder until files finish writing, then run a pluggable **action**.
 **Location:** `~/Desktop/folder-watch` (local git repo)  
 **Global CLIs:** `~/.local/bin/{folder-watch,watch-copy,watch-unzip,watch-convx}` → `bin/`
 
+## Install
+
+```bash
+cd ~/Desktop/folder-watch
+.venv/bin/pip install -e .
+```
+
+Puts `folder-watch`, `watch-copy`, `watch-unzip` and `watch-convx` in
+`.venv/bin/`, each pointing at the interpreter that owns `watchdog` — so they
+run from any directory with no `PYTHONPATH` set. `python -m folder_watch` works
+the same way.
+
+The `bin/` wrappers still work without installing at all: they set `PYTHONPATH`
+themselves and run the package out of the checkout. That's why the LaunchAgent
+uses them — it works either way.
+
 ## How watching works
 
 **Default: `--backend event`** (FSEvents via `watchdog`) — **copy** / **unzip**
@@ -85,3 +101,6 @@ cd ~/Desktop/folder-watch
 .venv/bin/python -m unittest discover -s tests -v
 ./bin/test-addons
 ```
+
+For manual/interactive testing — a simulated encode that holds its write handle
+open, test zips, and a state reset — see `~/Desktop/folder-watch-lab/`.

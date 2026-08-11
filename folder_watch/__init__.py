@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from folder_watch._version import __version__
 from folder_watch.actions import ACTION_NAMES, ACTIONS, Action, CopyAction, UnzipAction
 from folder_watch.actions.convx import build_convx_watch_cmd, run_convx_watch
 from folder_watch.cli import main
@@ -16,6 +17,7 @@ __all__ = [
     "ACTIONS",
     "Action",
     "CONFIG_DIR",
+    "__version__",
     "CopyAction",
     "DEFAULT_PRESETS",
     "LEGACY_PRESETS",

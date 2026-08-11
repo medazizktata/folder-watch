@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from folder_watch._version import __version__
 from folder_watch.actions import ACTION_NAMES, ACTIONS
 from folder_watch.actions.base import Action
 from folder_watch.actions.convx import build_convx_watch_cmd, run_convx_watch
@@ -143,6 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="copy: retries on OSError (default 5)",
+    )
+    p.add_argument(
+        "--version",
+        action="version",
+        version=f"folder-watch {__version__}",
     )
     p.add_argument("--preset", help="folder-watch JSON preset")
     p.add_argument("--list-presets", action="store_true")

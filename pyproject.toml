@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "folder-watch"
+description = "Watch a folder until files finish writing, then run a pluggable action."
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = ["watchdog>=4.0.0"]
+classifiers = [
+  "Environment :: MacOS X",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Filesystems",
+  "Topic :: Utilities",
+]
+
+# Installing these is the point of packaging this: they land on PATH pointing
+# at the interpreter that owns the dependencies, which is what the .venv +
+# PYTHONPATH + bash-wrapper arrangement was approximating by hand.
+[project.scripts]
+folder-watch = "folder_watch.cli:main"
+watch-copy = "folder_watch.shortcuts:copy_main"
+watch-unzip = "folder_watch.shortcuts:unzip_main"
+watch-convx = "folder_watch.shortcuts:convx_main"
+
+[tool.hatch.version]
+path = "folder_watch/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["folder_watch"]
+
+[tool.hatch.build.targets.sdist]
+include = ["folder_watch", "tests", "bin", "README.md"]
