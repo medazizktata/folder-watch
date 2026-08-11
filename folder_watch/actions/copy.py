@@ -54,6 +54,13 @@ class CopyAction(Action):
                 notify("folder-watch copy failed", path.name, reveal=dest)
             return "fail"
         if not dest.is_file() or dest.stat().st_size != size:
+            emit(
+                "fail",
+                name=path.name,
+                reason="size_mismatch",
+                size=size,
+                wrote=dest.stat().st_size if dest.is_file() else 0,
+            )
             if self.notify_on_done:
                 notify("folder-watch copy failed", path.name, reveal=dest)
             return "fail"

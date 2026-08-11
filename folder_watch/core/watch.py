@@ -122,7 +122,7 @@ def apply_action(
     elif result in ("extracted", "converted"):
         pass
     elif result == "fail":
-        emit("fail", name=name)
+        # The action emits its own fail line, with a reason attached.
         return
     else:
         emit("result", name=name, status=result)

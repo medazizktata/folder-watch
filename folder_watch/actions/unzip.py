@@ -61,10 +61,10 @@ class UnzipAction(Action):
             emit("would_extract", name=path.name, dest=target, mode=self.mode)
             return "would_extract"
 
-        target.mkdir(parents=True, exist_ok=True)
-
         try:
             with zipfile.ZipFile(path, "r") as zf:
+                # Vet every member before creating anything, so a rejected zip
+                # doesn't leave an empty target directory behind.
                 for info in zf.infolist():
                     member = Path(info.filename)
                     if member.is_absolute() or ".." in member.parts:
@@ -76,6 +76,7 @@ class UnzipAction(Action):
                         )
                         return "fail"
                 members = zf.namelist()
+                target.mkdir(parents=True, exist_ok=True)
                 zf.extractall(target)
         except (zipfile.BadZipFile, OSError) as e:
             emit("fail", name=path.name, reason="extract_error", err=str(e))
