@@ -117,6 +117,23 @@ def apply_action(
         done_store.mark(key, name=name, result=result)
 
 
+def _progress(track: dict[str, Any], src: Path, size: int) -> None:
+    """Throttled progress line — every 2s, or every tick when verbose.
+
+    `open` is reported only when we have a fresh lsof reading; while a file
+    is still growing we deliberately don't pay for one.
+    """
+    now = time.monotonic()
+    interval = 0.0 if is_verbose() else 2.0
+    if now - track.get("last_log", 0) < interval:
+        return
+    fields: dict[str, Any] = {"name": src.name, "size": size}
+    if "open" in track:
+        fields["open"] = track["open"]
+    emit("progress", **fields)
+    track["last_log"] = now
+
+
 def settle_step(
     src: Path,
     track: dict[str, Any],
@@ -130,21 +147,20 @@ def settle_step(
       ready   — stable enough to run action (track['size'] set)
       waiting — still open / growing / not enough stable ticks
       gone    — file disappeared
+
+    lsof costs ~250ms a call, so it is consulted only once the size has held
+    still for stable_needed ticks: a file that is still growing is already
+    proof of an open write handle, and stat() answers that for ~5ms.
     """
     try:
         size = src.stat().st_size
     except OSError:
         return "gone"
 
-    open_n = is_open(src)
-    if open_n or size < min_bytes:
+    if size < min_bytes:
         track["stable"] = 0
         track["prev"] = size
-        now = time.monotonic()
-        interval = 0.0 if is_verbose() else 2.0
-        if now - track.get("last_log", 0) >= interval:
-            emit("progress", name=src.name, size=size, open=open_n)
-            track["last_log"] = now
+        _progress(track, src, size)
         return "waiting"
 
     prev = track.get("prev")
@@ -152,20 +168,30 @@ def settle_step(
         track["prev"] = size
         track["stable"] = 1
         emit_debug("settle", name=src.name, size=size, stable=1, reason="size_change")
-    else:
-        track["stable"] = int(track.get("stable", 0)) + 1
-        emit_debug(
-            "settle",
-            name=src.name,
-            size=size,
-            stable=track["stable"],
-            need=stable_needed,
-        )
+        _progress(track, src, size)
+        return "waiting"
 
-    if track["stable"] >= stable_needed:
-        track["size"] = size
-        return "ready"
-    return "waiting"
+    track["stable"] = int(track.get("stable", 0)) + 1
+    emit_debug(
+        "settle",
+        name=src.name,
+        size=size,
+        stable=track["stable"],
+        need=stable_needed,
+    )
+    if track["stable"] < stable_needed:
+        return "waiting"
+
+    # Size has plateaued — now it's worth paying for lsof. If a writer still
+    # holds the file, stay above the threshold so the next tick re-checks.
+    open_n = is_open(src)
+    track["open"] = open_n
+    if open_n:
+        _progress(track, src, size)
+        return "waiting"
+
+    track["size"] = size
+    return "ready"
 
 
 def process_file(
@@ -204,7 +230,8 @@ def process_file(
             if status == "gone":
                 return
             try:
-                if is_open(src) or src.stat().st_size < min_bytes:
+                # Reuse settle_step's lsof reading rather than paying again.
+                if track.get("open") or src.stat().st_size < min_bytes:
                     return
             except OSError:
                 return

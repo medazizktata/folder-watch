@@ -378,10 +378,66 @@ class TestSettleNonBlocking(unittest.TestCase):
         old = watch_mod.is_open
         watch_mod.is_open = lambda _p: 1
         try:
+            # Size never moves, so the lsof gate is reached and must keep
+            # returning waiting for as long as a writer holds the file.
+            for _ in range(6):
+                self.assertEqual(
+                    settle_step(f, track, min_bytes=1, stable_needed=3), "waiting"
+                )
+            self.assertNotIn("size", track)
+        finally:
+            watch_mod.is_open = old
+
+    def test_lsof_not_called_while_file_grows(self):
+        """lsof costs ~250ms; a growing file is proof enough of a writer."""
+        from folder_watch import settle_step
+        import folder_watch.core.watch as watch_mod
+
+        f = self.tmp / "growing.mp4"
+        calls: list[Path] = []
+        old = watch_mod.is_open
+        watch_mod.is_open = lambda p: calls.append(p) or 0
+        try:
+            for n in range(1, 6):
+                f.write_bytes(b"x" * (n * 100))
+                self.assertEqual(
+                    settle_step(f, track := {}, min_bytes=1, stable_needed=3),
+                    "waiting",
+                )
+            self.assertEqual(calls, [], "lsof called on a still-growing file")
+
+            # Plateau: same size three ticks running reaches the gate.
+            track = {}
+            for _ in range(2):
+                self.assertEqual(
+                    settle_step(f, track, min_bytes=1, stable_needed=3), "waiting"
+                )
+            self.assertEqual(calls, [], "lsof called before the size plateaued")
             self.assertEqual(
-                settle_step(f, track, min_bytes=1, stable_needed=3), "waiting"
+                settle_step(f, track, min_bytes=1, stable_needed=3), "ready"
             )
-            self.assertEqual(track.get("stable"), 0)
+            self.assertEqual(len(calls), 1)
+        finally:
+            watch_mod.is_open = old
+
+    def test_below_min_bytes_skips_lsof(self):
+        """The 0-byte stall case: don't burn an lsof every tick on it."""
+        from folder_watch import settle_step
+        import folder_watch.core.watch as watch_mod
+
+        f = self.tmp / "stalled.mp4"
+        f.write_bytes(b"")
+        calls: list[Path] = []
+        old = watch_mod.is_open
+        watch_mod.is_open = lambda p: calls.append(p) or 0
+        try:
+            track: dict = {}
+            for _ in range(5):
+                self.assertEqual(
+                    settle_step(f, track, min_bytes=1_000_000, stable_needed=3),
+                    "waiting",
+                )
+            self.assertEqual(calls, [])
         finally:
             watch_mod.is_open = old
 
