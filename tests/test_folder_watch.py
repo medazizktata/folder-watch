@@ -46,13 +46,13 @@ class TestCopyAction(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_copy_and_skip(self):
-        import folder_watch as fw
+        import folder_watch.actions.copy as copy_mod
 
         f = self.src / "clip.mp4"
         f.write_bytes(b"x" * 100)
         notes: list[tuple[str, str]] = []
-        old = fw.notify
-        fw.notify = lambda t, b, **_k: notes.append((t, b))
+        old = copy_mod.notify
+        copy_mod.notify = lambda t, b, **_k: notes.append((t, b))
         try:
             action = CopyAction(self.dest, notify_on_done=True)
             self.assertEqual(action.run(f), "copied")
@@ -63,30 +63,23 @@ class TestCopyAction(unittest.TestCase):
             self.assertEqual(action.run(f), "skip")
             self.assertEqual(len(notes), 1)
         finally:
-            fw.notify = old
+            copy_mod.notify = old
 
     def test_copy_via_watch_once(self):
-        import folder_watch as fw
-
         f = self.src / "a.mp4"
         f.write_bytes(b"hello-world")
-        old = fw.notify
-        fw.notify = lambda *_a, **_k: None
-        try:
-            action = CopyAction(self.dest, notify_on_done=False)
-            code = run_watch(
-                self.src,
-                action,
-                exts=["mp4"],
-                poll=0.1,
-                stable_needed=1,
-                min_bytes=1,
-                once=True,
-            )
-            self.assertEqual(code, 0)
-            self.assertEqual((self.dest / "a.mp4").read_bytes(), b"hello-world")
-        finally:
-            fw.notify = old
+        action = CopyAction(self.dest, notify_on_done=False)
+        code = run_watch(
+            self.src,
+            action,
+            exts=["mp4"],
+            poll=0.1,
+            stable_needed=1,
+            min_bytes=1,
+            once=True,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual((self.dest / "a.mp4").read_bytes(), b"hello-world")
 
 
 class TestUnzipAction(unittest.TestCase):
@@ -312,7 +305,7 @@ class TestDryRunAndPartials(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_partial_names(self):
-        from fw_support import is_partial_filename
+        from folder_watch.support.partials import is_partial_filename
         from folder_watch import should_watch_name
 
         self.assertTrue(is_partial_filename("Video.mp4.part"))
@@ -341,7 +334,7 @@ class TestDoneStoreAndAtomic(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_done_store_roundtrip(self):
-        from fw_support import DoneStore, file_identity
+        from folder_watch.support.state import DoneStore, file_identity
 
         store = DoneStore(self.tmp / "done.json")
         src = self.tmp / "a.mp4"
@@ -358,7 +351,7 @@ class TestDoneStoreAndAtomic(unittest.TestCase):
         self.assertTrue(store2.is_done(key))
 
     def test_atomic_copy(self):
-        from fw_support import atomic_copy
+        from folder_watch.support.copy_io import atomic_copy
 
         src = self.tmp / "src.bin"
         dest = self.tmp / "dest" / "out.bin"
@@ -377,30 +370,30 @@ class TestSettleNonBlocking(unittest.TestCase):
 
     def test_open_file_stays_waiting(self):
         from folder_watch import settle_step
-        import folder_watch as fw
+        import folder_watch.core.watch as watch_mod
 
         f = self.tmp / "enc.mp4"
         f.write_bytes(b"x" * 100)
         track: dict = {}
-        old = fw.is_open
-        fw.is_open = lambda _p: 1
+        old = watch_mod.is_open
+        watch_mod.is_open = lambda _p: 1
         try:
             self.assertEqual(
                 settle_step(f, track, min_bytes=1, stable_needed=3), "waiting"
             )
             self.assertEqual(track.get("stable"), 0)
         finally:
-            fw.is_open = old
+            watch_mod.is_open = old
 
     def test_closed_file_reaches_ready(self):
         from folder_watch import settle_step
-        import folder_watch as fw
+        import folder_watch.core.watch as watch_mod
 
         f = self.tmp / "done.mp4"
         f.write_bytes(b"x" * 100)
         track: dict = {}
-        old = fw.is_open
-        fw.is_open = lambda _p: 0
+        old = watch_mod.is_open
+        watch_mod.is_open = lambda _p: 0
         try:
             for _ in range(2):
                 self.assertEqual(
@@ -411,7 +404,7 @@ class TestSettleNonBlocking(unittest.TestCase):
             )
             self.assertEqual(track["size"], 100)
         finally:
-            fw.is_open = old
+            watch_mod.is_open = old
 
 
 if __name__ == "__main__":

@@ -33,6 +33,9 @@ folder-watch copy ./Out --to ./Drive --once --dry-run
 # log file + JSON lines
 folder-watch --preset la-chaise-v1 --log ~/.local/state/folder-watch/la-chaise.log --json
 
+# verbose settle/progress
+folder-watch --preset la-chaise-v1 -v
+
 # disable persistent done-state
 folder-watch copy ./Out --to ./Drive --no-done-store
 

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import struct
 import sys
@@ -26,6 +27,20 @@ from folder_watch import (  # noqa: E402
     build_convx_watch_cmd,
     main as fw_main,
 )
+
+
+def fw_cmd(*args: str) -> list[str]:
+    """argv for a child folder-watch process."""
+    py = ROOT / ".venv" / "bin" / "python"
+    return [str(py) if py.is_file() else sys.executable, "-m", "folder_watch", *args]
+
+
+def fw_env() -> dict[str, str]:
+    """Env for a child folder-watch process (package must be importable)."""
+    env = dict(os.environ)
+    prev = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{ROOT}:{prev}" if prev else str(ROOT)
+    return env
 
 
 def write_tiny_png(path: Path) -> None:
@@ -176,9 +191,7 @@ def test_convx(skip: bool) -> list[str]:
             png = live / "tiny.png"
             webp = live / "tiny.webp"
             log = live / "log.txt"
-            cmd2 = [
-                str(ROOT / ".venv" / "bin" / "python"),
-                str(ROOT / "folder_watch.py"),
+            cmd2 = fw_cmd(
                 "convx",
                 str(live),
                 "--format",
@@ -187,10 +200,21 @@ def test_convx(skip: bool) -> list[str]:
                 "png",
                 "--debounce",
                 "100",
-            ]
+            )
             with open(log, "w") as f:
-                p = subprocess.Popen(cmd2, stdout=f, stderr=subprocess.STDOUT, text=True)
-            time.sleep(1.0)
+                p = subprocess.Popen(
+                    cmd2, stdout=f, stderr=subprocess.STDOUT, text=True, env=fw_env()
+                )
+            # Wait for convx's own banner — a fixed sleep races the FSEvents
+            # stream, and a write landing before it is never delivered.
+            ready = time.time() + 15
+            while time.time() < ready:
+                if "Press Ctrl+C to stop." in (
+                    log.read_text(errors="replace") if log.exists() else ""
+                ):
+                    break
+                time.sleep(0.1)
+            time.sleep(0.3)
             write_tiny_png(png)
             # nudge FSEvents if first write was missed
             time.sleep(0.3)
@@ -241,9 +265,7 @@ def test_event_unzip(skip: bool) -> list[str]:
     try:
         import subprocess
 
-        cmd = [
-            str(ROOT / ".venv" / "bin" / "python"),
-            str(ROOT / "folder_watch.py"),
+        cmd = fw_cmd(
             "unzip",
             str(inbox),
             "--mode",
@@ -258,9 +280,11 @@ def test_event_unzip(skip: bool) -> list[str]:
             "0.2",
             "--ext",
             "zip",
-        ]
+        )
         with open(log, "w") as f:
-            p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, text=True)
+            p = subprocess.Popen(
+                cmd, stdout=f, stderr=subprocess.STDOUT, text=True, env=fw_env()
+            )
         time.sleep(0.5)
         z = inbox / "drop.zip"
         with zipfile.ZipFile(z, "w") as zf:
