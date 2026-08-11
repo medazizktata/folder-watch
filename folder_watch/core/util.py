@@ -6,6 +6,7 @@ from pathlib import Path
 
 from folder_watch.support.partials import is_partial_filename
 
+
 def is_open(path: Path) -> int:
     """Count writers on path (AME encode). Ignore read-only opens (preview)."""
     try:

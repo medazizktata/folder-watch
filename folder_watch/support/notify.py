@@ -5,9 +5,9 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import threading
 from pathlib import Path
+
 
 def human_size(n: int) -> str:
     if n < 1024:

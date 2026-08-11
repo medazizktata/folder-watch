@@ -27,6 +27,37 @@ watch-copy = "folder_watch.shortcuts:copy_main"
 watch-unzip = "folder_watch.shortcuts:unzip_main"
 watch-convx = "folder_watch.shortcuts:convx_main"
 
+[project.optional-dependencies]
+dev = ["ruff>=0.6"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py310"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",    # pycodestyle
+  "F",         # pyflakes
+  "I",         # import sorting
+  "UP",        # pyupgrade
+  "B",         # bugbear
+  "C4",        # comprehensions
+  "SIM",       # simplify
+  "RUF",
+  "EXE",       # shebang/executable-bit agreement
+]
+ignore = [
+  # try/except/pass around best-effort cleanup is used consistently here and
+  # reads fine; contextlib.suppress would churn 8 sites for no behaviour change.
+  "SIM105",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Both suites must put the repo on sys.path and import tests/_isolate (which
+# redirects state off the real ~/.local/state) before folder_watch is imported.
+"tests/*" = ["E402"]
+
 [tool.hatch.version]
 path = "folder_watch/_version.py"
 

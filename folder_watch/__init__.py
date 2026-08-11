@@ -13,16 +13,16 @@ from folder_watch.support.notify import human_size, notify, reveal_in_finder
 from folder_watch.support.paths import CONFIG_DIR, LEGACY_PRESETS, PRESETS_PATH
 
 __all__ = [
-    "ACTION_NAMES",
     "ACTIONS",
-    "Action",
+    "ACTION_NAMES",
     "CONFIG_DIR",
-    "__version__",
-    "CopyAction",
     "DEFAULT_PRESETS",
     "LEGACY_PRESETS",
     "PRESETS_PATH",
+    "Action",
+    "CopyAction",
     "UnzipAction",
+    "__version__",
     "apply_action",
     "build_convx_watch_cmd",
     "human_size",

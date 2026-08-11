@@ -22,7 +22,13 @@ class DoneStore:
         self._load()
 
     @staticmethod
-    def path_for(action: str, src: Path, *, to: str | None = None, mode: str | None = None) -> Path:
+    def path_for(
+        action: str,
+        src: Path,
+        *,
+        to: str | None = None,
+        mode: str | None = None,
+    ) -> Path:
         raw = f"{action}|{src.expanduser().resolve()}|{to or ''}|{mode or ''}"
         digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,7 +48,9 @@ class DoneStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": 1, "entries": self._data}
         text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
-        fd, tmp = tempfile.mkstemp(prefix="done-", suffix=".json", dir=str(self.path.parent))
+        fd, tmp = tempfile.mkstemp(
+            prefix="done-", suffix=".json", dir=str(self.path.parent)
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
@@ -74,7 +82,10 @@ class DoneStore:
         return key in self._data
 
     def mark(self, key: str, **meta: Any) -> None:
-        self._data[key] = {"ts": time.time(), **{k: _jsonable(v) for k, v in meta.items()}}
+        self._data[key] = {
+            "ts": time.time(),
+            **{k: _jsonable(v) for k, v in meta.items()},
+        }
         self.save()
 
     @staticmethod

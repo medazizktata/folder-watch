@@ -99,8 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="copy/unzip: same-size checks before action (default 3)",
     )
-    p.add_argument("--min-bytes", type=int, default=None, help="copy/unzip: ignore tiny files")
-    p.add_argument("--once", action="store_true", help="copy/unzip: process ready files and exit")
+    p.add_argument(
+        "--min-bytes", type=int, default=None, help="copy/unzip: ignore tiny files"
+    )
+    p.add_argument(
+        "--once", action="store_true", help="copy/unzip: process ready files and exit"
+    )
     p.add_argument(
         "--catch-up",
         action="store_true",
@@ -322,7 +326,10 @@ def main(argv: list[str] | None = None) -> int:
         print("copy  — copy finished files to --to DIR (never deletes source)")
         print("unzip — extract .zip; delete only after verified success")
         print("         --mode named (default) | same | to")
-        print("convx — wrapper: exec `convx watch` (in-place convert; ConvX owns FSEvents)")
+        print(
+            "convx — wrapper: exec `convx watch` "
+            "(in-place convert; ConvX owns FSEvents)"
+        )
         print("         --format EXT and/or --convx-preset; --ext → --filter")
         print("service install|uninstall|status --preset NAME  — LaunchAgent")
         print("status  [--preset NAME]  — running watchers (pidfile + log tail)")

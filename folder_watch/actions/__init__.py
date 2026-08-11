@@ -12,8 +12,8 @@ ACTIONS: dict[str, type[Action]] = {
 ACTION_NAMES = ("copy", "unzip", "convx")
 
 __all__ = [
-    "ACTION_NAMES",
     "ACTIONS",
+    "ACTION_NAMES",
     "Action",
     "CopyAction",
     "UnzipAction",

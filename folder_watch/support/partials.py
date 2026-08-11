@@ -23,8 +23,5 @@ def is_partial_filename(name: str) -> bool:
     lower = base.lower()
     if lower.endswith(PARTIAL_SUFFIXES):
         return True
-    if base.startswith(PARTIAL_PREFIXES):
-        return True
-    if base.startswith("._"):
-        return True
-    return False
+    # PARTIAL_PREFIXES already covers "." and therefore "._" (AppleDouble).
+    return base.startswith(PARTIAL_PREFIXES)

@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+
 def build_convx_watch_cmd(
     src: Path,
     *,

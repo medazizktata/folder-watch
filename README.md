@@ -165,3 +165,15 @@ cd ~/Desktop/folder-watch
 
 For manual/interactive testing — a simulated encode that holds its write handle
 open, test zips, and a state reset — see `~/Desktop/folder-watch-lab/`.
+
+Lint:
+
+```bash
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/ruff check .
+.venv/bin/ruff check . --fix
+```
+
+Config lives in `pyproject.toml`. `E402` is ignored under `tests/` — both
+suites must put the repo on `sys.path` and import `tests/_isolate` (which
+redirects state off `~/.local/state`) before `folder_watch` is imported.

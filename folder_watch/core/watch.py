@@ -68,7 +68,8 @@ def iter_watch_files(
                 if p.is_file():
                     out.append(p)
     except FileNotFoundError:
-        emit("warn", reason="src_missing", src=src_dir)
+        # The loops own announcing this — emitting here fires every scan.
+        emit_debug("warn", reason="src_missing", src=src_dir)
     return out
 
 
@@ -116,7 +117,7 @@ def apply_action(
 
     try:
         result = action.run(src)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         emit("error", name=name, err=str(e))
         return
 
@@ -429,19 +430,30 @@ def run_watch_poll(
             done_store=done_store,
             recursive=recursive,
         )
+    present = True
     while True:
-        scan_once(
-            src_dir,
-            action,
-            exts=exts,
-            min_bytes=min_bytes,
-            stable_needed=stable_needed,
-            settle_interval=min(poll, 1.0),
-            state=state,
-            wait=False,
-            done_store=done_store,
-            recursive=recursive,
-        )
+        # Poll recovers on its own — every cycle re-scans — but it used to do
+        # so mutely, warning on each scan and never saying it came back.
+        alive = src_dir.is_dir()
+        if alive and not present:
+            emit("src_restored", src=src_dir)
+        elif not alive and present:
+            emit("src_lost", src=src_dir, action="scanning until it returns")
+        present = alive
+
+        if alive:
+            scan_once(
+                src_dir,
+                action,
+                exts=exts,
+                min_bytes=min_bytes,
+                stable_needed=stable_needed,
+                settle_interval=min(poll, 1.0),
+                state=state,
+                wait=False,
+                done_store=done_store,
+                recursive=recursive,
+            )
         time.sleep(poll)
 
 

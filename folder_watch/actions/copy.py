@@ -9,6 +9,7 @@ from folder_watch.support.log import emit
 from folder_watch.support.notify import human_size, notify
 from folder_watch.support.paths import DestUnavailable, ensure_dest_dir
 
+
 class CopyAction(Action):
     name = "copy"
     default_ext = "mp4"

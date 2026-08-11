@@ -8,6 +8,7 @@ from folder_watch.actions.base import Action
 from folder_watch.support.log import emit
 from folder_watch.support.paths import DestUnavailable, ensure_dest_dir
 
+
 class UnzipAction(Action):
     name = "unzip"
     default_ext = "zip"

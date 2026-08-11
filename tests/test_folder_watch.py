@@ -14,9 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import _isolate  # noqa: E402,F401  (must precede folder_watch — redirects state)
+import _isolate  # noqa: F401  (must precede folder_watch — redirects state)
 
-from folder_watch import (  # noqa: E402
+from folder_watch import (
     CopyAction,
     UnzipAction,
     match_ext,
@@ -94,7 +94,9 @@ class TestUnzipAction(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _make_zip(self, name: str, payload: str = "payload.txt", content: bytes = b"hi") -> Path:
+    def _make_zip(
+        self, name: str, payload: str = "payload.txt", content: bytes = b"hi"
+    ) -> Path:
         payload_path = self.tmp / payload
         payload_path.write_bytes(content)
         zpath = self.inbox / name
@@ -435,8 +437,8 @@ class TestDryRunAndPartials(unittest.TestCase):
             presets_mod.env = real
 
     def test_partial_names(self):
-        from folder_watch.support.partials import is_partial_filename
         from folder_watch import should_watch_name
+        from folder_watch.support.partials import is_partial_filename
 
         self.assertTrue(is_partial_filename("Video.mp4.part"))
         self.assertTrue(is_partial_filename("foo.tmp"))
@@ -591,6 +593,46 @@ class TestBaselinePending(unittest.TestCase):
         self.assertEqual(len(DoneStore(self.tmp / "done.json")), 1)
 
 
+class TestLaunchAgentPlist(unittest.TestCase):
+    def _plist(self, log: Path) -> str:
+        from folder_watch.support.launchd import build_plist, stdio_log_path
+
+        return build_plist(
+            label="com.folder-watch.demo",
+            preset="demo",
+            python=Path("/x/.venv/bin/python"),
+            root=Path("/x"),
+            log_path=log,
+            stdio_path=stdio_log_path(log),
+            path_env="/usr/bin:/bin",
+        )
+
+    def test_stdio_never_shares_the_log_file(self):
+        """Two writers on one file duplicate and overwrite each other mid-line."""
+        from folder_watch.support.launchd import stdio_log_path
+
+        for log in (Path("/s/a.log"), Path("/s/a"), Path("/s/a.b.log")):
+            self.assertNotEqual(stdio_log_path(log), log)
+
+        import xml.etree.ElementTree as ET
+
+        log = Path("/s/demo.log")
+        strings = [
+            e.text for e in ET.fromstring(self._plist(log)).iter("string")
+        ]
+        self.assertIn(str(log), strings, "--log missing")
+        self.assertIn("/s/demo.out.log", strings, "stdio path missing")
+        self.assertEqual(strings.count(str(log)), 1, "log file has two writers")
+
+    def test_plist_escapes_xml(self):
+        """A path with & or < produced a plist launchctl refuses to load."""
+        import xml.etree.ElementTree as ET
+
+        log = Path("/s/Aziz & Co <v2>.log")
+        root = ET.fromstring(self._plist(log))  # raises if malformed
+        self.assertIn(str(log), [e.text for e in root.iter("string")])
+
+
 class TestSettleNonBlocking(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -599,8 +641,8 @@ class TestSettleNonBlocking(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_open_file_stays_waiting(self):
-        from folder_watch import settle_step
         import folder_watch.core.watch as watch_mod
+        from folder_watch import settle_step
 
         f = self.tmp / "enc.mp4"
         f.write_bytes(b"x" * 100)
@@ -620,8 +662,8 @@ class TestSettleNonBlocking(unittest.TestCase):
 
     def test_lsof_not_called_while_file_grows(self):
         """lsof costs ~250ms; a growing file is proof enough of a writer."""
-        from folder_watch import settle_step
         import folder_watch.core.watch as watch_mod
+        from folder_watch import settle_step
 
         f = self.tmp / "growing.mp4"
         calls: list[Path] = []
@@ -652,8 +694,8 @@ class TestSettleNonBlocking(unittest.TestCase):
 
     def test_stall_clock_tracks_size_changes(self):
         """last_change drives give_up; it must only move when the file does."""
-        from folder_watch import settle_step
         import folder_watch.core.watch as watch_mod
+        from folder_watch import settle_step
 
         f = self.tmp / "enc.mp4"
         f.write_bytes(b"x" * 100)
@@ -678,8 +720,8 @@ class TestSettleNonBlocking(unittest.TestCase):
 
     def test_stalled_zero_byte_file_ages_out(self):
         """The Video-5-v2.mp4 case: 0 bytes forever must not watch forever."""
-        from folder_watch import settle_step
         import folder_watch.core.watch as watch_mod
+        from folder_watch import settle_step
 
         f = self.tmp / "aborted.mp4"
         f.write_bytes(b"")
@@ -704,8 +746,8 @@ class TestSettleNonBlocking(unittest.TestCase):
 
     def test_below_min_bytes_skips_lsof(self):
         """The 0-byte stall case: don't burn an lsof every tick on it."""
-        from folder_watch import settle_step
         import folder_watch.core.watch as watch_mod
+        from folder_watch import settle_step
 
         f = self.tmp / "stalled.mp4"
         f.write_bytes(b"")
@@ -724,8 +766,8 @@ class TestSettleNonBlocking(unittest.TestCase):
             watch_mod.is_open = old
 
     def test_closed_file_reaches_ready(self):
-        from folder_watch import settle_step
         import folder_watch.core.watch as watch_mod
+        from folder_watch import settle_step
 
         f = self.tmp / "done.mp4"
         f.write_bytes(b"x" * 100)

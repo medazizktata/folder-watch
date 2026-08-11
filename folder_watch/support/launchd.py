@@ -4,8 +4,20 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
 from folder_watch.support.paths import LABEL_PREFIX, LAUNCH_AGENTS, STATE_DIR
+
+
+def stdio_log_path(log_path: Path) -> Path:
+    """Where launchd's stdout/stderr go — never the same file as --log.
+
+    Pointing StandardOutPath at the --log file gives that file two writers with
+    independent offsets: Python's FileHandler and launchd's redirect. Every
+    line lands twice and they overwrite each other mid-line, so the log ends up
+    both duplicated and corrupted.
+    """
+    return log_path.with_name(f"{log_path.stem}.out{log_path.suffix or '.log'}")
 
 
 def service_label(preset: str) -> str:
@@ -41,6 +53,60 @@ def _resolve_python_and_root(program: Path) -> tuple[Path, Path]:
     return py, root
 
 
+def build_plist(
+    *,
+    label: str,
+    preset: str,
+    python: Path,
+    root: Path,
+    log_path: Path,
+    stdio_path: Path,
+    path_env: str,
+) -> str:
+    """The plist body. Separate from install_service so it can be checked
+    without registering anything with launchd."""
+    x = xml_escape  # paths and preset names are user data going into XML
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{x(label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{x(str(python))}</string>
+    <string>-m</string>
+    <string>folder_watch</string>
+    <string>--preset</string>
+    <string>{x(preset)}</string>
+    <string>--log</string>
+    <string>{x(str(log_path))}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{x(str(root))}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>{x(str(root))}</string>
+    <key>PATH</key>
+    <string>{x(path_env)}</string>
+    <key>HOME</key>
+    <string>{x(str(Path.home()))}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{x(str(stdio_path))}</string>
+  <key>StandardErrorPath</key>
+  <string>{x(str(stdio_path))}</string>
+</dict>
+</plist>
+"""
+
+
 def install_service(
     *,
     preset: str,
@@ -55,46 +121,15 @@ def install_service(
 
     python, root = _resolve_python_and_root(program)
     local_bin = Path.home() / ".local" / "bin"
-    path_env = f"{local_bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-    body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{python}</string>
-    <string>-m</string>
-    <string>folder_watch</string>
-    <string>--preset</string>
-    <string>{preset}</string>
-    <string>--log</string>
-    <string>{log_path}</string>
-  </array>
-  <key>WorkingDirectory</key>
-  <string>{root}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PYTHONPATH</key>
-    <string>{root}</string>
-    <key>PATH</key>
-    <string>{path_env}</string>
-    <key>HOME</key>
-    <string>{Path.home()}</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>{log_path}</string>
-  <key>StandardErrorPath</key>
-  <string>{log_path}</string>
-</dict>
-</plist>
-"""
+    body = build_plist(
+        label=label,
+        preset=preset,
+        python=python,
+        root=root,
+        log_path=log_path,
+        stdio_path=stdio_log_path(log_path),
+        path_env=f"{local_bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    )
     plist.write_text(body)
     subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, check=False)
     r = subprocess.run(
@@ -104,14 +139,18 @@ def install_service(
         check=False,
     )
     if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip() or r.stdout.strip() or "launchctl load failed")
+        raise RuntimeError(
+            r.stderr.strip() or r.stdout.strip() or "launchctl load failed"
+        )
     return plist
 
 
 def uninstall_service(*, preset: str) -> Path | None:
     plist = service_plist_path(preset)
     if plist.is_file():
-        subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, check=False)
+        subprocess.run(
+            ["launchctl", "unload", str(plist)], capture_output=True, check=False
+        )
         plist.unlink(missing_ok=True)
         return plist
     return None

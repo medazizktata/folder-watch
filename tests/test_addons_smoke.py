@@ -23,13 +23,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _isolate  # noqa: E402,F401  (must precede folder_watch — redirects state)
+import _isolate  # noqa: F401  (must precede folder_watch — redirects state)
 
-from folder_watch import (  # noqa: E402
-    UnzipAction,
-    build_convx_watch_cmd,
-    main as fw_main,
-)
+from folder_watch import UnzipAction, build_convx_watch_cmd
+from folder_watch import main as fw_main
 
 
 def fw_cmd(*args: str) -> list[str]:
@@ -131,7 +128,8 @@ def test_unzip() -> list[str]:
         with zipfile.ZipFile(z4, "w") as zf:
             zf.writestr("d.txt", "z")
         code = fw_main(
-            ["unzip", str(inbox), "--mode", "named", "--once", "--stable", "1", "--ext", "zip"]
+            ["unzip", str(inbox), "--mode", "named", "--once",
+             "--stable", "1", "--ext", "zip"]
         )
         if code != 0 or not (inbox / "cli" / "d.txt").is_file():
             fails.append("cli")
