@@ -55,6 +55,25 @@ def read_pidfile(path: Path) -> dict[str, Any] | None:
     return data
 
 
+def prune_pidfiles(*, dry_run: bool = False) -> list[Path]:
+    """Remove pidfiles whose process is gone. Returns what was (or would be) removed."""
+    removed: list[Path] = []
+    if not PID_DIR.is_dir():
+        return removed
+    for path in sorted(PID_DIR.glob("*.json")):
+        data = read_pidfile(path)
+        pid = int((data or {}).get("pid") or 0)
+        if data is not None and _pid_alive(pid):
+            continue
+        removed.append(path)
+        if not dry_run:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return removed
+
+
 def collect_watch_status(
     *,
     preset: str | None = None,

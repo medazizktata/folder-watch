@@ -6,6 +6,7 @@ from pathlib import Path
 
 from folder_watch.actions.base import Action
 from folder_watch.support.log import emit
+from folder_watch.support.paths import DestUnavailable, ensure_dest_dir
 
 class UnzipAction(Action):
     name = "unzip"
@@ -18,6 +19,7 @@ class UnzipAction(Action):
         to: Path | None = None,
         *,
         dry_run: bool = False,
+        create_dest: bool = False,
     ) -> None:
         if mode not in ("named", "same", "to"):
             raise ValueError(f"unknown unzip mode: {mode}")
@@ -26,6 +28,7 @@ class UnzipAction(Action):
         self.mode = mode
         self.to = to.expanduser() if to else None
         self.dry_run = dry_run
+        self.create_dest = create_dest
 
     def describe(self) -> str:
         if self.mode == "to":
@@ -76,6 +79,16 @@ class UnzipAction(Action):
                         )
                         return "fail"
                 members = zf.namelist()
+                try:
+                    # named/same land beside the zip, so their parent exists by
+                    # definition. Only --mode to can aim at an unmounted volume,
+                    # and it's --to itself that must already be reachable —
+                    # the per-zip subfolder under it is ours to create.
+                    if self.mode == "to" and self.to is not None:
+                        ensure_dest_dir(self.to, create_parents=self.create_dest)
+                except DestUnavailable as e:
+                    emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
+                    return "fail"
                 target.mkdir(parents=True, exist_ok=True)
                 zf.extractall(target)
         except (zipfile.BadZipFile, OSError) as e:

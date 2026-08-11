@@ -7,6 +7,7 @@ from folder_watch.actions.base import Action
 from folder_watch.support.copy_io import atomic_copy
 from folder_watch.support.log import emit
 from folder_watch.support.notify import human_size, notify
+from folder_watch.support.paths import DestUnavailable, ensure_dest_dir
 
 class CopyAction(Action):
     name = "copy"
@@ -20,11 +21,13 @@ class CopyAction(Action):
         notify_on_done: bool = True,
         retries: int = 5,
         dry_run: bool = False,
+        create_dest: bool = False,
     ) -> None:
         self.dest = dest.expanduser()
         self.notify_on_done = notify_on_done
         self.retries = retries
         self.dry_run = dry_run
+        self.create_dest = create_dest
 
     def describe(self) -> str:
         bits = [f"copy -> {self.dest}"]
@@ -45,7 +48,14 @@ class CopyAction(Action):
         if self.dry_run:
             emit("would_copy", name=path.name, size=size, to=dest)
             return "would_copy"
-        self.dest.mkdir(parents=True, exist_ok=True)
+        try:
+            ensure_dest_dir(self.dest, create_parents=self.create_dest)
+        except DestUnavailable as e:
+            # Never mark done — the file must be retried once the volume is back.
+            emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
+            if self.notify_on_done:
+                notify("folder-watch destination missing", f"{path.name} not copied")
+            return "fail"
         try:
             atomic_copy(path, dest, retries=self.retries)
         except OSError as e:

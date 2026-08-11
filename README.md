@@ -61,7 +61,29 @@ folder-watch copy ./Out --to ./Drive --retries 8
 # status of running watchers
 folder-watch status
 folder-watch status --preset la-chaise-v1
+
+# drop done-state whose source is gone, and stale pidfiles (dry by default)
+folder-watch prune
+folder-watch prune --yes
 ```
+
+## When the folder goes away
+
+**Watched folder deleted, renamed, or its volume unmounted** — FSEvents just goes
+quiet, so the watcher polls for the directory every 5s rather than trusting the
+silence. On loss it logs `src_lost`, tears down the observer and waits; when the
+folder returns it logs `src_restored` and re-arms.
+
+A restore always does a **catch-up** scan, even without `--catch-up`: anything
+that landed while the directory was gone is work that hasn't been done. The
+done-store makes that safe — files already handled are skipped, not redone.
+
+**Destination missing** — `--to` is *not* created recursively. On an unmounted
+drive `mkdir -p` happily rebuilds the whole path as ordinary local folders, so
+files land on the boot disk, get reported `copied`, and get recorded as done —
+silently never reaching the drive. Instead the copy fails with
+`dest_unavailable` and is **not** marked done, so it retries once the volume is
+back. `--create-dest` opts back into building the full path.
 
 Ignores partial/scratch names: `*.part`, `*.tmp`, `*.crdownload`, `._*`, `~$…`, etc.
 

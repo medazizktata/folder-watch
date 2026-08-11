@@ -77,6 +77,57 @@ class DoneStore:
         self._data[key] = {"ts": time.time(), **{k: _jsonable(v) for k, v in meta.items()}}
         self.save()
 
+    @staticmethod
+    def key_src(key: str) -> str | None:
+        """Source path out of a key: action|src|dest|mode|size|mtime.
+
+        Returns None if the key doesn't have that shape, so a weird key is
+        left alone rather than pruned on a bad guess.
+        """
+        parts = key.split("|")
+        if len(parts) < 6:
+            return None
+        # dest may itself contain "|", so count in from both ends.
+        return "|".join(parts[1:-4]) if len(parts) > 6 else parts[1]
+
+    def dead_keys(self) -> list[str]:
+        """Entries whose source file is gone.
+
+        Entries are keyed by size+mtime, so once a file is deleted or rewritten
+        its old entry can never match again — it is pure dead weight.
+        """
+        dead: list[str] = []
+        for key in self._data:
+            src = self.key_src(key)
+            if src is None:
+                continue
+            try:
+                if not Path(src).exists():
+                    dead.append(key)
+            except OSError:
+                continue
+        return dead
+
+    def prune(self) -> int:
+        """Drop dead entries. Returns how many went."""
+        dead = self.dead_keys()
+        for key in dead:
+            self._data.pop(key, None)
+        if dead:
+            self.save()
+        return len(dead)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __bool__(self) -> bool:
+        """A store is a store even when empty.
+
+        Without this, __len__ makes a fresh store falsy, and `if done_store:`
+        silently reads as "no done-store configured".
+        """
+        return True
+
     def mark_baseline_file(
         self,
         action: str,

@@ -14,6 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import _isolate  # noqa: E402,F401  (must precede folder_watch — redirects state)
+
 from folder_watch import (  # noqa: E402
     CopyAction,
     UnzipAction,
@@ -305,6 +307,82 @@ class TestDryRunAndPartials(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_missing_dest_parent_is_not_conjured(self):
+        """An unmounted drive must not be rebuilt as local folders."""
+        from folder_watch.support.paths import DestUnavailable, ensure_dest_dir
+
+        missing = self.tmp / "NotMounted" / "Drive" / "Project" / "Output"
+        with self.assertRaises(DestUnavailable):
+            ensure_dest_dir(missing)
+        self.assertFalse((self.tmp / "NotMounted").exists())
+
+        # An existing parent means the leaf is just a folder we haven't made yet.
+        ok = self.dest / "V2"
+        ensure_dest_dir(ok)
+        self.assertTrue(ok.is_dir())
+
+        # --create-dest is the explicit opt-in to the old behaviour.
+        ensure_dest_dir(missing, create_parents=True)
+        self.assertTrue(missing.is_dir())
+
+    def test_copy_to_unmounted_dest_fails_and_stays_retryable(self):
+        """The bad case: copied to local disk, marked done, never retried."""
+        from folder_watch.support.state import DoneStore, file_identity
+
+        src = self.src / "clip.mp4"
+        src.write_bytes(b"x" * 128)
+        gone = self.tmp / "NotMounted" / "Drive" / "Output"
+        action = CopyAction(gone, notify_on_done=False)
+
+        self.assertEqual(action.run(src), "fail")
+        self.assertFalse((self.tmp / "NotMounted").exists(), "rebuilt the tree")
+
+        # "fail" must never reach the done-store, or the retry gets skipped.
+        store = DoneStore(self.tmp / "done.json")
+        size, mtime_ns = file_identity(src)
+        key = DoneStore.make_key(
+            "copy", src, size=size, mtime_ns=mtime_ns, dest=gone / src.name
+        )
+        self.assertFalse(store.is_done(key))
+
+        # Once the volume is back, the same file copies normally.
+        gone.mkdir(parents=True)
+        self.assertEqual(action.run(src), "copied")
+        self.assertEqual((gone / "clip.mp4").read_bytes(), b"x" * 128)
+
+    def test_done_store_prunes_vanished_sources(self):
+        from folder_watch.support.state import DoneStore, file_identity
+
+        store = DoneStore(self.tmp / "prune.json")
+        alive = self.src / "alive.mp4"
+        dead = self.src / "dead.mp4"
+        for f in (alive, dead):
+            f.write_bytes(b"x" * 10)
+
+        keys = {}
+        for f in (alive, dead):
+            size, mtime_ns = file_identity(f)
+            keys[f] = DoneStore.make_key("copy", f, size=size, mtime_ns=mtime_ns)
+            store.mark(keys[f], name=f.name)
+        self.assertEqual(len(store), 2)
+
+        dead.unlink()
+        self.assertEqual(store.prune(), 1)
+        self.assertTrue(store.is_done(keys[alive]))
+        self.assertFalse(store.is_done(keys[dead]))
+
+        # Survives a reload — pruning is persisted, not just in memory.
+        self.assertEqual(len(DoneStore(self.tmp / "prune.json")), 1)
+
+    def test_empty_done_store_is_truthy(self):
+        """__len__ would otherwise make a fresh store read as 'not configured'."""
+        from folder_watch.support.state import DoneStore
+
+        empty = DoneStore(self.tmp / "fresh.json")
+        self.assertEqual(len(empty), 0)
+        self.assertTrue(empty)
+        self.assertTrue(bool(empty))
+
     def test_env_parsing(self):
         from folder_watch.support.env import parse_env
 
@@ -408,6 +486,9 @@ class TestDoneStoreAndAtomic(unittest.TestCase):
         src = self.tmp / "src.bin"
         dest = self.tmp / "dest" / "out.bin"
         src.write_bytes(b"hello-atomic")
+        # The caller owns dest.parent now — atomic_copy creating it would
+        # rebuild an unmounted volume's tree on local disk.
+        dest.parent.mkdir(parents=True)
         atomic_copy(src, dest, retries=2)
         self.assertEqual(dest.read_bytes(), b"hello-atomic")
         self.assertFalse(any(self.tmp.joinpath("dest").glob("*.tmp")))

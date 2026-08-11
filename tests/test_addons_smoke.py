@@ -21,6 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _isolate  # noqa: E402,F401  (must precede folder_watch — redirects state)
 
 from folder_watch import (  # noqa: E402
     UnzipAction,

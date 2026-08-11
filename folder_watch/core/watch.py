@@ -26,6 +26,14 @@ STALL_TIMEOUT = 300.0
 # event handler re-queues it as soon as it grows.
 BASELINE_LSOF_WINDOW = 60.0
 
+# How often to confirm the watched directory still exists, and how often to
+# re-check while waiting for it to come back. FSEvents goes quiet when the
+# directory is deleted or its volume unmounts — without this the process stays
+# alive and healthy forever, watching nothing and logging nothing.
+SRC_CHECK_INTERVAL = 5.0
+SRC_WAIT_INTERVAL = 5.0
+SRC_WAIT_LOG_INTERVAL = 60.0
+
 
 def _state_key(src: Path) -> str:
     """Full path key so nested same-basename files don't collide."""
@@ -490,54 +498,93 @@ def run_watch_event(
             if not already_queued:
                 emit("event", name=path.name, path=rel)
 
-    handler = Handler()
-    observer = Observer()
-    observer.schedule(handler, str(src_dir), recursive=recursive)
-    observer.start()
+    def _prime(*, restoring: bool = False) -> None:
+        """Catch-up scan or baseline seed — what startup does, reusable on restore.
 
-    if catch_up:
-        scan_once(
-            src_dir,
-            action,
-            exts=exts,
-            min_bytes=min_bytes,
-            stable_needed=stable_needed,
-            settle_interval=settle_interval,
-            state=state,
-            wait=False,
-            done_store=done_store,
-            recursive=recursive,
-        )
-        for p in iter_watch_files(src_dir, exts, recursive=recursive):
-            try:
-                resolved = p.resolve()
-            except OSError:
-                continue
-            if state.get(_state_key(resolved), {}).get("done"):
-                continue
+        Baseline semantics ("ignore what's already finished") are right at
+        startup and wrong after a restore: anything that landed while the
+        directory was gone is work we haven't done. Catch-up is safe to force
+        because the done-store persists across the outage, so files we already
+        handled are skipped rather than redone.
+        """
+        if catch_up or restoring:
+            scan_once(
+                src_dir,
+                action,
+                exts=exts,
+                min_bytes=min_bytes,
+                stable_needed=stable_needed,
+                settle_interval=settle_interval,
+                state=state,
+                wait=False,
+                done_store=done_store,
+                recursive=recursive,
+            )
+            for p in iter_watch_files(src_dir, exts, recursive=recursive):
+                try:
+                    resolved = p.resolve()
+                except OSError:
+                    continue
+                if state.get(_state_key(resolved), {}).get("done"):
+                    continue
+                with lock:
+                    pending[str(resolved)] = time.monotonic()
+        else:
+            unsettled = seed_baseline(
+                src_dir,
+                action,
+                exts=exts,
+                min_bytes=min_bytes,
+                state=state,
+                done_store=done_store,
+                recursive=recursive,
+            )
+            started = time.monotonic()
             with lock:
-                pending[str(resolved)] = time.monotonic()
-    else:
-        unsettled = seed_baseline(
-            src_dir,
-            action,
-            exts=exts,
-            min_bytes=min_bytes,
-            state=state,
-            done_store=done_store,
-            recursive=recursive,
-        )
-        now = time.monotonic()
-        with lock:
-            for p in unsettled:
-                pending[str(p)] = now
+                for p in unsettled:
+                    pending[str(p)] = started
+
+    def _start_observer():  # type: ignore[no-untyped-def]
+        obs = Observer()
+        obs.schedule(handler, str(src_dir), recursive=recursive)
+        obs.start()
+        return obs
+
+    handler = Handler()
+    observer = _start_observer()
+    _prime()
 
     debounce_s = max(debounce_ms, 50) / 1000.0
+    last_src_check = time.monotonic()
 
     try:
         while True:
             time.sleep(0.05)
             now = time.monotonic()
+
+            # FSEvents simply goes quiet if the directory is deleted or its
+            # volume unmounts, so poll for it rather than trusting silence.
+            if now - last_src_check >= SRC_CHECK_INTERVAL:
+                last_src_check = now
+                if not src_dir.is_dir():
+                    emit("src_lost", src=src_dir, action="waiting for it to return")
+                    observer.stop()
+                    observer.join(timeout=5)
+                    with lock:
+                        pending.clear()
+                        watching.clear()
+                        state.clear()
+                    waited = 0.0
+                    while not src_dir.is_dir():
+                        time.sleep(SRC_WAIT_INTERVAL)
+                        waited += SRC_WAIT_INTERVAL
+                        if waited % SRC_WAIT_LOG_INTERVAL < SRC_WAIT_INTERVAL:
+                            emit("src_waiting", src=src_dir, waited_s=int(waited))
+                    emit("src_restored", src=src_dir, waited_s=int(waited))
+                    observer = _start_observer()
+                    _prime(restoring=True)
+                    last_src_check = time.monotonic()
+                    continue
 
             with lock:
                 for key, ts in list(pending.items()):
@@ -649,7 +696,7 @@ def run_watch(
         recursive=recursive,
         catch_up=(catch_up if not once else "n/a"),
         mode=("once" if once else "watch"),
-        done_store=(str(done_store.path) if done_store else None),
+        done_store=(str(done_store.path) if done_store is not None else None),
     )
 
     if not once:

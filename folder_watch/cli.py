@@ -21,8 +21,13 @@ from folder_watch.support.launchd import (
     uninstall_service,
 )
 from folder_watch.support.log import set_json_mode, set_verbose, setup_logging
-from folder_watch.support.paths import PRESETS_PATH
-from folder_watch.support.pidfile import collect_watch_status
+from folder_watch.support.paths import PRESETS_PATH, STATE_DIR
+from folder_watch.support.pidfile import (
+    clear_pidfile,
+    collect_watch_status,
+    prune_pidfiles,
+    write_pidfile,
+)
 from folder_watch.support.state import DoneStore
 
 
@@ -41,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  convx  SRC --format EXT [--ext png,jpg]   # → convx watch\n"
             "  service install|uninstall|status --preset NAME\n"
             "  status [--preset NAME]   # running watchers\n"
+            "  prune [--yes]            # drop dead done-state and stale pidfiles\n"
         ),
     )
     p.add_argument("action", nargs="?", help="Action or 'service'")
@@ -146,6 +152,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="copy: retries on OSError (default 5)",
     )
     p.add_argument(
+        "--create-dest",
+        action="store_true",
+        help=(
+            "create the full destination path if missing. Off by default: on an "
+            "unmounted drive that silently rebuilds the tree on local disk"
+        ),
+    )
+    p.add_argument(
         "--version",
         action="version",
         version=f"folder-watch {__version__}",
@@ -167,12 +181,14 @@ def build_action(name: str, args: argparse.Namespace) -> Action:
             notify_on_done=getattr(args, "notify", True) and not dry,
             retries=getattr(args, "retries", 5),
             dry_run=dry,
+            create_dest=getattr(args, "create_dest", False),
         )
     if name == "unzip":
         return UnzipAction(
             mode=args.mode,
             to=Path(args.to) if args.to else None,
             dry_run=dry,
+            create_dest=getattr(args, "create_dest", False),
         )
     raise SystemExit(f"error: unknown action {name!r}")
 
@@ -202,6 +218,47 @@ def run_status_cli(argv: list[str]) -> int:
                 print(f"    {ln}")
         print()
     return 0 if alive_any else 1
+
+
+def run_prune_cli(argv: list[str]) -> int:
+    """Clear out state that no longer refers to anything real."""
+    ap = argparse.ArgumentParser(prog="folder-watch prune")
+    ap.add_argument("--yes", action="store_true", help="actually delete (default: dry)")
+    args = ap.parse_args(argv)
+    dry = not args.yes
+
+    stores = sorted(STATE_DIR.glob("done-*.json"))
+    dropped_entries = 0
+    emptied: list[Path] = []
+    for path in stores:
+        store = DoneStore(path)
+        before = len(store)
+        gone = len(store.dead_keys()) if dry else store.prune()
+        dropped_entries += gone
+        if gone == before and before > 0:
+            emptied.append(path)
+
+    if not dry:
+        for path in emptied:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    pidfiles = prune_pidfiles(dry_run=dry)
+
+    verb = "would remove" if dry else "removed"
+    print(f"done-state: {len(stores)} store(s), {verb} {dropped_entries} dead entr(ies)")
+    if emptied:
+        print(f"  {verb} {len(emptied)} store file(s) left with nothing in them:")
+        for p in emptied:
+            print(f"    {p.name}")
+    print(f"pidfiles: {verb} {len(pidfiles)} stale")
+    for p in pidfiles:
+        print(f"    {p.name}")
+    if dry:
+        print("\ndry run — re-run with --yes to apply")
+    return 0
 
 
 def run_service_cli(argv: list[str]) -> int:
@@ -239,6 +296,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_service_cli(argv[1:])
     if argv and argv[0] == "status":
         return run_status_cli(argv[1:])
+    if argv and argv[0] == "prune":
+        return run_prune_cli(argv[1:])
 
     args = build_parser().parse_args(argv)
     level = args.log_level
@@ -423,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"saved preset {args.save_preset!r} -> {PRESETS_PATH}")
             return 0
 
+        watch_name = args.preset or f"convx-{src.name}"
         try:
             cmd = build_convx_watch_cmd(
                 src,
@@ -440,7 +500,23 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
-        return run_convx_watch(cmd)
+        # convx never went through run_watch, so it never wrote a pidfile and
+        # was invisible to `folder-watch status`.
+        write_pidfile(
+            watch_name,
+            {
+                "name": watch_name,
+                "preset": args.preset,
+                "src": str(src.expanduser()),
+                "action": "convx",
+                "to": None,
+                "log": str(args.log) if args.log else None,
+            },
+        )
+        try:
+            return run_convx_watch(cmd)
+        finally:
+            clear_pidfile(watch_name)
 
     action_cls = ACTIONS[action_name]
     if exts_raw is None:

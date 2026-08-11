@@ -17,8 +17,11 @@ def atomic_copy(
     retries: int = 5,
     backoff: float = 0.5,
 ) -> None:
-    """Copy to dest via temp file + rename; retry transient OSError (Drive)."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    """Copy to dest via temp file + rename; retry transient OSError (Drive).
+
+    The caller owns creating dest.parent — see paths.ensure_dest_dir. Creating
+    it here would silently rebuild an unmounted volume's tree on local disk.
+    """
     last: OSError | None = None
     for attempt in range(1, retries + 1):
         tmp: Path | None = None
