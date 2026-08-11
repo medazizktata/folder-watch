@@ -11,3 +11,6 @@ __pycache__/
 htmlcov/
 dist/
 build/
+
+# Local paths and account identifiers — .env.example documents the shape
+.env

@@ -5,18 +5,34 @@ import json
 from pathlib import Path
 from typing import Any
 
+from folder_watch.support.env import env
 from folder_watch.support.paths import CONFIG_DIR, LEGACY_PRESETS, PRESETS_PATH
 
-DEFAULT_PRESETS: dict[str, dict[str, Any]] = {
-    "la-chaise-v1": {
+
+def drive_root() -> Path | None:
+    """Base of the Google Drive CloudStorage mount, from .env.
+
+    Returns None when unconfigured — the account address and shared-drive id
+    are local details, so they live in .env rather than in this file.
+    """
+    email = env("FOLDER_WATCH_DRIVE_EMAIL")
+    if not email:
+        return None
+    root = Path.home() / "Library" / "CloudStorage" / f"GoogleDrive-{email}"
+    shortcut = env("FOLDER_WATCH_DRIVE_SHORTCUT_ID")
+    return root / ".shortcut-targets-by-id" / shortcut if shortcut else root
+
+
+def _la_chaise() -> dict[str, Any] | None:
+    src = env("FOLDER_WATCH_LA_CHAISE_SRC")
+    rel = env("FOLDER_WATCH_LA_CHAISE_DEST")
+    root = drive_root()
+    if not src or not rel or root is None:
+        return None
+    return {
         "action": "copy",
-        "src": "/Users/MAC/Desktop/project-batch2/Output",
-        "to": (
-            "/Users/MAC/Library/CloudStorage/"
-            "GoogleDrive-you@example.com/"
-            ".shortcut-targets-by-id/SHORTCUT_ID/"
-            "Client/Project/Batch 2/Output/Videos /V2"
-        ),
+        "src": src,
+        "to": str(root / rel),
         "ext": ["mp4"],
         "poll": 30,
         "stable": 3,
@@ -24,7 +40,22 @@ DEFAULT_PRESETS: dict[str, dict[str, Any]] = {
         "backend": "event",
         "debounce_ms": 500,
     }
-}
+
+
+def _defaults() -> dict[str, dict[str, Any]]:
+    """Built-ins, omitted entirely when .env doesn't configure them.
+
+    Anything in ~/.config/folder-watch/presets.json overrides these, so a
+    missing .env is not a problem for presets you've already saved.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    la_chaise = _la_chaise()
+    if la_chaise is not None:
+        out["la-chaise-v1"] = la_chaise
+    return out
+
+
+DEFAULT_PRESETS: dict[str, dict[str, Any]] = _defaults()
 
 def load_presets() -> dict[str, dict[str, Any]]:
     merged = dict(DEFAULT_PRESETS)

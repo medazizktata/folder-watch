@@ -94,6 +94,19 @@ watch-convx ~/Inbox --format webp --ext png,jpg
 
 Presets: `~/.config/folder-watch/presets.json`
 
+## Local config (`.env`)
+
+Machine-local paths and account identifiers stay out of source:
+
+```bash
+cp .env.example .env
+```
+
+Read from `$FOLDER_WATCH_ENV`, then `~/.config/folder-watch/.env`, then the
+repo root — first one found wins, and a real environment variable overrides the
+file. Optional: presets saved in `presets.json` need no `.env` at all. It only
+populates the built-in defaults, which are omitted when unset.
+
 ## Tests
 
 ```bash

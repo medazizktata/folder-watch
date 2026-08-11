@@ -305,6 +305,57 @@ class TestDryRunAndPartials(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_env_parsing(self):
+        from folder_watch.support.env import parse_env
+
+        parsed = parse_env(
+            "\n".join(
+                [
+                    "# a comment",
+                    "",
+                    "PLAIN=value",
+                    "export EXPORTED=yes",
+                    'QUOTED="has spaces"',
+                    "SINGLE='single'",
+                    "EMPTY=",
+                    "INNER=Videos /V2",  # interior spaces must survive
+                    "no_equals_sign",
+                ]
+            )
+        )
+        self.assertEqual(parsed["PLAIN"], "value")
+        self.assertEqual(parsed["EXPORTED"], "yes")
+        self.assertEqual(parsed["QUOTED"], "has spaces")
+        self.assertEqual(parsed["SINGLE"], "single")
+        self.assertEqual(parsed["EMPTY"], "")
+        self.assertEqual(parsed["INNER"], "Videos /V2")
+        self.assertNotIn("no_equals_sign", parsed)
+
+    def test_env_prefers_real_environment(self):
+        import os
+
+        from folder_watch.support.env import env
+
+        key = "FOLDER_WATCH_TEST_ONLY_VALUE"
+        os.environ[key] = "from-environ"
+        try:
+            self.assertEqual(env(key), "from-environ")
+        finally:
+            del os.environ[key]
+        self.assertEqual(env(key, "fallback"), "fallback")
+
+    def test_drive_root_unset_yields_no_default_preset(self):
+        """No .env must not mean a broken import — just no built-in preset."""
+        import folder_watch.presets as presets_mod
+
+        real = presets_mod.env
+        presets_mod.env = lambda _name, default=None: default
+        try:
+            self.assertIsNone(presets_mod.drive_root())
+            self.assertEqual(presets_mod._defaults(), {})
+        finally:
+            presets_mod.env = real
+
     def test_partial_names(self):
         from folder_watch.support.partials import is_partial_filename
         from folder_watch import should_watch_name
