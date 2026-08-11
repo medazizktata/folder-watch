@@ -183,7 +183,9 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def build_action(name: str, args: argparse.Namespace) -> Action:
+def build_action(
+    name: str, args: argparse.Namespace, *, src_root: Path | None = None
+) -> Action:
     dry = getattr(args, "dry_run", False)
     if name == "copy":
         if not args.to:
@@ -194,6 +196,9 @@ def build_action(name: str, args: argparse.Namespace) -> Action:
             retries=getattr(args, "retries", 5),
             dry_run=dry,
             create_dest=getattr(args, "create_dest", False),
+            # Needed to mirror subdirectories under --to; without it a
+            # --recursive watch flattens same-named files onto each other.
+            src_root=src_root,
         )
     if name == "unzip":
         return UnzipAction(
@@ -561,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        action = build_action(action_name, args)
+        action = build_action(action_name, args, src_root=src)
     except (SystemExit, ValueError) as e:
         msg = e.args[0] if getattr(e, "args", None) else e
         print(msg, file=sys.stderr)

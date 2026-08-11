@@ -593,6 +593,137 @@ class TestBaselinePending(unittest.TestCase):
         self.assertEqual(len(DoneStore(self.tmp / "done.json")), 1)
 
 
+class TestAuditRegressions(unittest.TestCase):
+    """Defects found by independent audit + before/after benchmark."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = self.tmp / "src"
+        self.dest = self.tmp / "dest"
+        self.src.mkdir()
+        self.dest.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_same_size_re_export_is_not_skipped(self):
+        """A re-export at identical length must not leave the old copy in place."""
+        f = self.src / "take.mp4"
+        f.write_bytes(b"V1" + b"x" * 98)
+        action = CopyAction(self.dest, notify_on_done=False)
+        self.assertEqual(action.run(f), "copied")
+        self.assertEqual((self.dest / "take.mp4").read_bytes()[:2], b"V1")
+
+        # Same length, different content — the case size-only comparison missed.
+        time.sleep(0.01)
+        f.write_bytes(b"V2" + b"y" * 98)
+        self.assertEqual(action.run(f), "copied")
+        self.assertEqual((self.dest / "take.mp4").read_bytes()[:2], b"V2")
+
+        # Genuinely unchanged still skips.
+        self.assertEqual(action.run(f), "skip")
+
+    def test_recursive_copy_mirrors_tree(self):
+        """Same basename in two subfolders must not overwrite at the destination."""
+        for sub, payload in (("clientA", b"A"), ("clientB", b"B")):
+            (self.src / sub).mkdir()
+            (self.src / sub / "final.mp4").write_bytes(payload * 64)
+
+        action = CopyAction(self.dest, notify_on_done=False, src_root=self.src)
+        for sub in ("clientA", "clientB"):
+            self.assertEqual(action.run(self.src / sub / "final.mp4"), "copied")
+
+        self.assertEqual((self.dest / "clientA" / "final.mp4").read_bytes(), b"A" * 64)
+        self.assertEqual((self.dest / "clientB" / "final.mp4").read_bytes(), b"B" * 64)
+
+    def test_flat_copy_unchanged_by_mirroring(self):
+        """Without subdirectories the relative path is just the name."""
+        f = self.src / "clip.mp4"
+        f.write_bytes(b"x" * 64)
+        action = CopyAction(self.dest, notify_on_done=False, src_root=self.src)
+        self.assertEqual(action.done_dest(f), self.dest / "clip.mp4")
+        self.assertEqual(action.run(f), "copied")
+
+    def test_stable_one_is_ready_on_first_look(self):
+        """--stable 1 means one observation; returning early cost --once a tick."""
+        import folder_watch.core.watch as watch_mod
+        from folder_watch import settle_step
+
+        f = self.src / "a.mp4"
+        f.write_bytes(b"x" * 100)
+        old = watch_mod.is_open
+        watch_mod.is_open = lambda _p: 0
+        try:
+            track: dict = {}
+            self.assertEqual(
+                settle_step(f, track, min_bytes=1, stable_needed=1), "ready"
+            )
+            # Higher thresholds still take the full count.
+            track = {}
+            for _ in range(2):
+                self.assertEqual(
+                    settle_step(f, track, min_bytes=1, stable_needed=3), "waiting"
+                )
+            self.assertEqual(
+                settle_step(f, track, min_bytes=1, stable_needed=3), "ready"
+            )
+        finally:
+            watch_mod.is_open = old
+
+    def test_baseline_probes_unfinished_file_despite_old_mtime(self):
+        """An old mtime is not proof of finished — a stalled writer holds on."""
+        import os
+
+        import folder_watch.core.watch as watch_mod
+        from folder_watch.core.watch import seed_baseline
+
+        held = self.src / "held.mp4"
+        held.write_bytes(b"x" * 128)
+        old_t = time.time() - 7200
+        os.utime(held, (old_t, old_t))
+
+        probed: list[Path] = []
+        real = watch_mod.is_open
+        watch_mod.is_open = lambda p: probed.append(p) or 1  # writer still on it
+        try:
+            state: dict = {}
+            action = CopyAction(self.dest, notify_on_done=False, src_root=self.src)
+            unsettled = seed_baseline(
+                self.src, action, exts=["mp4"], min_bytes=1, state=state
+            )
+            self.assertEqual([p.name for p in probed], ["held.mp4"])
+            self.assertEqual([p.name for p in unsettled], ["held.mp4"])
+        finally:
+            watch_mod.is_open = real
+
+    def test_baseline_skips_probe_when_output_already_exists(self):
+        """The startup win: a restart over already-copied files pays no lsof."""
+        import os
+
+        import folder_watch.core.watch as watch_mod
+        from folder_watch.core.watch import seed_baseline
+
+        f = self.src / "done.mp4"
+        f.write_bytes(b"x" * 128)
+        action = CopyAction(self.dest, notify_on_done=False, src_root=self.src)
+        self.assertEqual(action.run(f), "copied")  # copy2 preserves mtime
+        old_t = time.time() - 7200
+        os.utime(f, (old_t, old_t))
+        os.utime(self.dest / "done.mp4", (old_t, old_t))
+
+        probed: list[Path] = []
+        real = watch_mod.is_open
+        watch_mod.is_open = lambda p: probed.append(p) or 0
+        try:
+            unsettled = seed_baseline(
+                self.src, action, exts=["mp4"], min_bytes=1, state={}
+            )
+            self.assertEqual(probed, [], "paid for lsof on a file already copied")
+            self.assertEqual(unsettled, [])
+        finally:
+            watch_mod.is_open = real
+
+
 class TestLaunchAgentPlist(unittest.TestCase):
     def _plist(self, log: Path) -> str:
         from folder_watch.support.launchd import build_plist, stdio_log_path

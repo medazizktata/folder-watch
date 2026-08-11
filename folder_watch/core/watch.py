@@ -94,7 +94,15 @@ def apply_action(
 
     with guard:
         prev_state = state.get(sk, {})
-    if prev_state.get("done") and prev_state.get("size") == size:
+    # Size alone misses a same-length rewrite (a re-exported render, an edit
+    # that preserves length), and this path returns without logging anything —
+    # so the destination silently keeps the stale copy. mtime is already in
+    # hand and is already part of the persistent key; use it here too.
+    if (
+        prev_state.get("done")
+        and prev_state.get("size") == size
+        and prev_state.get("mtime_ns") == mtime_ns
+    ):
         return
 
     dest = action.done_dest(src)
@@ -111,7 +119,12 @@ def apply_action(
         )
         if done_store.is_done(key):
             with guard:
-                state[sk] = {"size": size, "stable": stable_needed, "done": True}
+                state[sk] = {
+                    "size": size,
+                    "mtime_ns": mtime_ns,
+                    "stable": stable_needed,
+                    "done": True,
+                }
             emit("skip", name=name, size=size, reason="done_store")
             return
 
@@ -139,7 +152,12 @@ def apply_action(
             return
 
     with guard:
-        state[sk] = {"size": size, "stable": stable_needed, "done": True}
+        state[sk] = {
+            "size": size,
+            "mtime_ns": mtime_ns,
+            "stable": stable_needed,
+            "done": True,
+        }
     if done_store is not None and key is not None:
         done_store.mark(key, name=name, result=result)
 
@@ -195,22 +213,27 @@ def settle_step(
         _progress(track, src, size)
         return "waiting"
 
-    if prev is None or size != prev:
+    changed = prev is None or size != prev
+    if changed:
         track["prev"] = size
         track["stable"] = 1
         emit_debug("settle", name=src.name, size=size, stable=1, reason="size_change")
-        _progress(track, src, size)
-        return "waiting"
+    else:
+        track["stable"] = int(track.get("stable", 0)) + 1
+        emit_debug(
+            "settle",
+            name=src.name,
+            size=size,
+            stable=track["stable"],
+            need=stable_needed,
+        )
 
-    track["stable"] = int(track.get("stable", 0)) + 1
-    emit_debug(
-        "settle",
-        name=src.name,
-        size=size,
-        stable=track["stable"],
-        need=stable_needed,
-    )
+    # Falling through on the first observation matters: with --stable 1 one
+    # look is the whole requirement, and returning early here cost every
+    # --once run an extra settle interval per file.
     if track["stable"] < stable_needed:
+        if changed:
+            _progress(track, src, size)
         return "waiting"
 
     # Size has plateaued — now it's worth paying for lsof. If a writer still
@@ -336,20 +359,31 @@ def seed_baseline(
             resolved = path.resolve()
         except OSError:
             continue
-        # lsof is ~250ms a call, and this runs before the watcher accepts
-        # events — so only probe files recent enough to plausibly be open.
+        # lsof is ~250ms a call and this runs before the watcher accepts
+        # events, so skip it where we safely can. An old mtime is NOT proof a
+        # file is finished — a stalled writer can hold a handle for hours
+        # without touching it — so age alone may only exempt a file whose
+        # output already exists. Everything else gets probed.
+        produced = action.output_exists(path)
         recent = (now - mtime_ns / 1e9) < BASELINE_LSOF_WINDOW
-        if recent:
+        open_now = 0
+        if recent or produced is not True:
             probed += 1
-        if size < min_bytes or (recent and is_open(path)):
+            open_now = is_open(path)
+        if size < min_bytes or open_now:
             unsettled.append(resolved)
             continue
         # Skipping is still the default — starting a watcher must never kick
         # off a surprise run over the whole back catalogue. But say out loud
         # which of these were skipped without ever having been processed.
-        if action.output_exists(path) is False:
+        if produced is False:
             pending.append(path)
-        state[_state_key(path)] = {"size": size, "done": True, "baseline": True}
+        state[_state_key(path)] = {
+            "size": size,
+            "mtime_ns": mtime_ns,
+            "done": True,
+            "baseline": True,
+        }
         if done_store is not None:
             done_store.mark_baseline_file(
                 action.name,
@@ -533,7 +567,13 @@ def run_watch_event(
                 st = state.get(_state_key(path))
             if st and st.get("done") and st.get("baseline"):
                 try:
-                    if path.stat().st_size == st.get("size"):
+                    stat = path.stat()
+                    # A re-export can land at the identical size, so mtime
+                    # decides — otherwise the event is dropped in silence.
+                    if (
+                        stat.st_size == st.get("size")
+                        and stat.st_mtime_ns == st.get("mtime_ns")
+                    ):
                         return
                 except OSError:
                     return
