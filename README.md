@@ -33,10 +33,10 @@ uses them — it works either way.
 
 ## Actions
 
-| Action | Behavior |
-|--------|----------|
-| `copy` | Atomic copy → `--to DIR` (retry on OSError); never deletes source; macOS notif |
-| `unzip` | Extract `.zip`; delete zip only after verified success |
+| Action | Behavior | Defaults |
+|--------|----------|----------|
+| `copy` | Atomic copy → `--to DIR` (retry on OSError); never deletes source; macOS notif. Mirrors subdirectories under `--recursive` | `--ext mp4 --min-bytes 1000000` |
+| `unzip` | Extract `.zip`; delete zip only after **every** member is verified present. `--no-clobber` refuses an archive that would overwrite | `--ext zip --min-bytes 1` |
 | `convx` | → `convx watch` (in-place) |
 | `service` | LaunchAgent install / uninstall / status |
 
@@ -112,6 +112,12 @@ silently never reaching the drive. Instead the copy fails with
 back. `--create-dest` opts back into building the full path.
 
 Ignores partial/scratch names: `*.part`, `*.tmp`, `*.crdownload`, `._*`, `~$…`, etc.
+Note `copy` only looks at `.mp4` of at least 1 MB unless you pass `--ext` /
+`--min-bytes`; a file below the threshold is logged as `ignored`.
+
+**Exit codes:** `--once` returns 1 if any file ended in `fail` or `error`, 0
+otherwise (an empty run is not a failure), 2 for usage errors. So a cron or CI
+wrapper can actually tell.
 
 Done-state files: `~/.local/state/folder-watch/done-*.json`  
 Pidfiles: `~/.local/state/folder-watch/pids/*.json`  

@@ -724,6 +724,111 @@ class TestAuditRegressions(unittest.TestCase):
             watch_mod.is_open = real
 
 
+class TestAuditSmallFindings(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.inbox = self.tmp / "inbox"
+        self.inbox.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_partial_extract_keeps_the_archive(self):
+        """any() passed when 1 of N members landed, then deleted the zip."""
+        z = self.inbox / "p.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("a.txt", "a")
+            zf.writestr("b.txt", "b")
+
+        action = UnzipAction(mode="named")
+        target = self.inbox / "p"
+
+        # Simulate an extraction that only produced one of the two members.
+        real_extractall = zipfile.ZipFile.extractall
+
+        def partial(self_zf, path=None, *a, **k):
+            Path(path).mkdir(parents=True, exist_ok=True)
+            (Path(path) / "a.txt").write_text("a")
+
+        zipfile.ZipFile.extractall = partial
+        try:
+            self.assertEqual(action.run(z), "fail")
+        finally:
+            zipfile.ZipFile.extractall = real_extractall
+
+        self.assertTrue(z.exists(), "archive deleted after a partial extract")
+        self.assertFalse((target / "b.txt").exists())
+
+    def test_empty_archive_is_refused(self):
+        z = self.inbox / "empty.zip"
+        zipfile.ZipFile(z, "w").close()
+        self.assertEqual(UnzipAction(mode="named").run(z), "fail")
+        self.assertTrue(z.exists(), "empty archive deleted for doing nothing")
+
+    def test_no_clobber_refuses_and_keeps_both(self):
+        z = self.inbox / "p.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("f.txt", "from-zip")
+        precious = self.inbox / "f.txt"
+        precious.write_text("PRECIOUS")
+
+        self.assertEqual(
+            UnzipAction(mode="same", no_clobber=True).run(z), "fail"
+        )
+        self.assertEqual(precious.read_text(), "PRECIOUS")
+        self.assertTrue(z.exists())
+
+        # Default still overwrites, but says so.
+        self.assertEqual(UnzipAction(mode="same").run(z), "extracted")
+        self.assertEqual(precious.read_text(), "from-zip")
+
+    def test_once_exit_code_reflects_failure(self):
+        from folder_watch import main
+
+        src = self.tmp / "src"
+        src.mkdir()
+        (src / "v.mp4").write_bytes(b"x" * 64)
+        argv = [
+            "copy", str(src), "--to", str(self.tmp / "gone" / "Out"),
+            "--once", "--catch-up", "--stable", "1", "--min-bytes", "1",
+            "--no-notify",
+        ]
+        self.assertEqual(main(argv), 1, "failed copy must not exit 0")
+
+        # Nothing to do is not a failure.
+        empty = self.tmp / "empty"
+        empty.mkdir()
+        ok = [
+            "copy", str(empty), "--to", str(self.tmp / "dst"),
+            "--once", "--stable", "1", "--min-bytes", "1", "--no-notify",
+        ]
+        self.assertEqual(main(ok), 0)
+
+    def test_pidfiles_are_per_process(self):
+        """Two watchers on one folder must not masquerade as one."""
+        import os
+
+        from folder_watch.support.pidfile import (
+            collect_watch_status,
+            pidfile_path,
+            write_pidfile,
+        )
+
+        mine = write_pidfile("copy-src", {"name": "copy-src", "action": "copy"})
+        self.assertIn(str(os.getpid()), mine.name)
+
+        # A second, dead watcher under the same name.
+        other = pidfile_path("copy-src", pid=999_999)
+        other.write_text('{"pid": 999999, "name": "copy-src"}\n')
+        try:
+            rows = collect_watch_status(preset="copy-src")
+            self.assertEqual(len(rows), 2, "one name collapsed two watchers")
+            self.assertEqual(sum(1 for r in rows if r["alive"]), 1)
+        finally:
+            other.unlink(missing_ok=True)
+            mine.unlink(missing_ok=True)
+
+
 class TestLaunchAgentPlist(unittest.TestCase):
     def _plist(self, log: Path) -> str:
         from folder_watch.support.launchd import build_plist, stdio_log_path

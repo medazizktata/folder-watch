@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import threading
 import time
@@ -12,7 +13,11 @@ from typing import Any
 from folder_watch.actions.base import Action
 from folder_watch.core.util import is_open, should_watch_name
 from folder_watch.support.log import emit, emit_debug, is_verbose
-from folder_watch.support.pidfile import clear_pidfile, write_pidfile
+from folder_watch.support.pidfile import (
+    clear_pidfile,
+    live_watchers,
+    write_pidfile,
+)
 from folder_watch.support.state import DoneStore, file_identity
 
 # Drop a watched file after this long with no size change at all. A real
@@ -33,6 +38,9 @@ BASELINE_LSOF_WINDOW = 60.0
 SRC_CHECK_INTERVAL = 5.0
 SRC_WAIT_INTERVAL = 5.0
 SRC_WAIT_LOG_INTERVAL = 60.0
+
+
+FAILED_RESULTS = ("fail", "error")
 
 
 def _state_key(src: Path) -> str:
@@ -81,16 +89,19 @@ def apply_action(
     stable_needed: int,
     done_store: DoneStore | None = None,
     lock: threading.Lock | None = None,
-) -> None:
-    """Run the action on a settled file. `lock` guards `state` when the
-    caller shares it with a watchdog handler thread."""
+) -> str | None:
+    """Run the action on a settled file, returning its result label.
+
+    Callers use the label to set an exit status: --once used to return 0 even
+    when every copy failed, so cron and CI could not tell. `lock` guards
+    `state` when the caller shares it with a watchdog handler thread."""
     name = src.name
     sk = _state_key(src)
     guard: Any = lock if lock is not None else nullcontext()
     try:
         size, mtime_ns = file_identity(src)
     except OSError:
-        return
+        return None
 
     with guard:
         prev_state = state.get(sk, {})
@@ -103,7 +114,7 @@ def apply_action(
         and prev_state.get("size") == size
         and prev_state.get("mtime_ns") == mtime_ns
     ):
-        return
+        return None
 
     dest = action.done_dest(src)
     mode = action.done_mode()
@@ -126,13 +137,13 @@ def apply_action(
                     "done": True,
                 }
             emit("skip", name=name, size=size, reason="done_store")
-            return
+            return "skip"
 
     try:
         result = action.run(src)
     except Exception as e:
         emit("error", name=name, err=str(e))
-        return
+        return "error"
 
     if result == "skip":
         emit("skip", name=name, size=size)
@@ -140,16 +151,16 @@ def apply_action(
         emit("copied", name=name, size=size)
     elif result in ("would_copy", "would_extract"):
         # dry-run: already emitted inside action; do not persist done
-        return
+        return result
     elif result in ("extracted", "converted"):
         pass
     elif result == "fail":
         # The action emits its own fail line, with a reason attached.
-        return
+        return "fail"
     else:
         emit("result", name=name, status=result)
         if result == "error":
-            return
+            return "error"
 
     with guard:
         state[sk] = {
@@ -160,6 +171,7 @@ def apply_action(
         }
     if done_store is not None and key is not None:
         done_store.mark(key, name=name, result=result)
+    return result
 
 
 def _progress(track: dict[str, Any], src: Path, size: int) -> None:
@@ -258,8 +270,8 @@ def process_file(
     settle_interval: float,
     wait: bool = True,
     done_store: DoneStore | None = None,
-) -> None:
-    """Settle then action.
+) -> str | None:
+    """Settle then action, returning the action's result label (or None).
 
     wait=True  — block until ready (legacy / rare)
     wait=False — never block on in-progress files; skip and let event loop retry
@@ -272,40 +284,49 @@ def process_file(
                 src, track, min_bytes=min_bytes, stable_needed=stable_needed
             )
             if status == "ready":
-                apply_action(
+                return apply_action(
                     src,
                     action,
                     state=state,
                     stable_needed=stable_needed,
                     done_store=done_store,
                 )
-                return
             if status == "gone":
-                return
+                return None
             try:
                 # Reuse settle_step's lsof reading rather than paying again.
-                if track.get("open") or src.stat().st_size < min_bytes:
-                    return
+                if track.get("open"):
+                    return None
+                if src.stat().st_size < min_bytes:
+                    # Say so — copy defaults to --min-bytes 1000000, and a
+                    # sub-threshold file otherwise vanishes without a word.
+                    emit(
+                        "ignored",
+                        name=src.name,
+                        size=src.stat().st_size,
+                        reason="below_min_bytes",
+                        min_bytes=min_bytes,
+                    )
+                    return None
             except OSError:
-                return
+                return None
             time.sleep(settle_interval)
-        return
+        return None
 
     while True:
         status = settle_step(
             src, track, min_bytes=min_bytes, stable_needed=stable_needed
         )
         if status == "gone":
-            return
+            return None
         if status == "ready":
-            apply_action(
+            return apply_action(
                 src,
                 action,
                 state=state,
                 stable_needed=stable_needed,
                 done_store=done_store,
             )
-            return
         time.sleep(settle_interval)
 
 
@@ -321,9 +342,11 @@ def scan_once(
     wait: bool = False,
     done_store: DoneStore | None = None,
     recursive: bool = False,
-) -> None:
+) -> int:
+    """Returns how many files ended in a failing result."""
+    failures = 0
     for path in iter_watch_files(src_dir, exts, recursive=recursive):
-        process_file(
+        result = process_file(
             path,
             action,
             state=state,
@@ -333,6 +356,9 @@ def scan_once(
             wait=wait,
             done_store=done_store,
         )
+        if result in FAILED_RESULTS:
+            failures += 1
+    return failures
 
 
 def seed_baseline(
@@ -797,7 +823,27 @@ def run_watch(
         if cleared:
             emit("catch_up", cleared_baseline=cleared)
 
+    prev_term = None
     if not once:
+        others = live_watchers(name)
+        if others:
+            emit(
+                "warn",
+                reason="duplicate_watcher",
+                name=name,
+                other_pids=others,
+                note="both will act on the same files",
+            )
+        # launchd stops services with SIGTERM, whose default disposition kills
+        # the process outright — the finally below never runs and the pidfile
+        # is left behind looking stale. Turning it into SystemExit unwinds.
+        def _on_term(_signum, _frame):  # type: ignore[no-untyped-def]
+            raise SystemExit(0)
+
+        try:
+            prev_term = signal.signal(signal.SIGTERM, _on_term)
+        except ValueError:
+            prev_term = None  # not the main thread; nothing to install
         write_pidfile(
             name,
             {
@@ -813,7 +859,7 @@ def run_watch(
     try:
         if once:
             state: dict[str, dict] = {}
-            scan_once(
+            failures = scan_once(
                 src_dir,
                 action,
                 exts=exts,
@@ -825,8 +871,10 @@ def run_watch(
                 done_store=done_store,
                 recursive=recursive,
             )
-            emit("done")
-            return 0
+            emit("done", failed=failures)
+            # Exit non-zero so a cron or CI wrapper can tell. Nothing-matched
+            # is not a failure, so an empty run still exits 0.
+            return 1 if failures else 0
 
         if backend == "poll":
             return run_watch_poll(
@@ -856,3 +904,8 @@ def run_watch(
     finally:
         if not once:
             clear_pidfile(name)
+            if prev_term is not None:
+                try:
+                    signal.signal(signal.SIGTERM, prev_term)
+                except ValueError:
+                    pass

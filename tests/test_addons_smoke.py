@@ -127,15 +127,36 @@ def test_unzip() -> list[str]:
         z4 = inbox / "cli.zip"
         with zipfile.ZipFile(z4, "w") as zf:
             zf.writestr("d.txt", "z")
+        # bad.zip is still sitting in this inbox from the check above, so a
+        # correct run extracts cli.zip AND reports failure via the exit code.
         code = fw_main(
             ["unzip", str(inbox), "--mode", "named", "--once",
              "--stable", "1", "--ext", "zip"]
         )
-        if code != 0 or not (inbox / "cli" / "d.txt").is_file():
+        if not (inbox / "cli" / "d.txt").is_file():
             fails.append("cli")
-            _fail(f"CLI unzip --once code={code}")
+            _fail(f"CLI unzip --once did not extract, code={code}")
+        elif code == 0:
+            fails.append("cli-exit")
+            _fail("CLI unzip --once exited 0 despite bad.zip failing")
         else:
-            _ok("CLI folder-watch unzip --once")
+            _ok("CLI folder-watch unzip --once (extracts, exits non-zero on failure)")
+
+        # And a clean inbox exits 0.
+        clean = tmp / "clean"
+        clean.mkdir()
+        z5 = clean / "ok.zip"
+        with zipfile.ZipFile(z5, "w") as zf:
+            zf.writestr("e.txt", "e")
+        code = fw_main(
+            ["unzip", str(clean), "--mode", "named", "--once",
+             "--stable", "1", "--ext", "zip"]
+        )
+        if code != 0 or not (clean / "ok" / "e.txt").is_file():
+            fails.append("cli-clean")
+            _fail(f"clean CLI unzip --once code={code}")
+        else:
+            _ok("clean run exits 0")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return fails

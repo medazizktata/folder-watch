@@ -11,16 +11,27 @@ from folder_watch.support.log import _jsonable
 from folder_watch.support.paths import PID_DIR
 
 
-def pidfile_path(name: str) -> Path:
-    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in name) or "default"
+def safe_name(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "-" for c in name) or "default"
+
+
+def pidfile_path(name: str, pid: int | None = None) -> Path:
+    """One file per process, not per watch name.
+
+    Keying only on the name meant a second watcher on the same folder
+    overwrote the first's pidfile: `status` then showed one row carrying the
+    second's PID, and once that exited it reported the survivor as STOPPED
+    with a stale pidfile — while it was still running and copying.
+    """
     PID_DIR.mkdir(parents=True, exist_ok=True)
-    return PID_DIR / f"{safe}.json"
+    return PID_DIR / f"{safe_name(name)}.{pid or os.getpid()}.json"
 
 
 def write_pidfile(name: str, meta: dict[str, Any]) -> Path:
     path = pidfile_path(name)
     payload = {
         "pid": os.getpid(),
+        "name": name,
         "started": time.time(),
         **{k: _jsonable(v) for k, v in meta.items()},
     }
@@ -33,6 +44,22 @@ def clear_pidfile(name: str) -> None:
         pidfile_path(name).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def live_watchers(name: str) -> list[int]:
+    """PIDs of other running watchers already using this name."""
+    out: list[int] = []
+    if not PID_DIR.is_dir():
+        return out
+    me = os.getpid()
+    for path in sorted(PID_DIR.glob(f"{safe_name(name)}.*.json")):
+        data = read_pidfile(path)
+        if data is None:
+            continue
+        pid = int(data.get("pid") or 0)
+        if pid and pid != me and _pid_alive(pid):
+            out.append(pid)
+    return out
 
 
 def _pid_alive(pid: int) -> bool:
@@ -81,19 +108,14 @@ def collect_watch_status(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     PID_DIR.mkdir(parents=True, exist_ok=True)
-    paths = [pidfile_path(preset)] if preset else sorted(PID_DIR.glob("*.json"))
+    # Filter on the recorded name, not the filename — pidfiles are per-process
+    # now, so one name can legitimately have several.
+    paths = sorted(PID_DIR.glob("*.json"))
     for path in paths:
         data = read_pidfile(path)
         if data is None:
-            if preset:
-                rows.append(
-                    {
-                        "name": preset,
-                        "pidfile": str(path),
-                        "alive": False,
-                        "note": "no pidfile",
-                    }
-                )
+            continue
+        if preset and (data.get("name") or path.stem) != preset:
             continue
         pid = int(data.get("pid") or 0)
         alive = _pid_alive(pid)

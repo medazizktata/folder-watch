@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "actions:\n"
-            "  copy   SRC --to DEST\n"
+            "  copy   SRC --to DEST          # defaults: --ext mp4 --min-bytes 1000000\n"
             "  unzip  SRC [--mode named|same|to] [--to DIR]\n"
             "  convx  SRC --format EXT [--ext png,jpg]   # → convx watch\n"
             "  service install|uninstall|status --preset NAME\n"
@@ -71,7 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="convx --overwrite (default true)",
     )
     p.add_argument("--convx-bin", default=None, help="Path to convx")
-    p.add_argument("--ext", default=None, help="Extensions, or * (→ convx --filter)")
+    p.add_argument(
+        "--ext",
+        default=None,
+        help="Extensions, or * (default: copy=mp4, unzip=zip)",
+    )
     p.add_argument("--poll", type=float, default=30, help="poll backend interval")
     p.add_argument(
         "--backend",
@@ -100,7 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="copy/unzip: same-size checks before action (default 3)",
     )
     p.add_argument(
-        "--min-bytes", type=int, default=None, help="copy/unzip: ignore tiny files"
+        "--min-bytes",
+        type=int,
+        default=None,
+        help="ignore files smaller than this (default: copy=1000000, unzip=1)",
     )
     p.add_argument(
         "--once", action="store_true", help="copy/unzip: process ready files and exit"
@@ -164,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--no-clobber",
+        action="store_true",
+        help="unzip: refuse an archive that would overwrite existing files",
+    )
+    p.add_argument(
         "--create-dest",
         action="store_true",
         help=(
@@ -206,6 +218,7 @@ def build_action(
             to=Path(args.to) if args.to else None,
             dry_run=dry,
             create_dest=getattr(args, "create_dest", False),
+            no_clobber=getattr(args, "no_clobber", False),
         )
     raise SystemExit(f"error: unknown action {name!r}")
 

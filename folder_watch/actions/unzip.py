@@ -21,6 +21,7 @@ class UnzipAction(Action):
         *,
         dry_run: bool = False,
         create_dest: bool = False,
+        no_clobber: bool = False,
     ) -> None:
         if mode not in ("named", "same", "to"):
             raise ValueError(f"unknown unzip mode: {mode}")
@@ -30,6 +31,7 @@ class UnzipAction(Action):
         self.to = to.expanduser() if to else None
         self.dry_run = dry_run
         self.create_dest = create_dest
+        self.no_clobber = no_clobber
 
     def describe(self) -> str:
         if self.mode == "to":
@@ -76,6 +78,7 @@ class UnzipAction(Action):
             emit("would_extract", name=path.name, dest=target, mode=self.mode)
             return "would_extract"
 
+        clobbered: list[str] = []
         try:
             with zipfile.ZipFile(path, "r") as zf:
                 # Vet every member before creating anything, so a rejected zip
@@ -101,24 +104,43 @@ class UnzipAction(Action):
                 except DestUnavailable as e:
                     emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
                     return "fail"
+                if not members:
+                    # Nothing to extract, and deleting the archive would be
+                    # the only lasting effect. Usually a truncated download.
+                    emit("fail", name=path.name, reason="empty_archive")
+                    return "fail"
+                clobbered = [n for n in members if (target / n).is_file()]
+                if clobbered and self.no_clobber:
+                    emit(
+                        "fail",
+                        name=path.name,
+                        reason="would_overwrite",
+                        count=len(clobbered),
+                        first=clobbered[0],
+                    )
+                    return "fail"
                 target.mkdir(parents=True, exist_ok=True)
                 zf.extractall(target)
         except (zipfile.BadZipFile, OSError) as e:
             emit("fail", name=path.name, reason="extract_error", err=str(e))
             return "fail"
 
-        ok = True
-        if members:
-            found = any((target / name).exists() for name in members)
-            ok = found
-        if not ok:
+        # Every member must be present before the archive is destroyed. any()
+        # passed when 1 of 200 files landed, and under mode=same it passed on
+        # any pre-existing file of the same name.
+        missing = [n for n in members if not (target / n).exists()]
+        if missing:
             emit(
                 "fail",
                 name=path.name,
                 reason="verify_missing_files",
                 dest=target,
+                missing=len(missing),
+                first=missing[0],
             )
             return "fail"
+        if clobbered:
+            emit("overwrote", name=path.name, count=len(clobbered), dest=target)
 
         try:
             path.unlink()
