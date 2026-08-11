@@ -53,7 +53,7 @@ class UnzipAction(Action):
         if path.suffix.lower() != ".zip":
             return "skip"
         if not zipfile.is_zipfile(path):
-            print(f"fail name={path.name} reason=not_a_zip", flush=True)
+            emit("fail", name=path.name, reason="not_a_zip")
             return "fail"
 
         target = self._target_dir(path)
@@ -68,15 +68,17 @@ class UnzipAction(Action):
                 for info in zf.infolist():
                     member = Path(info.filename)
                     if member.is_absolute() or ".." in member.parts:
-                        print(
-                            f"fail name={path.name} reason=unsafe_member {info.filename}",
-                            flush=True,
+                        emit(
+                            "fail",
+                            name=path.name,
+                            reason="unsafe_member",
+                            member=info.filename,
                         )
                         return "fail"
                 members = zf.namelist()
                 zf.extractall(target)
         except (zipfile.BadZipFile, OSError) as e:
-            print(f"fail name={path.name} reason=extract_error err={e}", flush=True)
+            emit("fail", name=path.name, reason="extract_error", err=str(e))
             return "fail"
 
         ok = True
@@ -84,18 +86,20 @@ class UnzipAction(Action):
             found = any((target / name).exists() for name in members)
             ok = found
         if not ok:
-            print(
-                f"fail name={path.name} reason=verify_missing_files dest={target}",
-                flush=True,
+            emit(
+                "fail",
+                name=path.name,
+                reason="verify_missing_files",
+                dest=target,
             )
             return "fail"
 
         try:
             path.unlink()
         except OSError as e:
-            print(f"error name={path.name} reason=delete_failed err={e}", flush=True)
+            emit("error", name=path.name, reason="delete_failed", err=str(e))
             return "error"
 
-        print(f"extracted name={path.name} dest={target} deleted_zip=yes", flush=True)
+        emit("extracted", name=path.name, dest=target, deleted_zip=True)
         return "extracted"
 

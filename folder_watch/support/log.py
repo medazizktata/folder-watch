@@ -63,18 +63,12 @@ def _jsonable(v: Any) -> Any:
     return v
 
 
-def _fmt(v: Any) -> str:
-    if isinstance(v, Path):
-        return str(v)
-    return str(v)
-
-
 def emit(event: str, **fields: Any) -> None:
     payload = {"event": event, **{k: _jsonable(v) for k, v in fields.items()}}
     if _JSON_MODE:
         line = json.dumps(payload, ensure_ascii=False)
     else:
-        bits = [event] + [f"{k}={_fmt(v)}" for k, v in fields.items()]
+        bits = [event] + [f"{k}={v}" for k, v in fields.items()]
         line = " ".join(bits)
     print(line, flush=True)
     log.info("%s", line)

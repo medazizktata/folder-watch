@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,18 @@ from folder_watch.core.util import is_open, should_watch_name
 from folder_watch.support.log import emit, emit_debug, is_verbose
 from folder_watch.support.pidfile import clear_pidfile, write_pidfile
 from folder_watch.support.state import DoneStore, file_identity
+
+# Drop a watched file after this long with no size change at all. A real
+# encode keeps growing, so only genuinely stuck files (aborted exports left
+# at 0 bytes, writers that died holding a handle) ever reach it. If the file
+# starts moving again a new FSEvent re-queues it.
+STALL_TIMEOUT = 300.0
+
+# At startup, only pay for lsof on files touched this recently. An older file
+# is treated as finished; if that's wrong, the baseline size check in the
+# event handler re-queues it as soon as it grows.
+BASELINE_LSOF_WINDOW = 60.0
+
 
 def _state_key(src: Path) -> str:
     """Full path key so nested same-basename files don't collide."""
@@ -56,19 +69,22 @@ def apply_action(
     action: Action,
     *,
     state: dict[str, dict],
-    size: int,
     stable_needed: int,
     done_store: DoneStore | None = None,
+    lock: threading.Lock | None = None,
 ) -> None:
+    """Run the action on a settled file. `lock` guards `state` when the
+    caller shares it with a watchdog handler thread."""
     name = src.name
     sk = _state_key(src)
+    guard: Any = lock if lock is not None else nullcontext()
     try:
-        size_now, mtime_ns = file_identity(src)
+        size, mtime_ns = file_identity(src)
     except OSError:
         return
-    size = size_now
 
-    prev_state = state.get(sk, {})
+    with guard:
+        prev_state = state.get(sk, {})
     if prev_state.get("done") and prev_state.get("size") == size:
         return
 
@@ -85,7 +101,8 @@ def apply_action(
             mode=mode,
         )
         if done_store.is_done(key):
-            state[sk] = {"size": size, "stable": stable_needed, "done": True}
+            with guard:
+                state[sk] = {"size": size, "stable": stable_needed, "done": True}
             emit("skip", name=name, size=size, reason="done_store")
             return
 
@@ -112,7 +129,8 @@ def apply_action(
         if result == "error":
             return
 
-    state[sk] = {"size": size, "stable": stable_needed, "done": True}
+    with guard:
+        state[sk] = {"size": size, "stable": stable_needed, "done": True}
     if done_store is not None and key is not None:
         done_store.mark(key, name=name, result=result)
 
@@ -157,13 +175,17 @@ def settle_step(
     except OSError:
         return "gone"
 
+    prev = track.get("prev")
+    if prev is None or size != prev:
+        # Any movement resets the stall clock the event loop watches.
+        track["last_change"] = time.monotonic()
+
     if size < min_bytes:
         track["stable"] = 0
         track["prev"] = size
         _progress(track, src, size)
         return "waiting"
 
-    prev = track.get("prev")
     if prev is None or size != prev:
         track["prev"] = size
         track["stable"] = 1
@@ -222,7 +244,6 @@ def process_file(
                     src,
                     action,
                     state=state,
-                    size=int(track["size"]),
                     stable_needed=stable_needed,
                     done_store=done_store,
                 )
@@ -249,7 +270,6 @@ def process_file(
                 src,
                 action,
                 state=state,
-                size=int(track["size"]),
                 stable_needed=stable_needed,
                 done_store=done_store,
             )
@@ -270,11 +290,7 @@ def scan_once(
     done_store: DoneStore | None = None,
     recursive: bool = False,
 ) -> None:
-    paths = iter_watch_files(src_dir, exts, recursive=recursive)
-    if not paths and not src_dir.is_dir():
-        return
-
-    for path in paths:
+    for path in iter_watch_files(src_dir, exts, recursive=recursive):
         process_file(
             path,
             action,
@@ -300,7 +316,9 @@ def seed_baseline(
     """Ignore finished files already in SRC. Return paths still being written."""
     unsettled: list[Path] = []
     ignored = 0
+    probed = 0
     paths = iter_watch_files(src_dir, exts, recursive=recursive)
+    now = time.time()
 
     for path in paths:
         try:
@@ -308,7 +326,12 @@ def seed_baseline(
             resolved = path.resolve()
         except OSError:
             continue
-        if is_open(path) or size < min_bytes:
+        # lsof is ~250ms a call, and this runs before the watcher accepts
+        # events — so only probe files recent enough to plausibly be open.
+        recent = (now - mtime_ns / 1e9) < BASELINE_LSOF_WINDOW
+        if recent:
+            probed += 1
+        if size < min_bytes or (recent and is_open(path)):
             unsettled.append(resolved)
             continue
         state[_state_key(path)] = {"size": size, "done": True, "baseline": True}
@@ -327,6 +350,7 @@ def seed_baseline(
         "baseline",
         ignored=ignored,
         encoding=len(unsettled),
+        probed=probed,
         note="old finished skipped; only new + active encodes",
         recursive=recursive,
     )
@@ -442,8 +466,10 @@ def run_watch_event(
                 return
             if not should_watch_name(path.name, exts):
                 return
-            # Ignore baseline files unless size changed (re-export)
-            st = state.get(_state_key(path))
+            # Ignore baseline files unless size changed (re-export).
+            # apply_action writes `state` on the main thread under this lock.
+            with lock:
+                st = state.get(_state_key(path))
             if st and st.get("done") and st.get("baseline"):
                 try:
                     if path.stat().st_size == st.get("size"):
@@ -456,8 +482,12 @@ def run_watch_event(
             except ValueError:
                 rel = path.name
             with lock:
+                already_queued = key in pending
                 pending[key] = time.monotonic()
                 watching.pop(key, None)
+            # FSEvents fires repeatedly for one write; debounce already
+            # coalesces the work, so only log the first of a burst.
+            if not already_queued:
                 emit("event", name=path.name, path=rel)
 
     handler = Handler()
@@ -548,6 +578,17 @@ def run_watch_event(
                     continue
 
                 if status == "waiting":
+                    stalled = now - track.get("last_change", now)
+                    if stalled > STALL_TIMEOUT:
+                        with lock:
+                            watching.pop(key, None)
+                        emit(
+                            "give_up",
+                            name=path.name,
+                            reason="no_size_change",
+                            stalled_s=int(stalled),
+                        )
+                        continue
                     with lock:
                         if key in watching:
                             watching[key]["next_check"] = now + settle_interval
@@ -559,9 +600,9 @@ def run_watch_event(
                     path,
                     action,
                     state=state,
-                    size=int(track["size"]),
                     stable_needed=stable_needed,
                     done_store=done_store,
+                    lock=lock,
                 )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)

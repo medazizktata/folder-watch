@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from folder_watch.actions import ACTION_NAMES, ACTIONS
+from folder_watch.actions.base import Action
 from folder_watch.actions.convx import build_convx_watch_cmd, run_convx_watch
 from folder_watch.actions.copy import CopyAction
 from folder_watch.actions.unzip import UnzipAction
@@ -22,7 +23,7 @@ from folder_watch.support.log import set_json_mode, set_verbose, setup_logging
 from folder_watch.support.paths import PRESETS_PATH
 from folder_watch.support.pidfile import collect_watch_status
 from folder_watch.support.state import DoneStore
-from folder_watch.actions.base import Action
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(

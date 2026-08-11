@@ -6,6 +6,7 @@ from __future__ import annotations
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -417,6 +418,58 @@ class TestSettleNonBlocking(unittest.TestCase):
                 settle_step(f, track, min_bytes=1, stable_needed=3), "ready"
             )
             self.assertEqual(len(calls), 1)
+        finally:
+            watch_mod.is_open = old
+
+    def test_stall_clock_tracks_size_changes(self):
+        """last_change drives give_up; it must only move when the file does."""
+        from folder_watch import settle_step
+        import folder_watch.core.watch as watch_mod
+
+        f = self.tmp / "enc.mp4"
+        f.write_bytes(b"x" * 100)
+        track: dict = {}
+        old = watch_mod.is_open
+        watch_mod.is_open = lambda _p: 1
+        try:
+            settle_step(f, track, min_bytes=1, stable_needed=3)
+            first = track["last_change"]
+
+            # Size holds still — clock must not move, so a stuck file ages out.
+            for _ in range(3):
+                settle_step(f, track, min_bytes=1, stable_needed=3)
+            self.assertEqual(track["last_change"], first)
+
+            # Real growth resets it, so a slow encode is never given up on.
+            f.write_bytes(b"x" * 200)
+            settle_step(f, track, min_bytes=1, stable_needed=3)
+            self.assertGreater(track["last_change"], first)
+        finally:
+            watch_mod.is_open = old
+
+    def test_stalled_zero_byte_file_ages_out(self):
+        """The Video-5-v2.mp4 case: 0 bytes forever must not watch forever."""
+        from folder_watch import settle_step
+        import folder_watch.core.watch as watch_mod
+
+        f = self.tmp / "aborted.mp4"
+        f.write_bytes(b"")
+        track: dict = {}
+        old = watch_mod.is_open
+        watch_mod.is_open = lambda _p: 0
+        try:
+            for _ in range(4):
+                self.assertEqual(
+                    settle_step(f, track, min_bytes=1_000_000, stable_needed=3),
+                    "waiting",
+                )
+            # The event loop gives up once now - last_change > STALL_TIMEOUT.
+            stalled = time.monotonic() - track["last_change"]
+            self.assertLess(stalled, watch_mod.STALL_TIMEOUT)
+            track["last_change"] = time.monotonic() - watch_mod.STALL_TIMEOUT - 1
+            self.assertGreater(
+                time.monotonic() - track["last_change"], watch_mod.STALL_TIMEOUT
+            )
         finally:
             watch_mod.is_open = old
 
