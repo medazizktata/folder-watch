@@ -325,6 +325,7 @@ def seed_baseline(
     unsettled: list[Path] = []
     ignored = 0
     probed = 0
+    pending: list[Path] = []
     paths = iter_watch_files(src_dir, exts, recursive=recursive)
     now = time.time()
 
@@ -342,6 +343,11 @@ def seed_baseline(
         if size < min_bytes or (recent and is_open(path)):
             unsettled.append(resolved)
             continue
+        # Skipping is still the default — starting a watcher must never kick
+        # off a surprise run over the whole back catalogue. But say out loud
+        # which of these were skipped without ever having been processed.
+        if action.output_exists(path) is False:
+            pending.append(path)
         state[_state_key(path)] = {"size": size, "done": True, "baseline": True}
         if done_store is not None:
             done_store.mark_baseline_file(
@@ -358,11 +364,46 @@ def seed_baseline(
         "baseline",
         ignored=ignored,
         encoding=len(unsettled),
+        pending=len(pending),
         probed=probed,
         note="old finished skipped; only new + active encodes",
         recursive=recursive,
     )
+    if pending:
+        emit(
+            "baseline_pending",
+            count=len(pending),
+            names=[p.name for p in pending[:5]],
+            more=max(0, len(pending) - 5),
+            hint="skipped but no output found — re-run once with --catch-up",
+        )
     return unsettled
+
+
+def list_pending(
+    src_dir: Path,
+    action: Action,
+    *,
+    exts: list[str] | None,
+    min_bytes: int,
+    recursive: bool = False,
+) -> list[Path]:
+    """Files baseline would skip that have no output to show for it.
+
+    Strictly read-only — no state, no done-store, not even an lsof call — so
+    it's safe to point at a live folder while a watcher is running on it.
+    """
+    out: list[Path] = []
+    for path in iter_watch_files(src_dir, exts, recursive=recursive):
+        try:
+            size, _mtime_ns = file_identity(path)
+        except OSError:
+            continue
+        if size < min_bytes:
+            continue
+        if action.output_exists(path) is False:
+            out.append(path)
+    return out
 
 
 def run_watch_poll(
@@ -698,6 +739,11 @@ def run_watch(
         mode=("once" if once else "watch"),
         done_store=(str(done_store.path) if done_store is not None else None),
     )
+
+    if catch_up and done_store is not None:
+        cleared = done_store.drop_baseline()
+        if cleared:
+            emit("catch_up", cleared_baseline=cleared)
 
     if not once:
         write_pidfile(

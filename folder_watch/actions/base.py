@@ -23,3 +23,15 @@ class Action(ABC):
 
     def done_mode(self) -> str | None:
         return None
+
+    def output_exists(self, src: Path) -> bool | None:
+        """Has this file's output already been produced?
+
+        Baseline seeding skips whatever is already sitting in the folder at
+        startup, on the assumption it's old news. That assumption is never
+        checked: a file that was never processed looks exactly like one that
+        was, and gets skipped forever. This is what tells them apart.
+
+        None means the action can't tell.
+        """
+        return None

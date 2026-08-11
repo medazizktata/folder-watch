@@ -43,6 +43,17 @@ class UnzipAction(Action):
     def done_dest(self, src: Path) -> Path | None:
         return self._target_dir(src)
 
+    def output_exists(self, src: Path) -> bool | None:
+        # mode=same extracts alongside the zip, so the target directory always
+        # exists and proves nothing.
+        if self.mode == "same":
+            return None
+        target = self._target_dir(src)
+        try:
+            return target.is_dir() and any(target.iterdir())
+        except OSError:
+            return None
+
     def _target_dir(self, zip_path: Path) -> Path:
         stem = zip_path.stem
         if self.mode == "same":

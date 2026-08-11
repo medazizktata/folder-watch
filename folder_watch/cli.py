@@ -13,7 +13,7 @@ from folder_watch.actions.convx import build_convx_watch_cmd, run_convx_watch
 from folder_watch.actions.copy import CopyAction
 from folder_watch.actions.unzip import UnzipAction
 from folder_watch.core.util import parse_exts
-from folder_watch.core.watch import run_watch
+from folder_watch.core.watch import list_pending, run_watch
 from folder_watch.presets import load_presets, save_preset
 from folder_watch.support.launchd import (
     install_service,
@@ -150,6 +150,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="copy: retries on OSError (default 5)",
+    )
+    p.add_argument(
+        "--pending",
+        action="store_true",
+        help=(
+            "list files a fresh watcher would skip that have no output, then "
+            "exit. Read-only — safe against a folder being watched right now"
+        ),
     )
     p.add_argument(
         "--create-dest",
@@ -553,6 +561,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     exts = parse_exts(exts_raw)
+
+    if args.pending:
+        src_dir = src.expanduser().resolve()
+        rows = list_pending(
+            src_dir,
+            action,
+            exts=exts,
+            min_bytes=min_bytes,
+            recursive=recursive,
+        )
+        if not rows:
+            print(f"nothing pending in {src_dir}")
+            return 0
+        print(f"{len(rows)} file(s) in {src_dir} that a fresh watcher would skip")
+        print("without any output to show for it:\n")
+        for path in rows:
+            try:
+                mb = path.stat().st_size / 1024 / 1024
+                print(f"  {mb:9.1f} MB  {path.relative_to(src_dir)}")
+            except (OSError, ValueError):
+                print(f"  {'?':>9}     {path}")
+        print("\nre-run once with --catch-up to process them")
+        return 1
 
     done_store = None
     if not args.no_done_store and action_name in ("copy", "unzip"):

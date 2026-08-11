@@ -67,6 +67,32 @@ folder-watch prune
 folder-watch prune --yes
 ```
 
+## Files already in the folder at startup
+
+A new watcher skips whatever is already sitting there (that's the point of
+**new-only**), and records it as `baseline` — *assumed* handled. Nothing used to
+verify that assumption, so a file that had never been processed looked exactly
+like one that had, and was skipped forever without a word.
+
+Startup now says so:
+
+```
+baseline ignored=2 encoding=0 pending=1 probed=2
+baseline_pending count=1 names=['never-touched.zip'] hint=skipped but no output found
+```
+
+To ask the same question without starting anything — read-only, no state
+written, no `lsof`, safe against a folder a watcher is running on right now:
+
+```bash
+folder-watch unzip ~/Inbox --mode named --pending
+folder-watch --preset la-chaise-v1 --pending
+```
+
+Exits 1 if anything is pending. `--catch-up` then processes them, and clears
+any stale `baseline` assumptions first — without that it would skip precisely
+the files it was asked to pick up.
+
 ## When the folder goes away
 
 **Watched folder deleted, renamed, or its volume unmounted** — FSEvents just goes

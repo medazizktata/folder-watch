@@ -494,6 +494,103 @@ class TestDoneStoreAndAtomic(unittest.TestCase):
         self.assertFalse(any(self.tmp.joinpath("dest").glob("*.tmp")))
 
 
+class TestBaselinePending(unittest.TestCase):
+    """Baseline skips what's already there; it must not skip silently."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = self.tmp / "src"
+        self.dest = self.tmp / "dest"
+        self.src.mkdir()
+        self.dest.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_copy_output_exists(self):
+        f = self.src / "clip.mp4"
+        f.write_bytes(b"x" * 64)
+        action = CopyAction(self.dest, notify_on_done=False)
+
+        self.assertIs(action.output_exists(f), False)
+        (self.dest / "clip.mp4").write_bytes(b"x" * 64)
+        self.assertIs(action.output_exists(f), True)
+        # A partial/mismatched copy is not an output.
+        (self.dest / "clip.mp4").write_bytes(b"x" * 10)
+        self.assertIs(action.output_exists(f), False)
+
+    def test_unzip_output_exists(self):
+        z = self.src / "pack.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("a.txt", "a")
+        action = UnzipAction(mode="named")
+
+        self.assertIs(action.output_exists(z), False)
+        target = self.src / "pack"
+        target.mkdir()
+        self.assertIs(action.output_exists(z), False, "empty dir is not output")
+        (target / "a.txt").write_text("a")
+        self.assertIs(action.output_exists(z), True)
+
+        # mode=same extracts beside the zip, so the dir proves nothing.
+        self.assertIsNone(UnzipAction(mode="same").output_exists(z))
+
+    def test_list_pending_is_read_only(self):
+        from folder_watch.core.watch import list_pending
+
+        done = self.src / "done.mp4"
+        missed = self.src / "missed.mp4"
+        for f in (done, missed):
+            f.write_bytes(b"x" * 64)
+        (self.dest / "done.mp4").write_bytes(b"x" * 64)
+
+        action = CopyAction(self.dest, notify_on_done=False)
+        before = sorted(p.name for p in self.tmp.rglob("*"))
+        rows = list_pending(self.src, action, exts=["mp4"], min_bytes=1)
+
+        self.assertEqual([p.name for p in rows], ["missed.mp4"])
+        self.assertEqual(sorted(p.name for p in self.tmp.rglob("*")), before)
+
+    def test_seed_baseline_counts_pending(self):
+        from folder_watch.core.watch import seed_baseline
+
+        done = self.src / "done.mp4"
+        missed = self.src / "missed.mp4"
+        for f in (done, missed):
+            f.write_bytes(b"x" * 64)
+        (self.dest / "done.mp4").write_bytes(b"x" * 64)
+
+        action = CopyAction(self.dest, notify_on_done=False)
+        state: dict = {}
+        seed_baseline(self.src, action, exts=["mp4"], min_bytes=1, state=state)
+        # Both are still skipped — startup must not trigger a surprise run.
+        self.assertEqual(len(state), 2)
+        self.assertTrue(all(v.get("baseline") for v in state.values()))
+
+    def test_catch_up_clears_baseline_assumptions(self):
+        """--catch-up on a folder a watcher already baselined must still work."""
+        from folder_watch.support.state import DoneStore, file_identity
+
+        store = DoneStore(self.tmp / "done.json")
+        assumed = self.src / "assumed.mp4"
+        real = self.src / "real.mp4"
+        for f in (assumed, real):
+            f.write_bytes(b"x" * 64)
+
+        size, mtime_ns = file_identity(assumed)
+        store.mark_baseline_file("copy", assumed, size=size, mtime_ns=mtime_ns)
+        size, mtime_ns = file_identity(real)
+        real_key = DoneStore.make_key("copy", real, size=size, mtime_ns=mtime_ns)
+        store.mark(real_key, name=real.name, result="copied")
+        self.assertEqual(len(store), 2)
+
+        self.assertEqual(store.drop_baseline(), 1)
+        # The verified result survives; only the assumption goes.
+        self.assertTrue(store.is_done(real_key))
+        self.assertEqual(len(store), 1)
+        self.assertEqual(len(DoneStore(self.tmp / "done.json")), 1)
+
+
 class TestSettleNonBlocking(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

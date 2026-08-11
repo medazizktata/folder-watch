@@ -108,6 +108,21 @@ class DoneStore:
                 continue
         return dead
 
+    def drop_baseline(self) -> int:
+        """Forget entries that were only ever assumed done, not verified.
+
+        mark_baseline_file records "this was sitting here when I started, so
+        presume it's handled". --catch-up is the user saying that presumption
+        was wrong, so it has to clear them or the catch-up scan skips exactly
+        the files it was asked to process.
+        """
+        dead = [k for k, v in self._data.items() if v.get("baseline")]
+        for key in dead:
+            self._data.pop(key, None)
+        if dead:
+            self.save()
+        return len(dead)
+
     def prune(self) -> int:
         """Drop dead entries. Returns how many went."""
         dead = self.dead_keys()

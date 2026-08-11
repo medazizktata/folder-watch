@@ -40,6 +40,13 @@ class CopyAction(Action):
     def done_dest(self, src: Path) -> Path | None:
         return self.dest / src.name
 
+    def output_exists(self, src: Path) -> bool | None:
+        dest = self.dest / src.name
+        try:
+            return dest.is_file() and dest.stat().st_size == src.stat().st_size
+        except OSError:
+            return None
+
     def run(self, path: Path) -> str:
         dest = self.dest / path.name
         size = path.stat().st_size
