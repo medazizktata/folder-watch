@@ -20,6 +20,24 @@ def stdio_log_path(log_path: Path) -> Path:
     return log_path.with_name(f"{log_path.stem}.out{log_path.suffix or '.log'}")
 
 
+def launchagent_path_env() -> str:
+    """PATH handed to a watcher started by launchd.
+
+    /usr/sbin is not decoration: lsof lives there, and launchd's default PATH
+    omits it. Without it the watcher cannot tell whether a file is still being
+    written — and a version of this once treated "lsof missing" as "still
+    open", so nothing ever settled and both watchers silently did nothing.
+
+    Exposed so the test suite can assert against the real value rather than a
+    copy of it that drifts.
+    """
+    local_bin = Path.home() / ".local" / "bin"
+    return (
+        f"{local_bin}:/opt/homebrew/bin:/usr/local/bin"
+        ":/usr/bin:/bin:/usr/sbin:/sbin"
+    )
+
+
 def service_label(preset: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in preset)
     return f"{LABEL_PREFIX}.{safe}"
@@ -120,7 +138,6 @@ def install_service(
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
 
     python, root = _resolve_python_and_root(program)
-    local_bin = Path.home() / ".local" / "bin"
     body = build_plist(
         label=label,
         preset=preset,
@@ -128,12 +145,7 @@ def install_service(
         root=root,
         log_path=log_path,
         stdio_path=stdio_log_path(log_path),
-        # /usr/sbin matters: lsof lives there, and without it a watcher
-        # started by launchd cannot see whether a file is still being written.
-        path_env=(
-            f"{local_bin}:/opt/homebrew/bin:/usr/local/bin"
-            ":/usr/bin:/bin:/usr/sbin:/sbin"
-        ),
+        path_env=launchagent_path_env(),
     )
     plist.write_text(body)
     subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, check=False)

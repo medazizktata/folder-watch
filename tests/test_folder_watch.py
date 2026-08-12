@@ -1152,6 +1152,129 @@ class TestDoneStoreWriteCost(unittest.TestCase):
         self.assertEqual(sorted(DoneStore(p)._data), ["k1", "k2", "k3"])
 
 
+class TestRestrictedEnvironment(unittest.TestCase):
+    """The environment the tool actually runs in, not the one we develop in.
+
+    A watcher started by launchd gets a bare PATH, no interactive shell and a
+    different HOME. `lsof` lives in /usr/sbin, which launchd's default PATH
+    omits — and a version of this treated "lsof missing" as "file still open",
+    so nothing ever settled and both production watchers silently processed
+    nothing while logging progress forever.
+
+    Three rounds of independent audit missed it: every evaluator ran with a
+    normal shell PATH where lsof resolves. These tests run the real code in
+    the real restricted environment so that class of bug fails here instead.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _restricted(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        from folder_watch.support.launchd import launchagent_path_env
+
+        env = {
+            "PATH": launchagent_path_env(),
+            "HOME": str(self.tmp),
+            "PYTHONPATH": str(ROOT),
+        }
+        env.update(extra or {})
+        return env
+
+    def _run(self, code: str, extra: dict[str, str] | None = None):
+        import subprocess
+
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            env=self._restricted(extra),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    def test_lsof_is_findable_under_the_launchagent_path(self):
+        r = self._run(
+            "from folder_watch.core.util import lsof_binary; print(lsof_binary())"
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(
+            r.stdout.strip(),
+            "None",
+            "lsof unfindable under the PATH the installer writes",
+        )
+
+    def test_closed_file_does_not_look_open_under_that_path(self):
+        """The exact failure: every file appearing permanently open."""
+        target = self.tmp / "closed.bin"
+        target.write_bytes(b"x" * 32)
+        r = self._run(
+            "from pathlib import Path\n"
+            "from folder_watch.core.util import is_open\n"
+            f"print(is_open(Path({str(target)!r})))"
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(
+            r.stdout.strip(), "0", "a closed file looked open — nothing would settle"
+        )
+
+    def test_a_copy_completes_end_to_end_under_that_environment(self):
+        """Not just is_open: the whole settle path must actually finish."""
+        src = self.tmp / "src"
+        dest = self.tmp / "dest"
+        src.mkdir()
+        dest.mkdir()
+        (src / "clip.mp4").write_bytes(b"x" * 4096)
+
+        r = self._run(
+            "from folder_watch.cli import main\n"
+            "raise SystemExit(main(["
+            f"'copy', {str(src)!r}, '--to', {str(dest)!r}, '--once', '--catch-up',"
+            "'--ext', 'mp4', '--min-bytes', '1', '--stable', '1', '--no-notify']))"
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(
+            (dest / "clip.mp4").is_file(),
+            f"copy never completed under the LaunchAgent environment:\n{r.stdout}",
+        )
+
+    def test_installer_path_actually_contains_lsof(self):
+        """Guards the PATH itself: dropping /usr/sbin must fail here."""
+        import os
+
+        from folder_watch.support.launchd import launchagent_path_env
+
+        found = [
+            d
+            for d in launchagent_path_env().split(":")
+            if os.access(os.path.join(d, "lsof"), os.X_OK)
+        ]
+        self.assertTrue(
+            found, "no directory in the LaunchAgent PATH contains an executable lsof"
+        )
+
+    def test_missing_lsof_degrades_instead_of_deadlocking(self):
+        """If lsof genuinely isn't there, settle on size — never 'open forever'."""
+        empty_bin = self.tmp / "nobin"
+        empty_bin.mkdir()
+        target = self.tmp / "f.bin"
+        target.write_bytes(b"x" * 32)
+        r = self._run(
+            "from pathlib import Path\n"
+            "from folder_watch.core.util import is_open, lsof_binary\n"
+            "print('binary', lsof_binary())\n"
+            f"print('open', is_open(Path({str(target)!r})))",
+            extra={"PATH": str(empty_bin)},
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # Only meaningful if lsof really is unreachable in this run.
+        if "binary None" in r.stdout:
+            self.assertIn(
+                "open 0", r.stdout, "unreachable lsof reported every file as open"
+            )
+
+
 class TestConvxChildReaping(unittest.TestCase):
     """`convx watch` never exits on its own — it must not outlive its wrapper."""
 
