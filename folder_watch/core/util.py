@@ -1,17 +1,48 @@
 """FS helpers: lsof writers, ext matching."""
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
+from folder_watch.support.log import emit
 from folder_watch.support.partials import is_partial_filename
+
+_LSOF_CANDIDATES = ("/usr/sbin/lsof", "/usr/bin/lsof", "/bin/lsof")
+_warned_no_lsof = False
+
+
+def lsof_binary() -> str | None:
+    """Locate lsof without relying on PATH.
+
+    macOS keeps it in /usr/sbin, which launchd's default PATH does not
+    include — so a watcher started as a LaunchAgent could not find it at all.
+    """
+    found = shutil.which("lsof")
+    if found:
+        return found
+    for candidate in _LSOF_CANDIDATES:
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def is_open(path: Path) -> int:
     """Count writers on path (AME encode). Ignore read-only opens (preview)."""
+    global _warned_no_lsof
+    binary = lsof_binary()
+    if binary is None:
+        # Degrade to size-stability rather than deadlock. Reporting "open"
+        # here would mean nothing ever settles and the watcher silently
+        # processes nothing at all.
+        if not _warned_no_lsof:
+            _warned_no_lsof = True
+            emit("warn", reason="lsof_unavailable", note="settling on size alone")
+        return 0
     try:
         r = subprocess.run(
-            ["lsof", str(path)],
+            [binary, str(path)],
             capture_output=True,
             text=True,
             check=False,
@@ -20,9 +51,11 @@ def is_open(path: Path) -> int:
             # bound it would stall the whole watcher indefinitely.
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        # Unknown, not "closed" — treat as still open so we wait rather than
-        # acting on a file that may still be being written.
+    except subprocess.TimeoutExpired:
+        # lsof exists but wedged, probably on an unresponsive mount. Unknown
+        # is not "closed": wait rather than act on a possibly-partial file.
+        return 1
+    except OSError:
         return 1
     n = 0
     for ln in r.stdout.splitlines()[1:]:

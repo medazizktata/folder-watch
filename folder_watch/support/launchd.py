@@ -128,7 +128,12 @@ def install_service(
         root=root,
         log_path=log_path,
         stdio_path=stdio_log_path(log_path),
-        path_env=f"{local_bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+        # /usr/sbin matters: lsof lives there, and without it a watcher
+        # started by launchd cannot see whether a file is still being written.
+        path_env=(
+            f"{local_bin}:/opt/homebrew/bin:/usr/local/bin"
+            ":/usr/bin:/bin:/usr/sbin:/sbin"
+        ),
     )
     plist.write_text(body)
     subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, check=False)
