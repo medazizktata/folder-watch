@@ -1152,6 +1152,111 @@ class TestDoneStoreWriteCost(unittest.TestCase):
         self.assertEqual(sorted(DoneStore(p)._data), ["k1", "k2", "k3"])
 
 
+class TestPresetCoverage(unittest.TestCase):
+    """Nothing links argparse to the preset loader — so this does.
+
+    A flag added without touching cli.py's preset block is silently not
+    settable from a preset, which is how --no-clobber came to work perfectly
+    on the command line and do nothing for the unattended watchers that
+    needed it most. Adding a flag now forces a decision here.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_every_flag_is_wired_or_deliberately_excluded(self):
+        from folder_watch.cli import build_parser
+        from folder_watch.presets import NOT_PERSISTED, PRESET_KEYS
+
+        unclassified = []
+        for action in build_parser()._actions:
+            if not action.option_strings:
+                continue  # positional
+            dest = action.dest
+            if dest not in PRESET_KEYS and dest not in NOT_PERSISTED:
+                unclassified.append(f"{action.option_strings[0]} (dest={dest})")
+
+        self.assertEqual(
+            unclassified,
+            [],
+            "new flag(s) neither preset-settable nor deliberately excluded — "
+            "add the dest to PRESET_KEYS (and wire it in cli.py) or to "
+            "NOT_PERSISTED:\n  " + "\n  ".join(unclassified),
+        )
+
+    def test_no_stale_entries(self):
+        """A key nothing can set is dead weight that still silences a warning."""
+        from folder_watch.cli import build_parser
+        from folder_watch.presets import NOT_PERSISTED, PRESET_KEYS
+
+        dests = {a.dest for a in build_parser()._actions if a.option_strings}
+        dests |= {"action", "src"}  # positionals
+        both = (("PRESET_KEYS", PRESET_KEYS), ("NOT_PERSISTED", NOT_PERSISTED))
+        for name, keys in both:
+            stale = sorted(keys - dests)
+            self.assertEqual(
+                stale, [], f"{name} lists dest(s) no flag produces: {stale}"
+            )
+
+    def test_unknown_preset_key_warns_instead_of_passing_silently(self):
+        import contextlib
+        import io
+        import json
+        import os
+
+        from folder_watch.presets import load_presets
+
+        cfg_dir = self.tmp / "config"
+        cfg_dir.mkdir()
+        (cfg_dir / "presets.json").write_text(
+            json.dumps(
+                {
+                    "demo": {
+                        "action": "unzip",
+                        "src": "/tmp",
+                        "no_clober": True,       # typo
+                        "dry_run": True,         # not persistable
+                    }
+                }
+            )
+        )
+        prev = os.environ.get("FOLDER_WATCH_CONFIG_DIR")
+        os.environ["FOLDER_WATCH_CONFIG_DIR"] = str(cfg_dir)
+        try:
+            import importlib
+
+            import folder_watch.support.paths as paths_mod
+
+            importlib.reload(paths_mod)
+            import folder_watch.presets as presets_mod
+
+            importlib.reload(presets_mod)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                presets_mod.load_presets()
+            out = buf.getvalue()
+            self.assertIn("unknown_preset_keys", out)
+            self.assertIn("no_clober", out)
+            self.assertIn("dry_run", out)
+        finally:
+            if prev is None:
+                os.environ.pop("FOLDER_WATCH_CONFIG_DIR", None)
+            else:
+                os.environ["FOLDER_WATCH_CONFIG_DIR"] = prev
+            import importlib
+
+            import folder_watch.support.paths as paths_mod
+
+            importlib.reload(paths_mod)
+            import folder_watch.presets as presets_mod
+
+            importlib.reload(presets_mod)
+            del load_presets
+
+
 class TestPresetCarriesSafetyFlags(unittest.TestCase):
     """Unattended runs use --preset, and presets could not carry these at all.
 

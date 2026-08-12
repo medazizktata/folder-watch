@@ -205,6 +205,19 @@ runs use `--preset`, so without it the options that most need to be on for an
 unwatched watcher were the ones it could not reach. An explicit flag on the
 command line still wins over the preset.
 
+Nothing derives the preset schema from the argument parser, so a key the
+loader doesn't read does nothing — and `--list-presets` used to echo it back
+as though it were configuration. A misspelled `no_clober` looked exactly like
+a working safety flag. Unrecognised keys now warn:
+
+```
+warn reason=unknown_preset_keys preset=demo keys=dry_run,no_clober note="ignored — not settable from a preset"
+```
+
+`PRESET_KEYS` and `NOT_PERSISTED` in `folder_watch/presets.py` are the two
+lists, and a test fails if a flag is added to the parser without landing in
+one of them.
+
 ## Local config (`.env`)
 
 Machine-local paths and account identifiers stay out of source:

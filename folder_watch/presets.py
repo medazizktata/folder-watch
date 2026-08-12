@@ -6,7 +6,36 @@ from pathlib import Path
 from typing import Any
 
 from folder_watch.support.env import env
+from folder_watch.support.log import emit
 from folder_watch.support.paths import CONFIG_DIR, LEGACY_PRESETS, PRESETS_PATH
+
+# Every key a preset may carry. Nothing derives this automatically from the
+# argument parser, so a flag added without touching cli.py's preset block is
+# simply ignored when it appears in a preset — silently, which is the part
+# that bites. test_preset_coverage keeps this honest.
+PRESET_KEYS = frozenset(
+    {
+        "action", "src", "to", "mode",
+        "ext", "min_bytes", "recursive",
+        "poll", "stable", "settle", "backend", "debounce_ms",
+        "no_clobber", "create_dest", "exclusive", "no_done_store", "retry_hours",
+        "format", "convx_preset", "convx_bin", "quality", "width", "fps",
+        "max_size", "overwrite",
+    }
+)
+
+# Per-invocation by nature: persisting them would mean a preset that always
+# runs once, or always previews, or never writes its log where you asked.
+NOT_PERSISTED = frozenset(
+    {
+        "help", "version", "preset", "save_preset",
+        "list_presets", "list_actions",
+        "once", "catch_up", "dry_run", "pending",
+        # Arguably these could be persisted; they are a deliberate omission
+        # rather than an oversight, and the LaunchAgent passes --log itself.
+        "log", "log_level", "json", "verbose", "notify", "retries",
+    }
+)
 
 
 def drive_root() -> Path | None:
@@ -76,6 +105,18 @@ def load_presets() -> dict[str, dict[str, Any]]:
                 norm["to"] = norm.pop("dest")
             if "action" not in norm:
                 norm["action"] = "copy"
+            # A key the loader does not read does nothing, and --list-presets
+            # happily echoes it back — so a misspelled "no_clober", or a flag
+            # that was never wired up, looks like working configuration.
+            unknown = sorted(set(norm) - PRESET_KEYS)
+            if unknown:
+                emit(
+                    "warn",
+                    reason="unknown_preset_keys",
+                    preset=name,
+                    keys=",".join(unknown),
+                    note="ignored — not settable from a preset",
+                )
             merged[name] = {**merged.get(name, {}), **norm}
     return merged
 
