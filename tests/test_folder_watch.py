@@ -854,6 +854,80 @@ class TestAuditSmallFindings(unittest.TestCase):
             mine.unlink(missing_ok=True)
 
 
+class TestLogSafetyAndPruneKeys(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_filename_cannot_forge_a_log_line(self):
+        import contextlib
+        import io
+
+        from folder_watch.support.log import emit
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            emit("progress", name="x\ncopied name=FAKE.mp4 size=999", size=1)
+        out = buf.getvalue()
+        self.assertNotIn("\ncopied name=FAKE.mp4", out)
+        self.assertEqual(len(out.strip().splitlines()), 1, "emitted two lines")
+
+    def test_plain_format_survives_spaces_and_quotes(self):
+        from folder_watch.support.log import _plain
+
+        self.assertEqual(_plain("simple.mp4"), "simple.mp4")
+        self.assertEqual(_plain("with space.mp4"), '"with space.mp4"')
+        self.assertEqual(_plain('quote".mp4'), '"quote\\".mp4"')
+        self.assertEqual(_plain(123), "123")
+
+    def test_json_mode_still_one_object_per_line(self):
+        import contextlib
+        import io
+        import json as _json
+
+        from folder_watch.support.log import emit, set_json_mode
+
+        set_json_mode(True)
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                emit("progress", name="x\ncopied name=FAKE.mp4", size=1)
+            lines = buf.getvalue().strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(_json.loads(lines[0])["event"], "progress")
+        finally:
+            set_json_mode(False)
+
+    def test_prune_keeps_entries_whose_path_contains_a_pipe(self):
+        """Guessing produced a path that exists nowhere, so prune deleted it."""
+        from folder_watch.support.state import DoneStore, file_identity
+
+        weird = self.tmp / "dst|weird"
+        weird.mkdir()
+        src = self.tmp / "clip.mp4"
+        src.write_bytes(b"x" * 32)
+
+        store = DoneStore(self.tmp / "done.json")
+        size, mtime_ns = file_identity(src)
+        key = DoneStore.make_key(
+            "copy", src, size=size, mtime_ns=mtime_ns, dest=weird / "clip.mp4"
+        )
+        store.mark(key, name=src.name, src=str(src))
+
+        self.assertEqual(store.dead_keys(), [], "live entry classed as dead")
+        self.assertEqual(store.prune(), 0)
+        self.assertTrue(store.is_done(key))
+
+        # An ambiguous key with no recorded src is left alone, not guessed at.
+        self.assertIsNone(DoneStore.key_src("copy|/a|/b|c|d|1|2"))
+
+        # And a genuinely dead entry is still collected.
+        src.unlink()
+        self.assertEqual(store.prune(), 1)
+
+
 class TestRetryQueue(unittest.TestCase):
     """Transient failures survive an outage and a restart."""
 

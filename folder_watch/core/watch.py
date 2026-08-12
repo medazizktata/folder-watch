@@ -201,7 +201,7 @@ def apply_action(
             "done": True,
         }
     if done_store is not None and key is not None:
-        done_store.mark(key, name=name, result=result)
+        done_store.mark(key, name=name, result=result, src=str(src))
     if retries is not None:
         retries.drop(src)
     return result
@@ -941,6 +941,7 @@ def run_watch(
     log_path: Path | None = None,
     preset: str | None = None,
     to: str | None = None,
+    exclusive: bool = False,
 ) -> int:
     src_dir = src_dir.expanduser().resolve()
     name = watch_name or preset or f"{action.name}-{src_dir.name}"
@@ -977,12 +978,23 @@ def run_watch(
     if not once:
         others = live_watchers(name)
         if others:
+            if exclusive:
+                emit(
+                    "error",
+                    reason="already_running",
+                    name=name,
+                    other_pids=others,
+                )
+                return 2
+            # Warning, not refusal, by default: under launchd KeepAlive a
+            # watcher that refuses to start would flap instead of running, and
+            # for unattended work that is worse than duplicated copies.
             emit(
                 "warn",
                 reason="duplicate_watcher",
                 name=name,
                 other_pids=others,
-                note="both will act on the same files",
+                note="both will act on the same files; --exclusive refuses",
             )
         # launchd stops services with SIGTERM, whose default disposition kills
         # the process outright — the finally below never runs and the pidfile

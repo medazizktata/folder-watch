@@ -182,6 +182,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--exclusive",
+        action="store_true",
+        help=(
+            "refuse to start if another watcher already holds this name. Off by "
+            "default: under launchd a refusing service flaps instead of running"
+        ),
+    )
+    p.add_argument(
         "--no-clobber",
         action="store_true",
         help="unzip: refuse an archive that would overwrite existing files",
@@ -668,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
             log_path=args.log,
             preset=args.preset,
             to=to,
+            exclusive=args.exclusive,
         )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)

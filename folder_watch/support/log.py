@@ -63,12 +63,31 @@ def _jsonable(v: Any) -> Any:
     return v
 
 
+_ESCAPES = str.maketrans(
+    {"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t", '"': '\\"'}
+)
+
+
+def _plain(value: Any) -> str:
+    """One field of the plain-text format, safe to render.
+
+    A filename containing a newline could otherwise emit a second, entirely
+    well-formed line — `copied name=FAKE.mp4 size=999` — from a `progress`
+    event. Control characters are escaped, and anything still ambiguous gets
+    quoted so field boundaries survive. --json was never affected.
+    """
+    text = str(value).translate(_ESCAPES)
+    if text == "" or any(c in text for c in ' \t="'):
+        return '"' + text + '"'
+    return text
+
+
 def emit(event: str, **fields: Any) -> None:
     payload = {"event": event, **{k: _jsonable(v) for k, v in fields.items()}}
     if _JSON_MODE:
         line = json.dumps(payload, ensure_ascii=False)
     else:
-        bits = [event] + [f"{k}={v}" for k, v in fields.items()]
+        bits = [event] + [f"{k}={_plain(v)}" for k, v in fields.items()]
         line = " ".join(bits)
     print(line, flush=True)
     log.info("%s", line)

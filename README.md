@@ -151,8 +151,17 @@ Note `copy` only looks at `.mp4` of at least 1 MB unless you pass `--ext` /
 `--min-bytes`; a file below the threshold is logged as `ignored`.
 
 **Exit codes:** `--once` returns 1 if any file ended in `fail` or `error`, 0
-otherwise (an empty run is not a failure), 2 for usage errors. So a cron or CI
-wrapper can actually tell.
+otherwise (an empty run is not a failure), 2 for usage errors — including a
+source directory that doesn't exist. So a cron or CI wrapper can actually tell.
+
+**Log format:** plain-text fields escape control characters and are quoted when
+they contain spaces, `=` or `"`, so `name="my clip.mp4"` rather than an
+ambiguous bare value. Without that a crafted filename could emit a second,
+well-formed line. `--json` was never affected.
+
+**Two watchers on one folder** log a `duplicate_watcher` warning and both act.
+`--exclusive` refuses to start instead; it is off by default because under
+launchd a refusing service flaps rather than running.
 
 Done-state files: `~/.local/state/folder-watch/done-*.json`  
 Pidfiles: `~/.local/state/folder-watch/pids/*.json`  

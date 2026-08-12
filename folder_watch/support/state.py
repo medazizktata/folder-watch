@@ -111,14 +111,23 @@ class DoneStore:
     def key_src(key: str) -> str | None:
         """Source path out of a key: action|src|dest|mode|size|mtime.
 
-        Returns None if the key doesn't have that shape, so a weird key is
-        left alone rather than pruned on a bad guess.
+        Only when that split is unambiguous. A "|" anywhere in the source or
+        destination makes the field count wrong, and guessing produced paths
+        like "/a/src.mp4|/dest" that exist nowhere — so prune classed a live
+        entry as dead and deleted it. Entries written since carry an explicit
+        "src", so this is only a fallback for older ones.
         """
         parts = key.split("|")
-        if len(parts) < 6:
+        if len(parts) != 6:
             return None
-        # dest may itself contain "|", so count in from both ends.
-        return "|".join(parts[1:-4]) if len(parts) > 6 else parts[1]
+        return parts[1]
+
+    def entry_src(self, key: str) -> str | None:
+        """Prefer the recorded source; fall back to parsing older entries."""
+        recorded = (self._data.get(key) or {}).get("src")
+        if isinstance(recorded, str) and recorded:
+            return recorded
+        return self.key_src(key)
 
     def dead_keys(self) -> list[str]:
         """Entries whose source file is gone.
@@ -128,7 +137,7 @@ class DoneStore:
         """
         dead: list[str] = []
         for key in self._data:
-            src = self.key_src(key)
+            src = self.entry_src(key)
             if src is None:
                 continue
             try:
@@ -189,7 +198,7 @@ class DoneStore:
             action, src, size=size, mtime_ns=mtime_ns, dest=dest, mode=mode
         )
         if not self.is_done(key):
-            self.mark(key, baseline=True, name=src.name)
+            self.mark(key, baseline=True, name=src.name, src=str(src))
         return key
 
 
