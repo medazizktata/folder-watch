@@ -117,6 +117,10 @@ class DoneStore:
     def is_done(self, key: str) -> bool:
         return key in self._data
 
+    def is_baseline(self, key: str) -> bool:
+        """Recorded as assumed-done at startup, never actually processed."""
+        return bool((self._data.get(key) or {}).get("baseline"))
+
     def mark(self, key: str, **meta: Any) -> None:
         self._data[key] = {
             "ts": time.time(),

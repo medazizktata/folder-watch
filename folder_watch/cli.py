@@ -681,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
             preset=args.preset,
             to=to,
             exclusive=args.exclusive,
+            dry_run=args.dry_run,
         )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)

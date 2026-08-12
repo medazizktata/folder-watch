@@ -159,6 +159,13 @@ they contain spaces, `=` or `"`, so `name="my clip.mp4"` rather than an
 ambiguous bare value. Without that a crafted filename could emit a second,
 well-formed line. `--json` was never affected.
 
+**A stalled file is not abandoned.** If nothing changes for `STALL_TIMEOUT`
+(300 s) the watcher asks `lsof` directly. If the writer has let go, the file is
+complete and gets processed — logged `settled_late`, because releasing a handle
+does not reliably emit an FSEvent and dropping it there lost finished work. If
+the writer still holds it, it logs `stalled` once and keeps re-checking slowly
+rather than forgetting it; only after 24 h of no progress does it `give_up`.
+
 **Two watchers on one folder** log a `duplicate_watcher` warning and both act.
 `--exclusive` refuses to start instead; it is off by default because under
 launchd a refusing service flaps rather than running.

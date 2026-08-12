@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,13 @@ from folder_watch.support.state import DoneStore, file_identity
 # at 0 bytes, writers that died holding a handle) ever reach it. If the file
 # starts moving again a new FSEvent re-queues it.
 STALL_TIMEOUT = 300.0
+
+# While a writer still holds a stalled file we must not forget it: releasing a
+# handle does not reliably emit an FSEvent, so dropping it abandons finished
+# work permanently. Instead back off to a cheap slow re-check, and only truly
+# abandon after a full day of no progress.
+STALL_RECHECK_INTERVAL = 60.0
+STALL_ABANDON_AFTER = 24 * 3600.0
 
 # At startup, only pay for lsof on files touched this recently. An older file
 # is treated as finished; if that's wrong, the baseline size check in the
@@ -207,6 +215,68 @@ def apply_action(
     return result
 
 
+def service_retries(
+    retries: RetryQueue,
+    action: Action,
+    *,
+    state: dict[str, dict],
+    stable_needed: int,
+    done_store: DoneStore | None = None,
+    lock: threading.Lock | None = None,
+    requeue: Callable[[Path], None] | None = None,
+    dest_away_logged: bool = False,
+) -> bool:
+    """Run whatever has come due. Returns the new dest_away_logged flag.
+
+    Shared by both backends. The poll loop went without it entirely, so it
+    retried permanent failures on every scan forever, with no backoff and no
+    give-up budget.
+    """
+    for entry in retries.expired():
+        emit(
+            "give_up",
+            name=Path(entry["path"]).name,
+            reason="retry_exhausted",
+            attempts=entry.get("attempts"),
+            hours=int(retries.give_up_after / 3600),
+        )
+    due = retries.due(limit=MAX_PER_SCAN)
+    if due and not action.destination_ready():
+        # One probe, not one failure per file.
+        retries.defer(due)
+        if not dest_away_logged:
+            emit("retry_waiting", queued=len(retries), reason="dest_away")
+        return True
+    if due:
+        dest_away_logged = False
+    for entry in due:
+        rpath = Path(entry["path"])
+        if not rpath.is_file():
+            retries.drop(rpath)
+            continue
+        try:
+            rst = rpath.stat()
+        except OSError:
+            continue
+        if (rst.st_size, rst.st_mtime_ns) != (entry.get("size"), entry.get("mtime_ns")):
+            # Rewritten since it failed — belongs in settle, not here.
+            retries.drop(rpath)
+            if requeue is not None:
+                requeue(rpath)
+            continue
+        emit("retry", name=rpath.name, attempt=entry.get("attempts"))
+        apply_action(
+            rpath,
+            action,
+            state=state,
+            stable_needed=stable_needed,
+            done_store=done_store,
+            lock=lock,
+            retries=retries,
+        )
+    return dest_away_logged
+
+
 def _progress(track: dict[str, Any], src: Path, size: int) -> None:
     """Throttled progress line — every 2s, or every tick when verbose.
 
@@ -314,13 +384,15 @@ def process_file(
     settle_interval: float,
     wait: bool = True,
     done_store: DoneStore | None = None,
+    retries: RetryQueue | None = None,
 ) -> str | None:
     """Settle then action, returning the action's result label (or None).
 
     wait=True  — block until ready (legacy / rare)
     wait=False — never block on in-progress files; skip and let event loop retry
     """
-    # Ask the cheap question first. The done-store check used to live inside
+    sk = _state_key(src)
+    # Ask the cheap questions first. The done-store check used to live inside
     # apply_action, downstream of the whole settle pipeline, so a rescan where
     # every file was already done cost the same wall clock and the same lsof
     # calls as doing all the work.
@@ -329,24 +401,47 @@ def process_file(
             size, mtime_ns = file_identity(src)
         except OSError:
             return None
-        if done_store.is_done(
-            DoneStore.make_key(
-                action.name,
-                src,
-                size=size,
-                mtime_ns=mtime_ns,
-                dest=action.done_dest(src),
-                mode=action.done_mode(),
-            )
+        prev = state.get(sk, {})
+        if (
+            prev.get("done")
+            and prev.get("size") == size
+            and prev.get("mtime_ns") == mtime_ns
         ):
-            emit("skip", name=src.name, size=size, reason="done_store")
-            return "skip"
+            # Already reported in this process. The poll backend rescans every
+            # cycle, so re-emitting here grew the log without bound.
+            return prev.get("last_result")
+        key = DoneStore.make_key(
+            action.name,
+            src,
+            size=size,
+            mtime_ns=mtime_ns,
+            dest=action.done_dest(src),
+            mode=action.done_mode(),
+        )
+        if done_store.is_done(key):
+            # A baseline entry is an assumption, not a result. If the output
+            # isn't there, this file was never processed — saying "skip" and
+            # exiting 0 reported total success over untouched work.
+            assumed = done_store.is_baseline(key) and action.output_exists(src) is False
+            result = "pending" if assumed else "skip"
+            emit(
+                "pending" if assumed else "skip",
+                name=src.name,
+                size=size,
+                reason="baseline_no_output" if assumed else "done_store",
+            )
+            state[sk] = {
+                "size": size,
+                "mtime_ns": mtime_ns,
+                "done": True,
+                "last_result": result,
+            }
+            return result
 
     track: dict[str, Any] = {}
     # Carry the "already said this is too small" flag across scans. The poll
     # backend builds a fresh track every cycle, so without this it re-emits
     # `ignored` for the same file forever and the log grows without bound.
-    sk = _state_key(src)
     if state.get(sk, {}).get("said_small"):
         track["said_small"] = True
 
@@ -362,6 +457,7 @@ def process_file(
                     state=state,
                     stable_needed=stable_needed,
                     done_store=done_store,
+                    retries=retries,
                 )
             if status == "gone":
                 return None
@@ -400,6 +496,7 @@ def process_file(
                 state=state,
                 stable_needed=stable_needed,
                 done_store=done_store,
+                retries=retries,
             )
         time.sleep(settle_interval)
 
@@ -416,9 +513,11 @@ def scan_once(
     wait: bool = False,
     done_store: DoneStore | None = None,
     recursive: bool = False,
+    retries: RetryQueue | None = None,
 ) -> int:
     """Returns how many files ended in a failing result."""
     failures = 0
+    pending = 0
     for path in iter_watch_files(src_dir, exts, recursive=recursive):
         result = process_file(
             path,
@@ -429,9 +528,18 @@ def scan_once(
             settle_interval=settle_interval,
             wait=wait,
             done_store=done_store,
+            retries=retries,
         )
         if result in FAILED_RESULTS:
             failures += 1
+        elif result == "pending":
+            pending += 1
+    if pending:
+        emit(
+            "baseline_pending",
+            count=pending,
+            hint="skipped but no output found — re-run once with --catch-up",
+        )
     return failures
 
 
@@ -559,6 +667,7 @@ def run_watch_poll(
     catch_up: bool = False,
     done_store: DoneStore | None = None,
     recursive: bool = False,
+    retries: RetryQueue | None = None,
 ) -> int:
     state: dict[str, dict] = {}
     if not catch_up:
@@ -570,8 +679,10 @@ def run_watch_poll(
             state=state,
             done_store=done_store,
             recursive=recursive,
+            skip=retries.paths() if retries is not None else None,
         )
     present = True
+    dest_away_logged = False
     while True:
         # Poll recovers on its own — every cycle re-scans — but it used to do
         # so mutely, warning on each scan and never saying it came back.
@@ -583,6 +694,15 @@ def run_watch_poll(
         present = alive
 
         if alive:
+            if retries is not None:
+                dest_away_logged = service_retries(
+                    retries,
+                    action,
+                    state=state,
+                    stable_needed=stable_needed,
+                    done_store=done_store,
+                    dest_away_logged=dest_away_logged,
+                )
             scan_once(
                 src_dir,
                 action,
@@ -594,6 +714,7 @@ def run_watch_poll(
                 wait=False,
                 done_store=done_store,
                 recursive=recursive,
+                retries=retries,
             )
         time.sleep(poll)
 
@@ -799,52 +920,21 @@ def run_watch_event(
             # another lsof per file per attempt.
             if retries is not None and now - last_retry_check >= RETRY_SCAN_INTERVAL:
                 last_retry_check = now
-                for entry in retries.expired():
-                    emit(
-                        "give_up",
-                        name=Path(entry["path"]).name,
-                        reason="retry_exhausted",
-                        attempts=entry.get("attempts"),
-                        hours=int(retries.give_up_after / 3600),
-                    )
-                due = retries.due(limit=MAX_PER_SCAN)
-                if due and not action.destination_ready():
-                    # One probe, not one failure per file.
-                    retries.defer(due)
-                    if not dest_away_logged:
-                        emit("retry_waiting", queued=len(retries), reason="dest_away")
-                        dest_away_logged = True
-                    due = []
-                elif due:
-                    dest_away_logged = False
-                for entry in due:
-                    rpath = Path(entry["path"])
-                    if not rpath.is_file():
-                        retries.drop(rpath)
-                        continue
-                    try:
-                        rst = rpath.stat()
-                    except OSError:
-                        continue
-                    if (rst.st_size, rst.st_mtime_ns) != (
-                        entry.get("size"),
-                        entry.get("mtime_ns"),
-                    ):
-                        # Rewritten since it failed — belongs in settle, not here.
-                        retries.drop(rpath)
-                        with lock:
-                            pending[str(rpath)] = now
-                        continue
-                    emit("retry", name=rpath.name, attempt=entry.get("attempts"))
-                    apply_action(
-                        rpath,
-                        action,
-                        state=state,
-                        stable_needed=stable_needed,
-                        done_store=done_store,
-                        lock=lock,
-                        retries=retries,
-                    )
+
+                def _requeue(rpath: Path, _now: float = now) -> None:
+                    with lock:
+                        pending[str(rpath)] = _now
+
+                dest_away_logged = service_retries(
+                    retries,
+                    action,
+                    state=state,
+                    stable_needed=stable_needed,
+                    done_store=done_store,
+                    lock=lock,
+                    requeue=_requeue,
+                    dest_away_logged=dest_away_logged,
+                )
 
             with lock:
                 for key, ts in list(pending.items()):
@@ -887,14 +977,58 @@ def run_watch_event(
                 if status == "waiting":
                     stalled = now - track.get("last_change", now)
                     if stalled > STALL_TIMEOUT:
+                        # Ask directly rather than inferring from silence.
+                        still_open = is_open(path)
+                        if not still_open:
+                            # The writer let go and no event told us. This is
+                            # a complete file we were about to abandon.
+                            with lock:
+                                watching.pop(key, None)
+                            emit(
+                                "settled_late",
+                                name=path.name,
+                                stalled_s=int(stalled),
+                                note="writer released without an event",
+                            )
+                            apply_action(
+                                path,
+                                action,
+                                state=state,
+                                stable_needed=stable_needed,
+                                done_store=done_store,
+                                lock=lock,
+                                retries=retries,
+                            )
+                            continue
+
+                        held = track.setdefault("stalled_since", now)
+                        if now - held > STALL_ABANDON_AFTER:
+                            with lock:
+                                watching.pop(key, None)
+                            emit(
+                                "give_up",
+                                name=path.name,
+                                reason="held_open_too_long",
+                                stalled_s=int(now - held),
+                                note="--pending will still report it",
+                            )
+                            continue
+                        # Still held: keep it, just stop checking so often.
+                        # Forgetting it here is what abandoned finished work.
+                        track["last_change"] = now
                         with lock:
-                            watching.pop(key, None)
-                        emit(
-                            "give_up",
-                            name=path.name,
-                            reason="no_size_change",
-                            stalled_s=int(stalled),
-                        )
+                            if key in watching:
+                                watching[key]["next_check"] = (
+                                    now + STALL_RECHECK_INTERVAL
+                                )
+                        if not track.get("said_stalled"):
+                            track["said_stalled"] = True
+                            emit(
+                                "stalled",
+                                name=path.name,
+                                stalled_s=int(stalled),
+                                note="writer still holds it; re-checking slowly",
+                            )
                         continue
                     with lock:
                         if key in watching:
@@ -942,6 +1076,7 @@ def run_watch(
     preset: str | None = None,
     to: str | None = None,
     exclusive: bool = False,
+    dry_run: bool = False,
 ) -> int:
     src_dir = src_dir.expanduser().resolve()
     name = watch_name or preset or f"{action.name}-{src_dir.name}"
@@ -975,7 +1110,9 @@ def run_watch(
             emit("catch_up", cleared_baseline=cleared)
 
     prev_term = None
-    if not once:
+    # --dry-run is documented as "no writes". A pidfile is a write, and it also
+    # made a preview run collide with --exclusive.
+    if not once and not dry_run:
         others = live_watchers(name)
         if others:
             if exclusive:
@@ -1049,6 +1186,7 @@ def run_watch(
                 catch_up=catch_up,
                 done_store=done_store,
                 recursive=recursive,
+                retries=retries,
             )
 
         return run_watch_event(
@@ -1065,7 +1203,7 @@ def run_watch(
             retries=retries,
         )
     finally:
-        if not once:
+        if not once and not dry_run:
             clear_pidfile(name)
             if prev_term is not None:
                 try:

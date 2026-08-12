@@ -936,6 +936,123 @@ class TestArchiveDataLoss(unittest.TestCase):
         self.assertTrue(z.exists(), "archive deleted after a truncated extract")
 
 
+class TestAuditRoundThree(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = self.tmp / "src"
+        self.dest = self.tmp / "dest"
+        self.src.mkdir()
+        self.dest.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_stale_temp_sweep(self):
+        """A killed copy left a full-size hidden file nothing ever removed."""
+        import os
+
+        from folder_watch.support.copy_io import sweep_stale_temps
+
+        dest = self.dest / "clip.mp4"
+        stale = self.dest / ".clip.mp4.abcd.tmp"
+        fresh = self.dest / ".clip.mp4.efgh.tmp"
+        unrelated = self.dest / ".other.mp4.ijkl.tmp"
+        for f in (stale, fresh, unrelated):
+            f.write_bytes(b"x" * 16)
+        old = time.time() - 7200
+        os.utime(stale, (old, old))
+        os.utime(unrelated, (old, old))
+
+        self.assertEqual(sweep_stale_temps(dest), 1)
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists(), "removed a copy that may be in flight")
+        self.assertTrue(unrelated.exists(), "removed another file's temp")
+
+    def test_once_reports_baseline_skips(self):
+        """Skipping never-processed work while printing total success."""
+        import contextlib
+        import io
+
+        from folder_watch.core.watch import process_file
+        from folder_watch.support.state import DoneStore, file_identity
+
+        f = self.src / "c.mp4"
+        f.write_bytes(b"x" * 64)
+        store = DoneStore(self.tmp / "done.json")
+        action = CopyAction(self.dest, notify_on_done=False, src_root=self.src)
+        size, mtime_ns = file_identity(f)
+        key = store.mark_baseline_file(
+            "copy", f, size=size, mtime_ns=mtime_ns, dest=action.done_dest(f)
+        )
+        self.assertTrue(store.is_baseline(key))
+
+        state: dict = {}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = process_file(
+                f,
+                action,
+                state=state,
+                min_bytes=1,
+                stable_needed=1,
+                settle_interval=0.01,
+                wait=False,
+                done_store=store,
+            )
+        self.assertEqual(result, "pending")
+        self.assertIn("baseline_no_output", buf.getvalue())
+
+        # Second look says nothing — the poll backend rescans every cycle.
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            process_file(
+                f,
+                action,
+                state=state,
+                min_bytes=1,
+                stable_needed=1,
+                settle_interval=0.01,
+                wait=False,
+                done_store=store,
+            )
+        self.assertEqual(buf2.getvalue(), "", "repeated itself every scan")
+
+    def test_verified_done_still_skips_quietly(self):
+        """A genuine result must not be mistaken for an unmet assumption."""
+        import contextlib
+        import io
+
+        from folder_watch.core.watch import process_file
+        from folder_watch.support.state import DoneStore, file_identity
+
+        f = self.src / "d.mp4"
+        f.write_bytes(b"x" * 64)
+        action = CopyAction(self.dest, notify_on_done=False, src_root=self.src)
+        self.assertEqual(action.run(f), "copied")
+
+        store = DoneStore(self.tmp / "done.json")
+        size, mtime_ns = file_identity(f)
+        key = DoneStore.make_key(
+            "copy", f, size=size, mtime_ns=mtime_ns, dest=action.done_dest(f)
+        )
+        store.mark(key, name=f.name, result="copied", src=str(f))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = process_file(
+                f,
+                action,
+                state={},
+                min_bytes=1,
+                stable_needed=1,
+                settle_interval=0.01,
+                wait=False,
+                done_store=store,
+            )
+        self.assertEqual(result, "skip")
+        self.assertIn("done_store", buf.getvalue())
+
+
 class TestDoneStoreWriteCost(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

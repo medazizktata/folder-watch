@@ -10,6 +10,32 @@ from pathlib import Path
 
 from folder_watch.support.log import emit
 
+# A copy killed mid-flight leaves its temp behind. Nothing swept them up, so a
+# destination accumulated full-size hidden files that neither a restart nor
+# `prune` touched. Old enough that a copy genuinely in flight is never hit.
+STALE_TMP_AGE = 3600.0
+
+
+def sweep_stale_temps(dest: Path, *, max_age: float = STALE_TMP_AGE) -> int:
+    """Remove leftovers from earlier interrupted copies of this destination."""
+    removed = 0
+    now = time.time()
+    try:
+        candidates = list(dest.parent.glob(f".{dest.name}.*.tmp"))
+    except OSError:
+        return 0
+    for leftover in candidates:
+        try:
+            if now - leftover.stat().st_mtime < max_age:
+                continue
+            leftover.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            continue
+    if removed:
+        emit("cleanup", reason="stale_temp", count=removed, dest=dest.parent)
+    return removed
+
 
 def atomic_copy(
     src: Path,
@@ -23,6 +49,7 @@ def atomic_copy(
     The caller owns creating dest.parent — see paths.ensure_dest_dir. Creating
     it here would silently rebuild an unmounted volume's tree on local disk.
     """
+    sweep_stale_temps(dest)
     last: OSError | None = None
     for attempt in range(1, retries + 1):
         tmp: Path | None = None
