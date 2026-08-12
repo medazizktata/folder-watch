@@ -238,7 +238,7 @@ def settle_step(
       waiting — still open / growing / not enough stable ticks
       gone    — file disappeared
 
-    lsof costs ~250ms a call, so it is consulted only once the size has held
+    lsof costs 0.4-0.8s a call (measured), so it is consulted only once the size has held
     still for stable_needed ticks: a file that is still growing is already
     proof of an open write handle, and stat() answers that for ~5ms.
     """
@@ -255,6 +255,17 @@ def settle_step(
     if size < min_bytes:
         track["stable"] = 0
         track["prev"] = size
+        if not track.get("said_small"):
+            # Otherwise this only ever emits `progress`, which reads as work in
+            # flight, for the full STALL_TIMEOUT before give_up.
+            track["said_small"] = True
+            emit(
+                "ignored",
+                name=src.name,
+                size=size,
+                reason="below_min_bytes",
+                min_bytes=min_bytes,
+            )
         _progress(track, src, size)
         return "waiting"
 
@@ -309,7 +320,35 @@ def process_file(
     wait=True  — block until ready (legacy / rare)
     wait=False — never block on in-progress files; skip and let event loop retry
     """
+    # Ask the cheap question first. The done-store check used to live inside
+    # apply_action, downstream of the whole settle pipeline, so a rescan where
+    # every file was already done cost the same wall clock and the same lsof
+    # calls as doing all the work.
+    if done_store is not None:
+        try:
+            size, mtime_ns = file_identity(src)
+        except OSError:
+            return None
+        if done_store.is_done(
+            DoneStore.make_key(
+                action.name,
+                src,
+                size=size,
+                mtime_ns=mtime_ns,
+                dest=action.done_dest(src),
+                mode=action.done_mode(),
+            )
+        ):
+            emit("skip", name=src.name, size=size, reason="done_store")
+            return "skip"
+
     track: dict[str, Any] = {}
+    # Carry the "already said this is too small" flag across scans. The poll
+    # backend builds a fresh track every cycle, so without this it re-emits
+    # `ignored` for the same file forever and the log grows without bound.
+    sk = _state_key(src)
+    if state.get(sk, {}).get("said_small"):
+        track["said_small"] = True
 
     if not wait:
         for _ in range(stable_needed + 5):
@@ -344,6 +383,8 @@ def process_file(
             except OSError:
                 return None
             time.sleep(settle_interval)
+        if track.get("said_small"):
+            state.setdefault(sk, {})["said_small"] = True
         return None
 
     while True:
@@ -425,7 +466,7 @@ def seed_baseline(
             continue
         if skip and (str(path) in skip or str(resolved) in skip):
             continue
-        # lsof is ~250ms a call and this runs before the watcher accepts
+        # lsof costs 0.4-0.8s a call and this runs before the watcher accepts
         # events, so skip it where we safely can. An old mtime is NOT proof a
         # file is finished — a stalled writer can hold a handle for hours
         # without touching it — so age alone may only exempt a file whose
@@ -904,6 +945,12 @@ def run_watch(
     src_dir = src_dir.expanduser().resolve()
     name = watch_name or preset or f"{action.name}-{src_dir.name}"
 
+    # A source that isn't there is a typo or an unmounted volume, not an empty
+    # folder. Reporting "done failed=0" made those indistinguishable.
+    if not src_dir.is_dir():
+        emit("error", reason="src_missing", src=src_dir)
+        return 2
+
     emit(
         "start",
         src=src_dir,
@@ -967,8 +1014,8 @@ def run_watch(
                 action,
                 exts=exts,
                 min_bytes=min_bytes,
-                stable_needed=1,
-                settle_interval=0.05,
+                stable_needed=stable_needed,
+                settle_interval=settle_interval,
                 state=state,
                 wait=False,
                 done_store=done_store,

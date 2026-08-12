@@ -19,6 +19,8 @@ class DoneStore:
     def __init__(self, path: Path) -> None:
         self.path = path.expanduser()
         self._data: dict[str, dict[str, Any]] = {}
+        # Keys this process removed on purpose, so a merge doesn't resurrect them.
+        self._dropped: set[str] = set()
         self._load()
 
     @staticmethod
@@ -46,6 +48,23 @@ class DoneStore:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Merge whatever is on disk first. Each process holds a snapshot loaded
+        # at startup, so writing that snapshot wholesale let a second watcher
+        # (or a --pending/--dry-run run) erase the first's entries — and with
+        # them the record of work already done.
+        on_disk: dict[str, dict[str, Any]] = {}
+        if self.path.is_file():
+            try:
+                data = json.loads(self.path.read_text())
+                if isinstance(data, dict) and isinstance(data.get("entries"), dict):
+                    on_disk = data["entries"]
+            except (OSError, json.JSONDecodeError):
+                on_disk = {}
+        merged = {**on_disk, **self._data}
+        for key in set(on_disk) - set(self._data):
+            if key in self._dropped:
+                merged.pop(key, None)
+        self._data = merged
         payload = {"version": 1, "entries": self._data}
         text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         fd, tmp = tempfile.mkstemp(
@@ -130,6 +149,7 @@ class DoneStore:
         dead = [k for k, v in self._data.items() if v.get("baseline")]
         for key in dead:
             self._data.pop(key, None)
+            self._dropped.add(key)
         if dead:
             self.save()
         return len(dead)
@@ -139,6 +159,7 @@ class DoneStore:
         dead = self.dead_keys()
         for key in dead:
             self._data.pop(key, None)
+            self._dropped.add(key)
         if dead:
             self.save()
         return len(dead)

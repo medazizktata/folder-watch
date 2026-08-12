@@ -56,11 +56,21 @@ class UnzipAction(Action):
         return self._target_dir(src)
 
     def output_exists(self, src: Path) -> bool | None:
-        # mode=same extracts alongside the zip, so the target directory always
-        # exists and proves nothing.
-        if self.mode == "same":
-            return None
         target = self._target_dir(src)
+        if self.mode == "same":
+            # The target directory is the zip's own folder, so its existence
+            # proves nothing. Ask the archive what it should have produced —
+            # reading the central directory is cheap, no decompression. Without
+            # this, --pending and baseline_pending are structurally blind for
+            # mode=same and give a false all-clear.
+            try:
+                with zipfile.ZipFile(src) as zf:
+                    members = [n for n in zf.namelist() if not n.endswith("/")]
+            except (zipfile.BadZipFile, OSError):
+                return None
+            if not members:
+                return None
+            return all((target / n).exists() for n in members)
         try:
             return target.is_dir() and any(target.iterdir())
         except OSError:
@@ -103,6 +113,23 @@ class UnzipAction(Action):
                         )
                         return "fail"
                 members = zf.namelist()
+                # A member that lands on the archive's own path (a zip
+                # containing a file of its own name, under --mode same) would
+                # be overwritten by extractall and then deleted as "the
+                # archive" — losing the archive AND the extracted content
+                # while every check reports success.
+                for member in members:
+                    try:
+                        if (target / member).resolve() == path.resolve():
+                            emit(
+                                "fail",
+                                name=path.name,
+                                reason="member_is_archive",
+                                member=member,
+                            )
+                            return "fail"
+                    except OSError:
+                        continue
                 try:
                     # named/same land beside the zip, so their parent exists by
                     # definition. Only --mode to can aim at an unmounted volume,

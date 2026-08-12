@@ -15,9 +15,15 @@ def is_open(path: Path) -> int:
             capture_output=True,
             text=True,
             check=False,
+            # This runs on the single-threaded main loop. lsof walks every FD
+            # on the machine and can wedge on an unresponsive mount; without a
+            # bound it would stall the whole watcher indefinitely.
+            timeout=30,
         )
-    except OSError:
-        return 0
+    except (OSError, subprocess.TimeoutExpired):
+        # Unknown, not "closed" — treat as still open so we wait rather than
+        # acting on a file that may still be being written.
+        return 1
     n = 0
     for ln in r.stdout.splitlines()[1:]:
         parts = ln.split()

@@ -37,6 +37,10 @@ def ensure_dest_dir(dest: Path, *, create_parents: bool = False) -> None:
     dest = dest.expanduser()
     if dest.is_dir():
         return
+    if dest.exists():
+        # Otherwise mkdir surfaces a bare [Errno 17] File exists, which reads
+        # like a race rather than "your --to points at a file".
+        raise DestUnavailable(f"destination exists but is not a directory: {dest}")
     if create_parents:
         dest.mkdir(parents=True, exist_ok=True)
         return

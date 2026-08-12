@@ -16,15 +16,20 @@ from folder_watch.cli import main as fw_main
 # Flags that folder-watch itself handles; hand the whole argv over untouched.
 PASSTHROUGH = ("--list-presets", "--list-actions", "--preset")
 
+# Every folder-watch flag that takes a value. A flag missing here has its
+# value mistaken for a positional and the shim errors with "unexpected [...]"
+# — which is what happened to --log, --retries and --log-level.
 _SHARED_VALUE_FLAGS = frozenset(
     {"--ext", "--poll", "--stable", "--min-bytes", "--save-preset",
-     "--backend", "--debounce", "--settle"}
+     "--backend", "--debounce", "--settle", "--log", "--log-level",
+     "--retries", "--retry-hours", "--to", "--mode"}
 )
 COPY_VALUE_FLAGS = _SHARED_VALUE_FLAGS
-UNZIP_VALUE_FLAGS = _SHARED_VALUE_FLAGS | {"--mode", "--to"}
+UNZIP_VALUE_FLAGS = _SHARED_VALUE_FLAGS
 CONVX_VALUE_FLAGS = frozenset(
     {"--ext", "--format", "--convx-preset", "--quality", "--width", "--fps",
-     "--max-size", "--convx-bin", "--debounce", "--save-preset"}
+     "--max-size", "--convx-bin", "--debounce", "--save-preset",
+     "--log", "--log-level"}
 )
 
 

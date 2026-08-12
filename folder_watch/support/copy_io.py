@@ -1,6 +1,7 @@
 """Atomic copy with retries."""
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import tempfile
@@ -44,13 +45,23 @@ def atomic_copy(
             return
         except OSError as e:
             last = e
+            if e.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+                # A read-only or forbidden destination will not become writable
+                # by waiting; retrying just burns seconds per file.
+                if tmp is not None:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
             if tmp is not None:
                 try:
                     tmp.unlink(missing_ok=True)
                 except OSError:
                     pass
             emit(
-                "retry",
+                # Not the retry queue — this is atomic_copy's own inner backoff.
+                "copy_retry",
                 name=src.name,
                 attempt=attempt,
                 err=str(e),

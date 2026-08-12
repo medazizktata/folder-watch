@@ -536,8 +536,12 @@ class TestBaselinePending(unittest.TestCase):
         (target / "a.txt").write_text("a")
         self.assertIs(action.output_exists(z), True)
 
-        # mode=same extracts beside the zip, so the dir proves nothing.
-        self.assertIsNone(UnzipAction(mode="same").output_exists(z))
+        # mode=same extracts beside the zip, so the directory's existence
+        # proves nothing — it asks the archive what it should have produced.
+        same = UnzipAction(mode="same")
+        self.assertIs(same.output_exists(z), False, "blind for mode=same")
+        (self.src / "a.txt").write_text("a")
+        self.assertIs(same.output_exists(z), True)
 
     def test_list_pending_is_read_only(self):
         from folder_watch.core.watch import list_pending
@@ -760,6 +764,25 @@ class TestAuditSmallFindings(unittest.TestCase):
 
         self.assertTrue(z.exists(), "archive deleted after a partial extract")
         self.assertFalse((target / "b.txt").exists())
+
+    def test_member_named_like_the_archive_is_refused(self):
+        """mode=same: extracting it overwrites the archive, then unlink()
+        deletes the extracted content too — an empty folder, reported ok."""
+        z = self.inbox / "z.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("z.zip", "payload-that-would-eat-the-archive")
+
+        self.assertEqual(UnzipAction(mode="same").run(z), "fail")
+        self.assertTrue(z.exists(), "archive destroyed by its own member")
+        self.assertNotEqual(z.read_bytes()[:4], b"payl")
+        self.assertTrue(zipfile.is_zipfile(z), "archive replaced by the member")
+
+        # mode=named puts it in a subfolder, so there is no collision.
+        z2 = self.inbox / "ok.zip"
+        with zipfile.ZipFile(z2, "w") as zf:
+            zf.writestr("ok.zip", "inner")
+        self.assertEqual(UnzipAction(mode="named").run(z2), "extracted")
+        self.assertEqual((self.inbox / "ok" / "ok.zip").read_text(), "inner")
 
     def test_empty_archive_is_refused(self):
         z = self.inbox / "empty.zip"

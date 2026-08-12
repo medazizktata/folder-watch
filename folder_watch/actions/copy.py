@@ -1,6 +1,7 @@
 """Copy action — atomic copy + optional notify."""
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 from folder_watch.actions.base import Action
@@ -118,11 +119,14 @@ class CopyAction(Action):
         try:
             atomic_copy(path, dest, retries=self.retries)
         except OSError as e:
-            # atomic_copy already exhausted its own backoff; a network volume
-            # can still recover, so hand it to the retry queue.
             emit("fail", name=path.name, reason="copy_error", err=str(e))
             if self.notify_on_done:
                 notify("folder-watch copy failed", path.name, reveal=dest)
+            # A read-only or forbidden destination will not fix itself; queueing
+            # it would retry a certainty for three days. Anything else (network
+            # volume, transient IO) is worth another go.
+            if e.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+                return "fail"
             return "retry"
         if not dest.is_file() or dest.stat().st_size != size:
             emit(

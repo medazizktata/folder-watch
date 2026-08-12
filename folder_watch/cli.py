@@ -598,6 +598,15 @@ def main(argv: list[str] | None = None) -> int:
 
     exts = parse_exts(exts_raw)
 
+    if args.once:
+        # --once used to hardcode these while the start line printed the
+        # user's values as if they were in effect. Keep the fast defaults,
+        # but honour whatever was actually passed.
+        if "--stable" not in passed:
+            stable = 1
+        if "--settle" not in passed:
+            settle = 0.05
+
     if args.pending:
         src_dir = src.expanduser().resolve()
         rows = list_pending(
@@ -623,7 +632,9 @@ def main(argv: list[str] | None = None) -> int:
 
     done_store = None
     retries = None
-    if not args.no_done_store and action_name in ("copy", "unzip"):
+    # --dry-run is documented as "no writes"; it was still seeding baseline
+    # entries into the done-store and writing a pidfile.
+    if not args.no_done_store and not args.dry_run and action_name in ("copy", "unzip"):
         to_s = str(Path(to).expanduser()) if to else None
         mode_s = mode if action_name == "unzip" else None
         done_store = DoneStore(

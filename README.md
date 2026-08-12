@@ -144,7 +144,9 @@ so sleep counts against the budget. Giving up is **not** data loss: the source
 is untouched, nothing was marked done, and `--pending` and `--catch-up` still
 see the file.
 
-Ignores partial/scratch names: `*.part`, `*.tmp`, `*.crdownload`, `._*`, `~$…`, etc.
+Ignores partial/scratch names: `*.part`, `*.tmp`, `*.crdownload`, `.aria2`, etc.
+Also skips **anything beginning with `.` or `~`** — that covers `._*`, `~$…` and
+dotfiles, but note it excludes ordinary names like `~final cut.mp4` too.
 Note `copy` only looks at `.mp4` of at least 1 MB unless you pass `--ext` /
 `--min-bytes`; a file below the threshold is logged as `ignored`.
 
