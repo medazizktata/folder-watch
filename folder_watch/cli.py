@@ -238,6 +238,10 @@ def build_action(
             dry_run=dry,
             create_dest=getattr(args, "create_dest", False),
             no_clobber=getattr(args, "no_clobber", False),
+            # mode=to needs this to mirror subdirectories; without it a
+            # --recursive watch collapses same-stemmed archives onto each other
+            # and then deletes both.
+            src_root=src_root,
         )
     raise SystemExit(f"error: unknown action {name!r}")
 

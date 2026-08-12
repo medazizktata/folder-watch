@@ -21,6 +21,9 @@ class DoneStore:
         self._data: dict[str, dict[str, Any]] = {}
         # Keys this process removed on purpose, so a merge doesn't resurrect them.
         self._dropped: set[str] = set()
+        # (size, mtime_ns) of the file as we last left it. If it still matches,
+        # nobody else has written and the merge read can be skipped entirely.
+        self._last_write: tuple[int, int] | None = None
         self._load()
 
     @staticmethod
@@ -46,25 +49,34 @@ class DoneStore:
         if isinstance(data, dict) and isinstance(data.get("entries"), dict):
             self._data = data["entries"]
 
+    def _touched_by_someone_else(self) -> bool:
+        """Has the file changed since we last wrote it?"""
+        try:
+            st = self.path.stat()
+        except OSError:
+            return self._last_write is not None
+        return self._last_write != (st.st_size, st.st_mtime_ns)
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Merge whatever is on disk first. Each process holds a snapshot loaded
-        # at startup, so writing that snapshot wholesale let a second watcher
-        # (or a --pending/--dry-run run) erase the first's entries — and with
-        # them the record of work already done.
-        on_disk: dict[str, dict[str, Any]] = {}
-        if self.path.is_file():
+        # Merge whatever is on disk first, so a second watcher (or a --pending
+        # run) can't erase this process's entries by writing its own snapshot.
+        # Only when the file actually changed under us, though: re-reading and
+        # re-parsing on every mark() made a growing store quadratic, which is
+        # the common single-writer case and pure waste.
+        if self._touched_by_someone_else():
+            on_disk: dict[str, dict[str, Any]] = {}
             try:
                 data = json.loads(self.path.read_text())
                 if isinstance(data, dict) and isinstance(data.get("entries"), dict):
                     on_disk = data["entries"]
             except (OSError, json.JSONDecodeError):
                 on_disk = {}
-        merged = {**on_disk, **self._data}
-        for key in set(on_disk) - set(self._data):
-            if key in self._dropped:
-                merged.pop(key, None)
-        self._data = merged
+            merged = {**on_disk, **self._data}
+            for key in set(on_disk) - set(self._data):
+                if key in self._dropped:
+                    merged.pop(key, None)
+            self._data = merged
         payload = {"version": 1, "entries": self._data}
         text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         fd, tmp = tempfile.mkstemp(
@@ -76,6 +88,11 @@ class DoneStore:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, self.path)
+            try:
+                st = self.path.stat()
+                self._last_write = (st.st_size, st.st_mtime_ns)
+            except OSError:
+                self._last_write = None
         except Exception:
             try:
                 os.unlink(tmp)

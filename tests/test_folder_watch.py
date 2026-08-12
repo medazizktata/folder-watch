@@ -854,6 +854,114 @@ class TestAuditSmallFindings(unittest.TestCase):
             mine.unlink(missing_ok=True)
 
 
+class TestArchiveDataLoss(unittest.TestCase):
+    """Cases where extraction quietly kept less than the archive held."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.inbox = self.tmp / "inbox"
+        self.inbox.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_case_colliding_members_are_refused(self):
+        """Three members, one file on APFS — every exists() check passed."""
+        z = self.inbox / "docs.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("Report.txt", "ONE")
+            zf.writestr("report.txt", "TWO")
+            zf.writestr("REPORT.TXT", "THREE")
+
+        self.assertEqual(UnzipAction(mode="named").run(z), "fail")
+        self.assertTrue(z.exists(), "archive deleted having kept a third of it")
+
+    def test_unicode_normalisation_collision_is_refused(self):
+        z = self.inbox / "u.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("café.txt", "NFC")       # é as one codepoint
+            zf.writestr("café.txt", "NFD")      # e + combining acute
+        self.assertEqual(UnzipAction(mode="named").run(z), "fail")
+        self.assertTrue(z.exists())
+
+    def test_ordinary_mixed_case_archive_still_extracts(self):
+        """The check must not punish an archive that merely uses capitals."""
+        z = self.inbox / "ok.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("Report.txt", "ONE")
+            zf.writestr("Notes.txt", "TWO")
+        self.assertEqual(UnzipAction(mode="named").run(z), "extracted")
+        self.assertEqual((self.inbox / "ok" / "Report.txt").read_text(), "ONE")
+        self.assertEqual((self.inbox / "ok" / "Notes.txt").read_text(), "TWO")
+
+    def test_mode_to_mirrors_the_tree(self):
+        """Same stem in two subfolders shared one target, and both archives
+        were then deleted — copy was fixed for this, unzip was not."""
+        out = self.tmp / "out"
+        out.mkdir()
+        for client, payload in (("clientA", "A-FOOTAGE"), ("clientB", "B-FOOTAGE")):
+            sub = self.inbox / client
+            sub.mkdir()
+            with zipfile.ZipFile(sub / "delivery.zip", "w") as zf:
+                zf.writestr("video.mp4", payload)
+
+        action = UnzipAction(mode="to", to=out, src_root=self.inbox)
+        for client in ("clientA", "clientB"):
+            zip_path = self.inbox / client / "delivery.zip"
+            self.assertEqual(action.run(zip_path), "extracted")
+
+        self.assertEqual(
+            (out / "clientA" / "delivery" / "video.mp4").read_text(), "A-FOOTAGE"
+        )
+        self.assertEqual(
+            (out / "clientB" / "delivery" / "video.mp4").read_text(), "B-FOOTAGE"
+        )
+
+    def test_verification_checks_size_not_just_presence(self):
+        z = self.inbox / "p.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("a.txt", "full-length-content")
+
+        real = zipfile.ZipFile.extractall
+
+        def truncating(self_zf, path=None, *a, **k):
+            Path(path).mkdir(parents=True, exist_ok=True)
+            (Path(path) / "a.txt").write_text("short")   # present, wrong size
+
+        zipfile.ZipFile.extractall = truncating
+        try:
+            self.assertEqual(UnzipAction(mode="named").run(z), "fail")
+        finally:
+            zipfile.ZipFile.extractall = real
+        self.assertTrue(z.exists(), "archive deleted after a truncated extract")
+
+
+class TestDoneStoreWriteCost(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_sole_writer_skips_the_merge_read(self):
+        """Re-reading and re-parsing on every mark made a growing store
+        quadratic; the merge is only needed when the file moved under us."""
+        from folder_watch.support.state import DoneStore
+
+        p = self.tmp / "d.json"
+        store = DoneStore(p)
+        store.mark("k1", name="a")
+        self.assertIsNotNone(store._last_write)
+        self.assertFalse(store._touched_by_someone_else())
+
+        # Another process writes; the next save must notice and merge.
+        other = DoneStore(p)
+        other.mark("k2", name="b")
+        self.assertTrue(store._touched_by_someone_else())
+        store.mark("k3", name="c")
+        self.assertEqual(sorted(DoneStore(p)._data), ["k1", "k2", "k3"])
+
+
 class TestLogSafetyAndPruneKeys(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

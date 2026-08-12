@@ -1,12 +1,40 @@
 """Unzip action."""
 from __future__ import annotations
 
+import unicodedata
 import zipfile
 from pathlib import Path
 
 from folder_watch.actions.base import Action
 from folder_watch.support.log import emit
 from folder_watch.support.paths import DestUnavailable, ensure_dest_dir
+
+
+def _fs_collapses_case(directory: Path) -> bool:
+    """Does this filesystem treat two differently-cased names as one file?
+
+    APFS and HFS+ do by default; many external and network volumes do not.
+    Probed rather than assumed, so a genuinely case-sensitive destination is
+    not punished for a check aimed at case-insensitive ones.
+    """
+    probe = directory / ".folder-watch-case-probe"
+    other = directory / ".FOLDER-WATCH-CASE-PROBE"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(b"")
+        return other.exists()
+    except OSError:
+        return True  # can't tell — assume the risky answer
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _collision_key(name: str) -> str:
+    """Two member names that a case-insensitive filesystem cannot keep apart."""
+    return unicodedata.normalize("NFC", name).casefold()
 
 
 class UnzipAction(Action):
@@ -22,6 +50,7 @@ class UnzipAction(Action):
         dry_run: bool = False,
         create_dest: bool = False,
         no_clobber: bool = False,
+        src_root: Path | None = None,
     ) -> None:
         if mode not in ("named", "same", "to"):
             raise ValueError(f"unknown unzip mode: {mode}")
@@ -32,6 +61,7 @@ class UnzipAction(Action):
         self.dry_run = dry_run
         self.create_dest = create_dest
         self.no_clobber = no_clobber
+        self.src_root = src_root.expanduser() if src_root else None
 
     def describe(self) -> str:
         if self.mode == "to":
@@ -81,9 +111,21 @@ class UnzipAction(Action):
         if self.mode == "same":
             return zip_path.parent
         if self.mode == "named":
+            # Already unique per directory — the target sits beside the zip.
             return zip_path.parent / stem
         assert self.to is not None
-        return self.to / stem
+        # mode=to collapses the tree without this: under --recursive,
+        # clientA/delivery.zip and clientB/delivery.zip both target
+        # <to>/delivery/, the second overwrites the first, and BOTH archives
+        # are then deleted. copy has src_root for exactly this reason.
+        base = self.to
+        if self.src_root is not None:
+            try:
+                rel = zip_path.resolve().parent.relative_to(self.src_root.resolve())
+                base = self.to / rel
+            except (ValueError, OSError):
+                pass
+        return base / stem
 
     def run(self, path: Path) -> str:
         if path.suffix.lower() != ".zip":
@@ -145,6 +187,30 @@ class UnzipAction(Action):
                     # the only lasting effect. Usually a truncated download.
                     emit("fail", name=path.name, reason="empty_archive")
                     return "fail"
+                # Report.txt / report.txt / REPORT.TXT are three members that
+                # a case-insensitive filesystem stores as one file. Every one
+                # of them then passes an exists() check, so verification
+                # succeeded and the archive was deleted having kept a third of
+                # its contents. Probe the filesystem rather than assuming.
+                seen: dict[str, str] = {}
+                collisions: list[tuple[str, str]] = []
+                for member in members:
+                    key = _collision_key(member)
+                    if key in seen and seen[key] != member:
+                        collisions.append((seen[key], member))
+                    else:
+                        seen.setdefault(key, member)
+                if collisions and _fs_collapses_case(target.parent):
+                    first, second = collisions[0]
+                    emit(
+                        "fail",
+                        name=path.name,
+                        reason="member_case_collision",
+                        count=len(collisions),
+                        first=first,
+                        second=second,
+                    )
+                    return "fail"
                 clobbered = [n for n in members if (target / n).is_file()]
                 if clobbered and self.no_clobber:
                     emit(
@@ -166,10 +232,24 @@ class UnzipAction(Action):
             emit("fail", name=path.name, reason="extract_error", err=str(e))
             return "retry"
 
-        # Every member must be present before the archive is destroyed. any()
-        # passed when 1 of 200 files landed, and under mode=same it passed on
-        # any pre-existing file of the same name.
-        missing = [n for n in members if not (target / n).exists()]
+        # Every member must be present, at the size the archive says, before
+        # the archive is destroyed. any() passed when 1 of 200 files landed;
+        # existence alone still passes when two members collapsed onto one.
+        missing: list[str] = []
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                for info in zf.infolist():
+                    if info.filename.endswith("/"):
+                        continue
+                    out = target / info.filename
+                    try:
+                        if not out.is_file() or out.stat().st_size != info.file_size:
+                            missing.append(info.filename)
+                    except OSError:
+                        missing.append(info.filename)
+        except (zipfile.BadZipFile, OSError) as e:
+            emit("fail", name=path.name, reason="verify_error", err=str(e))
+            return "fail"
         if missing:
             emit(
                 "fail",
