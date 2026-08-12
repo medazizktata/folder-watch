@@ -23,7 +23,18 @@ PID_DIR = STATE_DIR / "pids"
 
 
 class DestUnavailable(OSError):
-    """Destination's parent is missing — likely an unmounted drive."""
+    """Destination's parent is missing — likely an unmounted drive.
+
+    Treated as transient: a volume can come back, so the retry queue owns it.
+    """
+
+
+class DestNotADirectory(DestUnavailable):
+    """Destination exists but is not a directory.
+
+    Permanent — a path that is a file will not become a directory by waiting,
+    so retrying it for three days is retrying a certainty.
+    """
 
 
 def ensure_dest_dir(dest: Path, *, create_parents: bool = False) -> None:
@@ -40,7 +51,9 @@ def ensure_dest_dir(dest: Path, *, create_parents: bool = False) -> None:
     if dest.exists():
         # Otherwise mkdir surfaces a bare [Errno 17] File exists, which reads
         # like a race rather than "your --to points at a file".
-        raise DestUnavailable(f"destination exists but is not a directory: {dest}")
+        raise DestNotADirectory(
+            f"destination exists but is not a directory: {dest}"
+        )
     if create_parents:
         dest.mkdir(parents=True, exist_ok=True)
         return

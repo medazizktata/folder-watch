@@ -7,7 +7,11 @@ from pathlib import Path
 
 from folder_watch.actions.base import Action
 from folder_watch.support.log import emit
-from folder_watch.support.paths import DestUnavailable, ensure_dest_dir
+from folder_watch.support.paths import (
+    DestNotADirectory,
+    DestUnavailable,
+    ensure_dest_dir,
+)
 
 
 def _fs_collapses_case(directory: Path) -> bool:
@@ -179,12 +183,21 @@ class UnzipAction(Action):
                     # the per-zip subfolder under it is ours to create.
                     if self.mode == "to" and self.to is not None:
                         ensure_dest_dir(self.to, create_parents=self.create_dest)
+                except DestNotADirectory as e:
+                    emit(
+                        "fail",
+                        name=path.name,
+                        reason="dest_not_a_directory",
+                        err=str(e),
+                    )
+                    return "fail"
                 except DestUnavailable as e:
                     emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
                     return "retry"
-                if not members:
-                    # Nothing to extract, and deleting the archive would be
-                    # the only lasting effect. Usually a truncated download.
+                if not [n for n in members if not n.endswith("/")]:
+                    # Nothing but directory entries: extracting creates empty
+                    # folders and deleting the archive is the only lasting
+                    # effect. Usually a truncated download.
                     emit("fail", name=path.name, reason="empty_archive")
                     return "fail"
                 # Report.txt / report.txt / REPORT.TXT are three members that

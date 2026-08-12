@@ -647,7 +647,9 @@ def main(argv: list[str] | None = None) -> int:
     # --dry-run is documented as "no writes"; it was still seeding baseline
     # entries into the done-store and writing a pidfile.
     if not args.no_done_store and not args.dry_run and action_name in ("copy", "unzip"):
-        to_s = str(Path(to).expanduser()) if to else None
+        # Resolve, so `--to ./dst` and `--to /abs/dst` hash to one store
+        # instead of fragmenting the done-state and retry queue in two.
+        to_s = str(Path(to).expanduser().resolve()) if to else None
         mode_s = mode if action_name == "unzip" else None
         done_store = DoneStore(
             DoneStore.path_for(action_name, src, to=to_s, mode=mode_s)

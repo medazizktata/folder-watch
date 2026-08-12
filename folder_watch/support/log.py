@@ -63,9 +63,26 @@ def _jsonable(v: Any) -> Any:
     return v
 
 
-_ESCAPES = str.maketrans(
-    {"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t", '"': '\\"'}
-)
+def _escape_table() -> dict[int, str]:
+    """Every control character, not a hand-picked few.
+
+    Escaping only \n and \r left ESC through, so a filename could still emit
+    terminal control sequences into a log someone later cats.
+    """
+    table: dict[int, str] = {
+        ord("\\"): "\\\\",
+        ord('"'): '\\"',
+        ord("\n"): "\\n",
+        ord("\r"): "\\r",
+        ord("\t"): "\\t",
+    }
+    for code in range(0x20):
+        table.setdefault(code, f"\\x{code:02x}")
+    table[0x7F] = "\\x7f"
+    return table
+
+
+_ESCAPES = _escape_table()
 
 
 def _plain(value: Any) -> str:

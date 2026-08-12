@@ -8,7 +8,11 @@ from folder_watch.actions.base import Action
 from folder_watch.support.copy_io import atomic_copy
 from folder_watch.support.log import emit
 from folder_watch.support.notify import human_size, notify
-from folder_watch.support.paths import DestUnavailable, ensure_dest_dir
+from folder_watch.support.paths import (
+    DestNotADirectory,
+    DestUnavailable,
+    ensure_dest_dir,
+)
 
 
 def _same_version(src: Path, dest: Path) -> bool:
@@ -109,9 +113,11 @@ class CopyAction(Action):
             # ours to create — this is not the unmounted-volume case.
             if dest.parent != self.dest:
                 dest.parent.mkdir(parents=True, exist_ok=True)
+        except DestNotADirectory as e:
+            emit("fail", name=path.name, reason="dest_not_a_directory", err=str(e))
+            return "fail"
         except DestUnavailable as e:
             # Never mark done — the file must be retried once the volume is back.
-            # Transient: the volume comes back. Queued, not dropped.
             emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
             if self.notify_on_done:
                 notify("folder-watch destination missing", f"{path.name} not copied")

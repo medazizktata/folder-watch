@@ -1053,6 +1053,78 @@ class TestAuditRoundThree(unittest.TestCase):
         self.assertIn("done_store", buf.getvalue())
 
 
+class TestAuditRoundThreeTail(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = self.tmp / "src"
+        self.dest = self.tmp / "dest"
+        self.src.mkdir()
+        self.dest.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_dest_that_is_a_file_is_terminal(self):
+        """A path that is a file will not become a directory by waiting."""
+        from folder_watch.support.paths import (
+            DestNotADirectory,
+            DestUnavailable,
+            ensure_dest_dir,
+        )
+
+        blocker = self.tmp / "notadir"
+        blocker.write_text("i am a file")
+        with self.assertRaises(DestNotADirectory):
+            ensure_dest_dir(blocker)
+        # Still a DestUnavailable, so existing handlers keep working.
+        self.assertTrue(issubclass(DestNotADirectory, DestUnavailable))
+
+        f = self.src / "x.mp4"
+        f.write_bytes(b"x" * 64)
+        action = CopyAction(blocker, notify_on_done=False)
+        self.assertEqual(action.run(f), "fail", "queued a permanent failure")
+
+    def test_missing_volume_is_still_transient(self):
+        f = self.src / "x.mp4"
+        f.write_bytes(b"x" * 64)
+        action = CopyAction(self.tmp / "gone" / "Out", notify_on_done=False)
+        self.assertEqual(action.run(f), "retry")
+
+    def test_escape_covers_every_control_character(self):
+        from folder_watch.support.log import _plain
+
+        self.assertEqual(_plain("a\x1b[31mb"), "a\\x1b[31mb")
+        self.assertEqual(_plain("a\x0bb"), "a\\x0bb")
+        self.assertEqual(_plain("a\x7fb"), "a\\x7fb")
+        self.assertNotIn("\x1b", _plain("\x1b]0;title\x07"))
+
+    def test_directories_only_archive_is_refused(self):
+        z = self.src / "dirs.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("folder/", "")
+            zf.writestr("folder/nested/", "")
+        self.assertEqual(UnzipAction(mode="named").run(z), "fail")
+        self.assertTrue(z.exists(), "archive deleted for creating empty folders")
+
+    def test_relative_and_absolute_dest_share_one_store(self):
+        import os
+
+        from folder_watch.support.state import DoneStore
+
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        try:
+            absolute = DoneStore.path_for(
+                "copy", self.src, to=str(self.dest.resolve())
+            )
+            relative = DoneStore.path_for(
+                "copy", self.src, to=str(Path("dest").expanduser().resolve())
+            )
+            self.assertEqual(absolute, relative)
+        finally:
+            os.chdir(cwd)
+
+
 class TestDoneStoreWriteCost(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

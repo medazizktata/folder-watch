@@ -780,13 +780,22 @@ def run_watch_event(
             if event.is_directory:
                 return
             path = Path(event.src_path)
+            # Containment is checked against BOTH the literal event path and
+            # its resolved form. Resolving first sent a symlink sitting in the
+            # watched folder off to its target, whose parent is elsewhere, so
+            # the event was dropped — while the poll backend and --once
+            # (which stat through the link) processed the same file happily.
             try:
-                path = path.resolve()
+                resolved = path.resolve()
             except OSError:
                 return
-            if not recursive and path.parent != src_dir:
-                return
-            if recursive and src_dir not in path.parents and path.parent != src_dir:
+
+            def _inside(candidate: Path) -> bool:
+                if candidate.parent == src_dir:
+                    return True
+                return recursive and src_dir in candidate.parents
+
+            if not (_inside(path) or _inside(resolved)):
                 return
             if not should_watch_name(path.name, exts):
                 return
