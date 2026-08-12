@@ -24,6 +24,15 @@ class Action(ABC):
     def done_mode(self) -> str | None:
         return None
 
+    def destination_ready(self) -> bool:
+        """Is the destination reachable right now?
+
+        Lets the retry loop ask once per scan instead of failing every queued
+        file individually when a volume is away — 500 files behind an unmounted
+        drive should cost one probe, not 500 attempts and 500 log lines.
+        """
+        return True
+
     def output_exists(self, src: Path) -> bool | None:
         """Has this file's output already been produced?
 

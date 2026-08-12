@@ -336,7 +336,9 @@ class TestDryRunAndPartials(unittest.TestCase):
         gone = self.tmp / "NotMounted" / "Drive" / "Output"
         action = CopyAction(gone, notify_on_done=False)
 
-        self.assertEqual(action.run(src), "fail")
+        # "retry" rather than "fail": the action declares this transient so the
+        # retry queue owns it. Either way it must not be marked done.
+        self.assertEqual(action.run(src), "retry")
         self.assertFalse((self.tmp / "NotMounted").exists(), "rebuilt the tree")
 
         # "fail" must never reach the done-store, or the retry gets skipped.
@@ -827,6 +829,106 @@ class TestAuditSmallFindings(unittest.TestCase):
         finally:
             other.unlink(missing_ok=True)
             mine.unlink(missing_ok=True)
+
+
+class TestRetryQueue(unittest.TestCase):
+    """Transient failures survive an outage and a restart."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.f = self.tmp / "clip.mp4"
+        self.f.write_bytes(b"x" * 64)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _q(self, **kw):
+        from folder_watch.support.retry import RetryQueue
+
+        return RetryQueue(self.tmp / "retry.json", **kw)
+
+    def test_backoff_grows_and_is_not_due_early(self):
+        from folder_watch.support.retry import BACKOFF
+
+        q = self._q()
+        t0 = 1_000_000.0
+        e = q.schedule(
+            self.f, action="copy", reason="t", size=64, mtime_ns=1, now=t0
+        )
+        self.assertEqual(e["attempts"], 1)
+        self.assertEqual(e["next_due"], t0 + BACKOFF[0])
+        self.assertEqual(q.due(now=t0), [])
+        self.assertEqual(len(q.due(now=t0 + BACKOFF[0])), 1)
+
+        e2 = q.schedule(
+            self.f, action="copy", reason="t", size=64, mtime_ns=1, now=t0 + 100
+        )
+        self.assertEqual(e2["attempts"], 2)
+        self.assertEqual(e2["next_due"], t0 + 100 + BACKOFF[1])
+        self.assertEqual(len(q), 1, "same file queued twice")
+        # first_failed is preserved, so the give-up budget runs from the
+        # original failure rather than resetting on every attempt.
+        self.assertEqual(e2["first_failed"], t0)
+
+    def test_gives_up_after_the_budget(self):
+        q = self._q(give_up_after=72 * 3600)
+        t0 = 1_000_000.0
+        q.schedule(self.f, action="copy", reason="t", size=64, mtime_ns=1, now=t0)
+
+        # A weekend with the machine asleep: ~60h must NOT expire.
+        self.assertEqual(q.expired(now=t0 + 60 * 3600), [])
+        self.assertEqual(len(q), 1)
+
+        gone = q.expired(now=t0 + 73 * 3600)
+        self.assertEqual(len(gone), 1)
+        self.assertEqual(len(q), 0)
+
+    def test_survives_a_restart(self):
+        t0 = 1_000_000.0
+        q = self._q()
+        q.schedule(self.f, action="copy", reason="t", size=64, mtime_ns=1, now=t0)
+        reloaded = self._q()
+        self.assertEqual(len(reloaded), 1)
+        self.assertIn(str(self.f), reloaded.paths())
+
+    def test_defer_does_not_count_an_attempt(self):
+        """The destination short-circuit must not burn the give-up budget."""
+        q = self._q()
+        t0 = 1_000_000.0
+        q.schedule(self.f, action="copy", reason="t", size=64, mtime_ns=1, now=t0)
+        due = q.due(now=t0 + 999)
+        self.assertEqual(len(due), 1)
+        q.defer(due, now=t0 + 999)
+        self.assertEqual(q.due(now=t0 + 999), [])
+        self.assertEqual(due[0]["attempts"], 1, "defer counted as an attempt")
+
+    def test_queue_is_bounded(self):
+        q = self._q()
+        for i in range(5):
+            (self.tmp / f"f{i}.mp4").write_bytes(b"x")
+        q.max_entries = 3
+        added = [
+            q.schedule(
+                self.tmp / f"f{i}.mp4",
+                action="copy", reason="t", size=1, mtime_ns=1, now=1.0,
+            )
+            for i in range(5)
+        ]
+        self.assertEqual(sum(1 for a in added if a is not None), 3)
+        self.assertEqual(len(q), 3)
+
+    def test_success_and_terminal_failure_both_clear_the_entry(self):
+        from folder_watch.core.watch import apply_action
+
+        dest = self.tmp / "dest"
+        dest.mkdir()
+        q = self._q()
+        q.schedule(self.f, action="copy", reason="t", size=64, mtime_ns=1, now=1.0)
+        self.assertEqual(len(q), 1)
+
+        action = CopyAction(dest, notify_on_done=False)
+        apply_action(self.f, action, state={}, stable_needed=1, retries=q)
+        self.assertEqual(len(q), 0, "successful copy left a stale retry entry")
 
 
 class TestLaunchAgentPlist(unittest.TestCase):

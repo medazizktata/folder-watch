@@ -66,6 +66,13 @@ class CopyAction(Action):
                 pass
         return self.dest / src.name
 
+    def destination_ready(self) -> bool:
+        try:
+            ensure_dest_dir(self.dest, create_parents=self.create_dest)
+        except (DestUnavailable, OSError):
+            return False
+        return True
+
     def done_dest(self, src: Path) -> Path | None:
         return self._dest_for(src)
 
@@ -103,17 +110,20 @@ class CopyAction(Action):
                 dest.parent.mkdir(parents=True, exist_ok=True)
         except DestUnavailable as e:
             # Never mark done — the file must be retried once the volume is back.
+            # Transient: the volume comes back. Queued, not dropped.
             emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
             if self.notify_on_done:
                 notify("folder-watch destination missing", f"{path.name} not copied")
-            return "fail"
+            return "retry"
         try:
             atomic_copy(path, dest, retries=self.retries)
         except OSError as e:
+            # atomic_copy already exhausted its own backoff; a network volume
+            # can still recover, so hand it to the retry queue.
             emit("fail", name=path.name, reason="copy_error", err=str(e))
             if self.notify_on_done:
                 notify("folder-watch copy failed", path.name, reveal=dest)
-            return "fail"
+            return "retry"
         if not dest.is_file() or dest.stat().st_size != size:
             emit(
                 "fail",
@@ -124,7 +134,7 @@ class CopyAction(Action):
             )
             if self.notify_on_done:
                 notify("folder-watch copy failed", path.name, reveal=dest)
-            return "fail"
+            return "retry"
         if self.notify_on_done:
             notify(
                 "folder-watch copied",

@@ -40,6 +40,15 @@ class UnzipAction(Action):
             base = f"unzip mode={self.mode}"
         return f"{base} dry-run" if self.dry_run else base
 
+    def destination_ready(self) -> bool:
+        if self.mode != "to" or self.to is None:
+            return True
+        try:
+            ensure_dest_dir(self.to, create_parents=self.create_dest)
+        except (DestUnavailable, OSError):
+            return False
+        return True
+
     def done_mode(self) -> str | None:
         return self.mode
 
@@ -103,7 +112,7 @@ class UnzipAction(Action):
                         ensure_dest_dir(self.to, create_parents=self.create_dest)
                 except DestUnavailable as e:
                     emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
-                    return "fail"
+                    return "retry"
                 if not members:
                     # Nothing to extract, and deleting the archive would be
                     # the only lasting effect. Usually a truncated download.
@@ -121,9 +130,14 @@ class UnzipAction(Action):
                     return "fail"
                 target.mkdir(parents=True, exist_ok=True)
                 zf.extractall(target)
-        except (zipfile.BadZipFile, OSError) as e:
+        except zipfile.BadZipFile as e:
+            # Corrupt archives never become valid. Retrying forever is a bug.
             emit("fail", name=path.name, reason="extract_error", err=str(e))
             return "fail"
+        except OSError as e:
+            # Disk full, volume vanished mid-extract — worth another go later.
+            emit("fail", name=path.name, reason="extract_error", err=str(e))
+            return "retry"
 
         # Every member must be present before the archive is destroyed. any()
         # passed when 1 of 200 files landed, and under mode=same it passed on

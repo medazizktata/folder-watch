@@ -28,6 +28,7 @@ from folder_watch.support.pidfile import (
     prune_pidfiles,
     write_pidfile,
 )
+from folder_watch.support.retry import GIVE_UP_AFTER, RetryQueue, retry_path_for
 from folder_watch.support.state import DoneStore
 
 
@@ -168,6 +169,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "list files a fresh watcher would skip that have no output, then "
             "exit. Read-only — safe against a folder being watched right now"
+        ),
+    )
+    p.add_argument(
+        "--retry-hours",
+        type=float,
+        default=GIVE_UP_AFTER / 3600,
+        help=(
+            "give up on a transiently-failed file after this long (default 72). "
+            "Covers a weekend with the machine asleep; expiry is recoverable, "
+            "not destructive — --pending and --catch-up still see the file"
         ),
     )
     p.add_argument(
@@ -611,12 +622,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     done_store = None
+    retries = None
     if not args.no_done_store and action_name in ("copy", "unzip"):
         to_s = str(Path(to).expanduser()) if to else None
         mode_s = mode if action_name == "unzip" else None
         done_store = DoneStore(
             DoneStore.path_for(action_name, src, to=to_s, mode=mode_s)
         )
+        # --once has no loop left to service a queue, so it doesn't get one;
+        # a transient failure there surfaces as a non-zero exit instead.
+        if not args.once:
+            retries = RetryQueue(
+                retry_path_for(action_name, src, to=to_s, mode=mode_s),
+                give_up_after=args.retry_hours * 3600,
+            )
 
     try:
         return run_watch(
@@ -633,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
             recursive=recursive,
             catch_up=args.catch_up,
             done_store=done_store,
+            retries=retries,
             watch_name=(args.preset or f"{action_name}-{src.name}"),
             log_path=args.log,
             preset=args.preset,

@@ -108,8 +108,41 @@ done-store makes that safe — files already handled are skipped, not redone.
 drive `mkdir -p` happily rebuilds the whole path as ordinary local folders, so
 files land on the boot disk, get reported `copied`, and get recorded as done —
 silently never reaching the drive. Instead the copy fails with
-`dest_unavailable` and is **not** marked done, so it retries once the volume is
-back. `--create-dest` opts back into building the full path.
+`dest_unavailable` and is **not** marked done. `--create-dest` opts back into
+building the full path.
+
+## Retry queue
+
+A failure the action judges *transient* — `dest_unavailable`, a `copy_error`
+that outlived `atomic_copy`'s own backoff, an `OSError` mid-extract — is queued
+rather than dropped. Nothing else would pick it up: the only thing that
+re-queues a file is a new FSEvent on the **source**, and a destination coming
+back produces none.
+
+```
+fail name=take.mp4 reason=dest_unavailable
+retry_scheduled name=take.mp4 attempt=1 in_s=30
+retry_waiting queued=1 reason=dest_away      # one probe, not one per file
+retry name=take.mp4 attempt=1
+copied name=take.mp4
+```
+
+Backoff runs 30 s → 60 s → 2 m → 5 m → 10 m → 30 m (capped), so a long outage
+costs a handful of attempts an hour. Retries skip the settle loop entirely —
+the file already settled once, and re-settling would pay another `lsof` per
+attempt — so the recorded `(size, mtime)` is checked instead; if it moved, the
+file was rewritten and goes back through the normal path.
+
+The queue is persisted beside the done-store and survives a restart; baseline
+seeding will not claim a file the queue owns. Terminal failures are never
+queued: a corrupt archive does not become valid by waiting.
+
+`--retry-hours` (default **72**) is when it stops and logs
+`give_up reason=retry_exhausted`. 72 covers a weekend with the machine asleep —
+timestamps are wall-clock, because monotonic clocks do not survive a restart,
+so sleep counts against the budget. Giving up is **not** data loss: the source
+is untouched, nothing was marked done, and `--pending` and `--catch-up` still
+see the file.
 
 Ignores partial/scratch names: `*.part`, `*.tmp`, `*.crdownload`, `._*`, `~$…`, etc.
 Note `copy` only looks at `.mp4` of at least 1 MB unless you pass `--ext` /

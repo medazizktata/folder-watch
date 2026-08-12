@@ -18,6 +18,7 @@ from folder_watch.support.pidfile import (
     live_watchers,
     write_pidfile,
 )
+from folder_watch.support.retry import MAX_PER_SCAN, RetryQueue
 from folder_watch.support.state import DoneStore, file_identity
 
 # Drop a watched file after this long with no size change at all. A real
@@ -40,7 +41,12 @@ SRC_WAIT_INTERVAL = 5.0
 SRC_WAIT_LOG_INTERVAL = 60.0
 
 
-FAILED_RESULTS = ("fail", "error")
+# "retry" counts as a failure for exit-status purposes: in --once there is no
+# loop left to retry it, so the caller must be told the work did not land.
+FAILED_RESULTS = ("fail", "error", "retry")
+
+# How often the event loop looks for retries that have come due.
+RETRY_SCAN_INTERVAL = 5.0
 
 
 def _state_key(src: Path) -> str:
@@ -89,6 +95,7 @@ def apply_action(
     stable_needed: int,
     done_store: DoneStore | None = None,
     lock: threading.Lock | None = None,
+    retries: RetryQueue | None = None,
 ) -> str | None:
     """Run the action on a settled file, returning its result label.
 
@@ -156,7 +163,31 @@ def apply_action(
         pass
     elif result == "fail":
         # The action emits its own fail line, with a reason attached.
+        if retries is not None:
+            retries.drop(src)
         return "fail"
+    elif result == "retry":
+        # The action judged this transient. Queue it rather than dropping it —
+        # a destination coming back produces no FSEvent on the source, so
+        # nothing else would ever pick it up again.
+        if retries is not None:
+            entry = retries.schedule(
+                src,
+                action=action.name,
+                reason="transient",
+                size=size,
+                mtime_ns=mtime_ns,
+            )
+            if entry is None:
+                emit("warn", name=name, reason="retry_queue_full")
+            else:
+                emit(
+                    "retry_scheduled",
+                    name=name,
+                    attempt=entry["attempts"],
+                    in_s=int(entry["next_due"] - time.time()),
+                )
+        return "retry"
     else:
         emit("result", name=name, status=result)
         if result == "error":
@@ -171,6 +202,8 @@ def apply_action(
         }
     if done_store is not None and key is not None:
         done_store.mark(key, name=name, result=result)
+    if retries is not None:
+        retries.drop(src)
     return result
 
 
@@ -370,8 +403,13 @@ def seed_baseline(
     state: dict[str, dict],
     done_store: DoneStore | None = None,
     recursive: bool = False,
+    skip: set[str] | None = None,
 ) -> list[Path]:
-    """Ignore finished files already in SRC. Return paths still being written."""
+    """Ignore finished files already in SRC. Return paths still being written.
+
+    `skip` holds paths the retry queue already owns. Without it, seeding marks
+    them finished-baseline on restart and the queue entry loses the argument —
+    the same class of bug as --catch-up being defeated by baseline entries."""
     unsettled: list[Path] = []
     ignored = 0
     probed = 0
@@ -384,6 +422,8 @@ def seed_baseline(
             size, mtime_ns = file_identity(path)
             resolved = path.resolve()
         except OSError:
+            continue
+        if skip and (str(path) in skip or str(resolved) in skip):
             continue
         # lsof is ~250ms a call and this runs before the watcher accepts
         # events, so skip it where we safely can. An old mtime is NOT proof a
@@ -529,6 +569,7 @@ def run_watch_event(
     recursive: bool,
     catch_up: bool = False,
     done_store: DoneStore | None = None,
+    retries: RetryQueue | None = None,
 ) -> int:
     try:
         from watchdog.events import FileSystemEventHandler
@@ -608,6 +649,10 @@ def run_watch_event(
                 rel = str(path.relative_to(src_dir))
             except ValueError:
                 rel = path.name
+            # Fresh content supersedes a queued retry, which holds the old
+            # (size, mtime) and would otherwise re-copy stale bytes.
+            if retries is not None:
+                retries.drop(path)
             with lock:
                 already_queued = key in pending
                 pending[key] = time.monotonic()
@@ -657,6 +702,7 @@ def run_watch_event(
                 state=state,
                 done_store=done_store,
                 recursive=recursive,
+                skip=retries.paths() if retries is not None else None,
             )
             started = time.monotonic()
             with lock:
@@ -675,6 +721,8 @@ def run_watch_event(
 
     debounce_s = max(debounce_ms, 50) / 1000.0
     last_src_check = time.monotonic()
+    last_retry_check = time.monotonic()
+    dest_away_logged = False
 
     try:
         while True:
@@ -704,6 +752,58 @@ def run_watch_event(
                     _prime(restoring=True)
                     last_src_check = time.monotonic()
                     continue
+
+            # Retries come due on wall-clock, and never re-enter the settle
+            # loop: the file already settled once, so re-settling would pay
+            # another lsof per file per attempt.
+            if retries is not None and now - last_retry_check >= RETRY_SCAN_INTERVAL:
+                last_retry_check = now
+                for entry in retries.expired():
+                    emit(
+                        "give_up",
+                        name=Path(entry["path"]).name,
+                        reason="retry_exhausted",
+                        attempts=entry.get("attempts"),
+                        hours=int(retries.give_up_after / 3600),
+                    )
+                due = retries.due(limit=MAX_PER_SCAN)
+                if due and not action.destination_ready():
+                    # One probe, not one failure per file.
+                    retries.defer(due)
+                    if not dest_away_logged:
+                        emit("retry_waiting", queued=len(retries), reason="dest_away")
+                        dest_away_logged = True
+                    due = []
+                elif due:
+                    dest_away_logged = False
+                for entry in due:
+                    rpath = Path(entry["path"])
+                    if not rpath.is_file():
+                        retries.drop(rpath)
+                        continue
+                    try:
+                        rst = rpath.stat()
+                    except OSError:
+                        continue
+                    if (rst.st_size, rst.st_mtime_ns) != (
+                        entry.get("size"),
+                        entry.get("mtime_ns"),
+                    ):
+                        # Rewritten since it failed — belongs in settle, not here.
+                        retries.drop(rpath)
+                        with lock:
+                            pending[str(rpath)] = now
+                        continue
+                    emit("retry", name=rpath.name, attempt=entry.get("attempts"))
+                    apply_action(
+                        rpath,
+                        action,
+                        state=state,
+                        stable_needed=stable_needed,
+                        done_store=done_store,
+                        lock=lock,
+                        retries=retries,
+                    )
 
             with lock:
                 for key, ts in list(pending.items()):
@@ -769,6 +869,7 @@ def run_watch_event(
                     stable_needed=stable_needed,
                     done_store=done_store,
                     lock=lock,
+                    retries=retries,
                 )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)
@@ -794,6 +895,7 @@ def run_watch(
     recursive: bool = False,
     catch_up: bool = False,
     done_store: DoneStore | None = None,
+    retries: RetryQueue | None = None,
     watch_name: str | None = None,
     log_path: Path | None = None,
     preset: str | None = None,
@@ -816,6 +918,7 @@ def run_watch(
         catch_up=(catch_up if not once else "n/a"),
         mode=("once" if once else "watch"),
         done_store=(str(done_store.path) if done_store is not None else None),
+        retry_queue=(len(retries) if retries is not None else None),
     )
 
     if catch_up and done_store is not None:
@@ -900,6 +1003,7 @@ def run_watch(
             recursive=recursive,
             catch_up=catch_up,
             done_store=done_store,
+            retries=retries,
         )
     finally:
         if not once:
