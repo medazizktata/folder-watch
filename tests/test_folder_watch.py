@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import sys
 import tempfile
@@ -1149,6 +1150,58 @@ class TestDoneStoreWriteCost(unittest.TestCase):
         self.assertTrue(store._touched_by_someone_else())
         store.mark("k3", name="c")
         self.assertEqual(sorted(DoneStore(p)._data), ["k1", "k2", "k3"])
+
+
+class TestConvxChildReaping(unittest.TestCase):
+    """`convx watch` never exits on its own — it must not outlive its wrapper."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_child_dies_when_the_wrapper_is_terminated(self):
+        import os
+        import signal
+        import subprocess
+        import sys
+
+        from folder_watch.actions.convx import run_convx_watch
+
+        marker = self.tmp / "child.pid"
+        # Stand-in for `convx watch`: records its pid, then never exits.
+        child_code = (
+            f"import os,time;open({str(marker)!r},'w').write(str(os.getpid()));"
+            "time.sleep(300)"
+        )
+
+        if os.fork() == 0:  # SIGTERM the wrapper, the way launchd would
+            time.sleep(0.5)
+            try:
+                os.kill(os.getppid(), signal.SIGTERM)
+            finally:
+                os._exit(0)
+
+        rc = run_convx_watch([sys.executable, "-c", child_code])
+        self.assertEqual(rc, 0)
+
+        self.assertTrue(marker.is_file(), "stand-in child never started")
+        pid = int(marker.read_text())
+        deadline = time.time() + 5
+        alive = True
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.1)
+            except OSError:
+                alive = False
+                break
+        if alive:  # don't leak it out of the test suite
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+            subprocess.run(["true"], check=False)
+        self.assertFalse(alive, "child outlived the wrapper")
 
 
 class TestLogSafetyAndPruneKeys(unittest.TestCase):

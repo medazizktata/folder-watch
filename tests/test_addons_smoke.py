@@ -43,6 +43,33 @@ def fw_env() -> dict[str, str]:
     return env
 
 
+def _reap(proc) -> None:  # type: ignore[no-untyped-def]
+    """Stop a spawned watcher AND anything it spawned.
+
+    `folder-watch convx` execs `convx watch`, which never exits on its own.
+    Killing just the wrapper orphaned the child every single run.
+    """
+    import os
+    import signal as _sig
+    import subprocess as _sp
+
+    for sig in (_sig.SIGTERM, _sig.SIGKILL):
+        if proc.poll() is not None:
+            break
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=5)
+            break
+        except _sp.TimeoutExpired:
+            continue
+
+
 def write_tiny_png(path: Path) -> None:
     def chunk(t: bytes, d: bytes) -> bytes:
         return (
@@ -224,8 +251,16 @@ def test_convx(skip: bool) -> list[str]:
                 "100",
             )
             with open(log, "w") as f:
+                # Own process group: the wrapper spawns `convx watch`, which
+                # runs forever. Terminating only the wrapper left the child
+                # behind, and dozens accumulated over repeated runs.
                 p = subprocess.Popen(
-                    cmd2, stdout=f, stderr=subprocess.STDOUT, text=True, env=fw_env()
+                    cmd2,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    env=fw_env(),
+                    start_new_session=True,
                 )
             # Wait for convx's own banner — a fixed sleep races the FSEvents
             # stream, and a write landing before it is never delivered.
@@ -244,11 +279,7 @@ def test_convx(skip: bool) -> list[str]:
             deadline = time.time() + 12
             while time.time() < deadline and not webp.is_file():
                 time.sleep(0.25)
-            p.terminate()
-            try:
-                p.wait(timeout=3)
-            except Exception:
-                p.kill()
+            _reap(p)
 
             text = log.read_text() if log.exists() else ""
             if not webp.is_file() or webp.stat().st_size <= 0:
@@ -305,7 +336,12 @@ def test_event_unzip(skip: bool) -> list[str]:
         )
         with open(log, "w") as f:
             p = subprocess.Popen(
-                cmd, stdout=f, stderr=subprocess.STDOUT, text=True, env=fw_env()
+                cmd,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=fw_env(),
+                start_new_session=True,
             )
         time.sleep(0.5)
         z = inbox / "drop.zip"
@@ -315,11 +351,7 @@ def test_event_unzip(skip: bool) -> list[str]:
         dest = inbox / "drop" / "ok.txt"
         while time.time() < deadline and not dest.is_file():
             time.sleep(0.2)
-        p.terminate()
-        try:
-            p.wait(timeout=2)
-        except Exception:
-            p.kill()
+        _reap(p)
         if not dest.is_file() or z.exists():
             fails.append("event-unzip")
             _fail(f"FSEvents unzip failed log={log.read_text()[:400]}")

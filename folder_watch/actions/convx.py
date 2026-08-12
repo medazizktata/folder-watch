@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -52,13 +53,56 @@ def build_convx_watch_cmd(
     return cmd
 
 
+def _stop(proc: subprocess.Popen) -> None:
+    """Make sure the child goes when we do.
+
+    `convx watch` runs forever. Anything that ends the wrapper without taking
+    the child with it leaves an orphan watching the same folder — and several
+    of those quietly stack up over repeated restarts.
+    """
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run_convx_watch(cmd: list[str]) -> int:
     print(f"folder-watch → {' '.join(cmd)}", flush=True)
     try:
-        return subprocess.call(cmd)
+        proc = subprocess.Popen(cmd)
     except FileNotFoundError:
         print(f"error: convx not found ({cmd[0]!r})", file=sys.stderr)
         return 127
-    except KeyboardInterrupt:
+
+    # Without this SIGTERM kills the wrapper outright, so neither the finally
+    # below nor the caller's pidfile cleanup ever runs. launchd happens to
+    # reap the whole process group, but nothing else does.
+    def _on_term(_signum, _frame):  # type: ignore[no-untyped-def]
+        raise SystemExit(0)
+
+    try:
+        prev_term = signal.signal(signal.SIGTERM, _on_term)
+    except ValueError:
+        prev_term = None
+
+    try:
+        return proc.wait()
+    except (KeyboardInterrupt, SystemExit):
         print("\nstopped", flush=True)
         return 0
+    finally:
+        _stop(proc)
+        if prev_term is not None:
+            try:
+                signal.signal(signal.SIGTERM, prev_term)
+            except ValueError:
+                pass
