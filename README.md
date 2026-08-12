@@ -199,6 +199,12 @@ watch-convx ~/Inbox --format webp --ext png,jpg
 
 Presets: `~/.config/folder-watch/presets.json`
 
+A preset can carry the safety flags too — `no_clobber`, `create_dest`,
+`exclusive`, `no_done_store`, `retry_hours`. That matters because unattended
+runs use `--preset`, so without it the options that most need to be on for an
+unwatched watcher were the ones it could not reach. An explicit flag on the
+command line still wins over the preset.
+
 ## Local config (`.env`)
 
 Machine-local paths and account identifiers stay out of source:

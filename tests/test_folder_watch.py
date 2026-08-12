@@ -1152,6 +1152,73 @@ class TestDoneStoreWriteCost(unittest.TestCase):
         self.assertEqual(sorted(DoneStore(p)._data), ["k1", "k2", "k3"])
 
 
+class TestPresetCarriesSafetyFlags(unittest.TestCase):
+    """Unattended runs use --preset, and presets could not carry these at all.
+
+    So --no-clobber, --create-dest and friends were unreachable for exactly
+    the runs that most need them: the ones nobody is watching.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _args(self, cfg: dict, argv: list[str]):
+        """Resolve a preset the way main() does, without running a watcher."""
+        import argparse
+
+        from folder_watch.cli import build_parser
+
+        args = build_parser().parse_args(argv)
+        passed = {a.split("=")[0] for a in argv}
+        for flag, key in (
+            ("--no-clobber", "no_clobber"),
+            ("--create-dest", "create_dest"),
+            ("--exclusive", "exclusive"),
+            ("--no-done-store", "no_done_store"),
+        ):
+            if flag not in passed and cfg.get(key):
+                setattr(args, key, True)
+        if "--retry-hours" not in passed and cfg.get("retry_hours") is not None:
+            args.retry_hours = float(cfg["retry_hours"])
+        self.assertIsInstance(args, argparse.Namespace)
+        return args
+
+    def test_preset_supplies_the_flag(self):
+        args = self._args({"no_clobber": True}, ["unzip", str(self.tmp)])
+        self.assertTrue(args.no_clobber)
+        built = self._args({"create_dest": True, "retry_hours": 12}, ["copy", "x"])
+        self.assertTrue(built.create_dest)
+        self.assertEqual(built.retry_hours, 12.0)
+
+    def test_command_line_still_wins(self):
+        """An explicit flag must not be quietly overridden by the preset."""
+        args = self._args({}, ["unzip", str(self.tmp), "--no-clobber"])
+        self.assertTrue(args.no_clobber)
+
+    def test_flag_reaches_the_action(self):
+        from folder_watch.cli import build_action
+
+        # --mode same, so the target IS this folder and a collision is real.
+        # Under the default --mode named the target is a subfolder and there
+        # is nothing to clobber, which is correct but tests nothing.
+        args = self._args(
+            {"no_clobber": True}, ["unzip", str(self.tmp), "--mode", "same"]
+        )
+        action = build_action("unzip", args, src_root=self.tmp)
+        self.assertTrue(action.no_clobber, "preset flag never reached the action")
+
+        z = self.tmp / "p.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("f.txt", "from-zip")
+        (self.tmp / "f.txt").write_text("PRECIOUS")
+        self.assertEqual(action.run(z), "fail")
+        self.assertEqual((self.tmp / "f.txt").read_text(), "PRECIOUS")
+        self.assertTrue(z.exists())
+
+
 class TestRestrictedEnvironment(unittest.TestCase):
     """The environment the tool actually runs in, not the one we develop in.
 

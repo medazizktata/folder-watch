@@ -465,6 +465,20 @@ def main(argv: list[str] | None = None) -> int:
         if "--convx-bin" not in passed and cfg.get("convx_bin"):
             convx_bin = cfg["convx_bin"]
             args.convx_bin = convx_bin
+        # Flags added after presets were designed. A watcher started with
+        # --preset had no way to reach them at all, so safety options like
+        # --no-clobber were unavailable to exactly the unattended runs that
+        # most need them.
+        for flag, key in (
+            ("--no-clobber", "no_clobber"),
+            ("--create-dest", "create_dest"),
+            ("--exclusive", "exclusive"),
+            ("--no-done-store", "no_done_store"),
+        ):
+            if flag not in passed and cfg.get(key):
+                setattr(args, key, True)
+        if "--retry-hours" not in passed and cfg.get("retry_hours") is not None:
+            args.retry_hours = float(cfg["retry_hours"])
 
     if not action_name or src is None:
         build_parser().print_help()
@@ -597,6 +611,13 @@ def main(argv: list[str] | None = None) -> int:
             cfg["to"] = str(Path(to).expanduser())
         if action_name == "unzip":
             cfg["mode"] = mode
+        # Round-trip the safety flags too, so a saved preset preserves how the
+        # command was actually invoked rather than silently dropping them.
+        for key in ("no_clobber", "create_dest", "exclusive", "no_done_store"):
+            if getattr(args, key, False):
+                cfg[key] = True
+        if getattr(args, "retry_hours", None) is not None:
+            cfg["retry_hours"] = args.retry_hours
         save_preset(args.save_preset, cfg)
         print(f"saved preset {args.save_preset!r} -> {PRESETS_PATH}")
         return 0
