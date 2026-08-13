@@ -204,6 +204,12 @@ folder-watch presets forget NAME          # dry — shows what it would remove
 folder-watch presets forget NAME --yes
 ```
 
+There are **no built-in presets** — they come only from these files. A preset
+can be defined in more than one of them (a pre-rename `~/.config/watch-copy/`
+path is still read), so `forget` names every file it found and removes the
+preset from all of them; taking it out of one would leave the other still
+being merged in and the command would look broken.
+
 Removal is explicit and never a side effect of listing or running. It refuses
 while a watcher is using that preset rather than pulling config out from under
 it, warns if a LaunchAgent is still installed for it, and — for a preset that
@@ -266,19 +272,6 @@ warn reason=unknown_preset_keys preset=demo keys=dry_run,no_clober note="ignored
 `PRESET_KEYS` and `NOT_PERSISTED` in `folder_watch/presets.py` are the two
 lists, and a test fails if a flag is added to the parser without landing in
 one of them.
-
-## Local config (`.env`)
-
-Machine-local paths and account identifiers stay out of source:
-
-```bash
-cp .env.example .env
-```
-
-Read from `$FOLDER_WATCH_ENV`, then `~/.config/folder-watch/.env`, then the
-repo root — first one found wins, and a real environment variable overrides the
-file. Optional: presets saved in `presets.json` need no `.env` at all. It only
-populates the built-in defaults, which are omitted when unset.
 
 ## Tests
 

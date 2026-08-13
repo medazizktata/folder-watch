@@ -15,10 +15,9 @@ from folder_watch.actions.unzip import UnzipAction
 from folder_watch.core.util import parse_exts
 from folder_watch.core.watch import list_pending, run_watch
 from folder_watch.presets import (
-    DEFAULT_PRESETS,
-    env_keys_for,
     load_presets,
     load_raw_preset,
+    preset_sources,
     preset_status,
     remove_preset,
     save_preset,
@@ -292,9 +291,8 @@ def run_presets_cli(argv: list[str]) -> int:
     args = ap.parse_args(argv)
 
     name = args.name
-    stored = load_raw_preset(name)
-    builtin = name in DEFAULT_PRESETS
-    if stored is None and not builtin:
+    sources = preset_sources(name)
+    if not sources:
         print(f"error: no preset named {name!r}", file=sys.stderr)
         known = ", ".join(sorted(load_presets())) or "(none)"
         print(f"known: {known}", file=sys.stderr)
@@ -311,29 +309,26 @@ def run_presets_cli(argv: list[str]) -> int:
         return 2
 
     print(f"preset {name!r}")
-    if stored is not None:
-        print(f"  stored in: {PRESETS_PATH}")
+    for path in sources:
+        print(f"  defined in: {path}")
+    if len(sources) > 1:
+        print("    -> defined more than once; all copies will be removed")
     plist = service_plist_path(name)
     if plist.is_file():
         print(f"  LaunchAgent installed: {plist}")
         print("    -> run `folder-watch service uninstall --preset "
               f"{name}` first, or it will fail on next login")
-    env_keys = env_keys_for(name)
-    if builtin and env_keys:
-        print("  also built from .env: " + ", ".join(env_keys))
-        print("    -> it will reappear on next run unless those are cleared")
-
     if not args.yes:
         print("\ndry run — re-run with --yes to remove")
         return 0
 
-    if stored is not None and remove_preset(name):
-        print(f"\nremoved {name!r} from {PRESETS_PATH}")
-    else:
-        print(f"\nnothing stored to remove for {name!r}")
-    if builtin and env_keys:
-        print("still built from .env — clear those keys to finish removing it")
-    return 0
+    changed = remove_preset(name)
+    if changed:
+        for path in changed:
+            print(f"\nremoved {name!r} from {path}")
+        return 0
+    print(f"\nnothing stored to remove for {name!r}", file=sys.stderr)
+    return 1
 
 
 def build_action(

@@ -8,7 +8,7 @@ from folder_watch.actions.convx import build_convx_watch_cmd, run_convx_watch
 from folder_watch.cli import main
 from folder_watch.core.util import is_open, match_ext, parse_exts, should_watch_name
 from folder_watch.core.watch import apply_action, run_watch, settle_step
-from folder_watch.presets import DEFAULT_PRESETS, load_presets, save_preset
+from folder_watch.presets import load_presets, save_preset
 from folder_watch.support.notify import human_size, notify, reveal_in_finder
 from folder_watch.support.paths import CONFIG_DIR, LEGACY_PRESETS, PRESETS_PATH
 
@@ -16,7 +16,6 @@ __all__ = [
     "ACTIONS",
     "ACTION_NAMES",
     "CONFIG_DIR",
-    "DEFAULT_PRESETS",
     "LEGACY_PRESETS",
     "PRESETS_PATH",
     "Action",

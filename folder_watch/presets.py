@@ -1,11 +1,17 @@
-"""JSON presets under ~/.config/folder-watch."""
+"""JSON presets under ~/.config/folder-watch.
+
+There are no built-in presets. One used to be assembled at import time from a
+.env file, which put a personal path and account address into source and, more
+importantly, cannot work at all where the CLI has no .env to read. It was also
+redundant: the stored preset defines every field and is merged on top anyway,
+so the built-in only ever supplied a debounce_ms identical to the CLI default.
+"""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any
 
-from folder_watch.support.env import env
 from folder_watch.support.log import emit
 from folder_watch.support.paths import CONFIG_DIR, LEGACY_PRESETS, PRESETS_PATH
 
@@ -38,56 +44,8 @@ NOT_PERSISTED = frozenset(
 )
 
 
-def drive_root() -> Path | None:
-    """Base of the Google Drive CloudStorage mount, from .env.
-
-    Returns None when unconfigured — the account address and shared-drive id
-    are local details, so they live in .env rather than in this file.
-    """
-    email = env("FOLDER_WATCH_DRIVE_EMAIL")
-    if not email:
-        return None
-    root = Path.home() / "Library" / "CloudStorage" / f"GoogleDrive-{email}"
-    shortcut = env("FOLDER_WATCH_DRIVE_SHORTCUT_ID")
-    return root / ".shortcut-targets-by-id" / shortcut if shortcut else root
-
-
-def _la_chaise() -> dict[str, Any] | None:
-    src = env("FOLDER_WATCH_LA_CHAISE_SRC")
-    rel = env("FOLDER_WATCH_LA_CHAISE_DEST")
-    root = drive_root()
-    if not src or not rel or root is None:
-        return None
-    return {
-        "action": "copy",
-        "src": src,
-        "to": str(root / rel),
-        "ext": ["mp4"],
-        "poll": 30,
-        "stable": 3,
-        "min_bytes": 1_000_000,
-        "backend": "event",
-        "debounce_ms": 500,
-    }
-
-
-def _defaults() -> dict[str, dict[str, Any]]:
-    """Built-ins, omitted entirely when .env doesn't configure them.
-
-    Anything in ~/.config/folder-watch/presets.json overrides these, so a
-    missing .env is not a problem for presets you've already saved.
-    """
-    out: dict[str, dict[str, Any]] = {}
-    la_chaise = _la_chaise()
-    if la_chaise is not None:
-        out["la-chaise-v1"] = la_chaise
-    return out
-
-
-DEFAULT_PRESETS: dict[str, dict[str, Any]] = _defaults()
-
 def load_presets() -> dict[str, dict[str, Any]]:
-    merged = dict(DEFAULT_PRESETS)
+    merged: dict[str, dict[str, Any]] = {}
     for path in (LEGACY_PRESETS, PRESETS_PATH):
         if not path.is_file():
             continue
@@ -148,36 +106,25 @@ def _missing_note(label: str, path: Path) -> tuple[str, str]:
     return "error", f"{label} missing — nearest existing folder is {anchor}"
 
 
-def remove_preset(name: str) -> bool:
-    """Delete a stored preset. Returns whether anything was removed.
+def remove_preset(name: str) -> list[Path]:
+    """Delete a preset from every file that defines it.
 
-    Only touches presets.json — a name also synthesised from .env will come
-    back, and the caller is expected to say so rather than leave the user
-    wondering why it reappeared.
+    Removing it from only the current file would leave a legacy copy still
+    being merged in, so the preset would survive and the command would look
+    broken. Returns the files actually changed.
     """
-    if not PRESETS_PATH.is_file():
-        return False
-    try:
-        data = json.loads(PRESETS_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(data, dict) or name not in data:
-        return False
-    data.pop(name)
-    PRESETS_PATH.write_text(json.dumps(data, indent=2) + "\n")
-    return True
-
-
-def env_keys_for(name: str) -> list[str]:
-    """Environment variables that would rebuild this preset after removal."""
-    if name != "la-chaise-v1":
-        return []
-    return [
-        "FOLDER_WATCH_LA_CHAISE_SRC",
-        "FOLDER_WATCH_LA_CHAISE_DEST",
-        "FOLDER_WATCH_DRIVE_EMAIL",
-        "FOLDER_WATCH_DRIVE_SHORTCUT_ID",
-    ]
+    changed: list[Path] = []
+    for path in preset_sources(name):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or name not in data:
+            continue
+        data.pop(name)
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        changed.append(path)
+    return changed
 
 
 def preset_status(cfg: dict[str, Any]) -> tuple[str, str]:
@@ -219,12 +166,32 @@ def preset_status(cfg: dict[str, Any]) -> tuple[str, str]:
     return "ok", ""
 
 
+def preset_sources(name: str) -> list[Path]:
+    """Every file that defines this preset, in merge order.
+
+    There is more than one: a pre-rename legacy path is still read, so a
+    preset can be defined twice and removing it from one file leaves it
+    working. `presets forget` has to say so rather than appear to fail.
+    """
+    found: list[Path] = []
+    for path in (LEGACY_PRESETS, PRESETS_PATH):
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and name in data:
+            found.append(path)
+    return found
+
+
 def load_raw_preset(name: str) -> dict[str, Any] | None:
     """A preset exactly as stored, without built-in defaults merged in.
 
     save_preset needs to know whether it is creating or modifying, and
-    load_presets() cannot answer that — it folds DEFAULT_PRESETS in, so a
-    name that exists only as a built-in would look like a stored preset.
+    Kept separate from load_presets() so "is this stored?" stays a distinct
+    question from "what will this resolve to?".
     """
     if not PRESETS_PATH.is_file():
         return None

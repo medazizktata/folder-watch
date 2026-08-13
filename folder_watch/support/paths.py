@@ -13,7 +13,13 @@ def _dir(env_var: str, default: Path) -> Path:
 
 CONFIG_DIR = _dir("FOLDER_WATCH_CONFIG_DIR", Path.home() / ".config" / "folder-watch")
 PRESETS_PATH = CONFIG_DIR / "presets.json"
-LEGACY_PRESETS = Path.home() / ".config" / "watch-copy" / "presets.json"
+# Pre-rename location, still read so old installs keep working. It follows
+# the config-dir override like everything else — hardcoding $HOME here meant
+# a redirected config still picked up the real user's legacy presets, which
+# leaked into tests and made "which file is this preset in?" unanswerable.
+LEGACY_PRESETS = _dir(
+    "FOLDER_WATCH_CONFIG_DIR", Path.home() / ".config" / "folder-watch"
+).parent / "watch-copy" / "presets.json"
 STATE_DIR = _dir(
     "FOLDER_WATCH_STATE_DIR", Path.home() / ".local" / "state" / "folder-watch"
 )

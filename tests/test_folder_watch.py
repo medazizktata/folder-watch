@@ -388,56 +388,47 @@ class TestDryRunAndPartials(unittest.TestCase):
         self.assertTrue(empty)
         self.assertTrue(bool(empty))
 
-    def test_env_parsing(self):
-        from folder_watch.support.env import parse_env
+    def test_no_builtin_presets(self):
+        """Nothing is synthesised at import — presets come only from the file.
 
-        parsed = parse_env(
-            "\n".join(
-                [
-                    "# a comment",
-                    "",
-                    "PLAIN=value",
-                    "export EXPORTED=yes",
-                    'QUOTED="has spaces"',
-                    "SINGLE='single'",
-                    "EMPTY=",
-                    "INNER=Videos /V2",  # interior spaces must survive
-                    "no_equals_sign",
-                ]
-            )
-        )
-        self.assertEqual(parsed["PLAIN"], "value")
-        self.assertEqual(parsed["EXPORTED"], "yes")
-        self.assertEqual(parsed["QUOTED"], "has spaces")
-        self.assertEqual(parsed["SINGLE"], "single")
-        self.assertEqual(parsed["EMPTY"], "")
-        self.assertEqual(parsed["INNER"], "Videos /V2")
-        self.assertNotIn("no_equals_sign", parsed)
+        A built-in used to be assembled from .env, which cannot work where the
+        CLI has no .env to read, and was redundant anyway: the stored preset
+        defines every field and is merged on top.
+        """
+        import json
 
-    def test_env_prefers_real_environment(self):
+        from folder_watch.presets import load_presets
+
+        cfg_dir = self.tmp / "cfg"
+        cfg_dir.mkdir()
+        (cfg_dir / "presets.json").write_text(json.dumps({"only": {"action": "unzip"}}))
         import os
 
-        from folder_watch.support.env import env
-
-        key = "FOLDER_WATCH_TEST_ONLY_VALUE"
-        os.environ[key] = "from-environ"
+        prev = os.environ.get("FOLDER_WATCH_CONFIG_DIR")
+        os.environ["FOLDER_WATCH_CONFIG_DIR"] = str(cfg_dir)
         try:
-            self.assertEqual(env(key), "from-environ")
-        finally:
-            del os.environ[key]
-        self.assertEqual(env(key, "fallback"), "fallback")
+            import importlib
 
-    def test_drive_root_unset_yields_no_default_preset(self):
-        """No .env must not mean a broken import — just no built-in preset."""
-        import folder_watch.presets as presets_mod
+            import folder_watch.presets as presets_mod
+            import folder_watch.support.paths as paths_mod
 
-        real = presets_mod.env
-        presets_mod.env = lambda _name, default=None: default
-        try:
-            self.assertIsNone(presets_mod.drive_root())
-            self.assertEqual(presets_mod._defaults(), {})
+            importlib.reload(paths_mod)
+            importlib.reload(presets_mod)
+            self.assertEqual(sorted(presets_mod.load_presets()), ["only"])
+            self.assertFalse(hasattr(presets_mod, "DEFAULT_PRESETS"))
         finally:
-            presets_mod.env = real
+            if prev is None:
+                os.environ.pop("FOLDER_WATCH_CONFIG_DIR", None)
+            else:
+                os.environ["FOLDER_WATCH_CONFIG_DIR"] = prev
+            import importlib
+
+            import folder_watch.presets as presets_mod
+            import folder_watch.support.paths as paths_mod
+
+            importlib.reload(paths_mod)
+            importlib.reload(presets_mod)
+        del load_presets
 
     def test_partial_names(self):
         from folder_watch import should_watch_name
