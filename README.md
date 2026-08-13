@@ -212,9 +212,8 @@ being merged in and the command would look broken.
 
 Removal is explicit and never a side effect of listing or running. It refuses
 while a watcher is using that preset rather than pulling config out from under
-it, warns if a LaunchAgent is still installed for it, and — for a preset that
-is also synthesised from `.env` — says which environment keys will rebuild it
-on the next run. Exit 1 if the name is unknown, 2 if it is in use.
+it, and warns if a LaunchAgent is still installed for it. Exit 1 if the name is
+unknown, 2 if it is in use.
 
 `--save-preset NAME` **merges** into an existing preset rather than replacing
 it, and says which it is doing:
