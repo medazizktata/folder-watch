@@ -1152,6 +1152,79 @@ class TestDoneStoreWriteCost(unittest.TestCase):
         self.assertEqual(sorted(DoneStore(p)._data), ["k1", "k2", "k3"])
 
 
+class TestPresetStatus(unittest.TestCase):
+    """A listing that renders a dead preset like a live one is the defect.
+
+    Reporting is the whole fix: the tool cannot tell "this project is over"
+    from "the drive is unplugged", so it says what is true and leaves the
+    decision alone.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = self.tmp / "src"
+        self.src.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_healthy_preset_is_silent(self):
+        from folder_watch.presets import preset_status
+
+        level, note = preset_status(
+            {"action": "unzip", "src": str(self.src), "mode": "named"}
+        )
+        self.assertEqual(level, "ok")
+        self.assertEqual(note, "")
+
+    def test_deleted_folder_names_the_nearest_existing_one(self):
+        """Checking only the immediate parent called this an unmounted volume."""
+        from folder_watch.presets import preset_status
+
+        gone = self.tmp / "Project" / "Output"  # both levels missing
+        level, note = preset_status({"action": "unzip", "src": str(gone)})
+        self.assertEqual(level, "error")
+        self.assertIn("missing", note)
+        self.assertIn(str(self.tmp), note, "did not say where to look")
+        self.assertNotIn("not mounted", note, "guessed the wrong cause")
+
+    def test_unmounted_volume_reads_as_unmounted(self):
+        from folder_watch.presets import preset_status
+
+        level, note = preset_status(
+            {"action": "unzip", "src": "/Volumes/DefinitelyNotMounted/x"}
+        )
+        self.assertEqual(level, "warn")
+        self.assertIn("not mounted", note)
+
+    def test_cloudstorage_counts_as_a_mount(self):
+        from folder_watch.presets import preset_status
+
+        src = Path.home() / "Library/CloudStorage/GoogleDrive-nobody/Shared/x"
+        level, note = preset_status({"action": "unzip", "src": str(src)})
+        self.assertEqual(level, "warn")
+        self.assertIn("not mounted", note)
+
+    def test_structurally_invalid_presets(self):
+        from folder_watch.presets import preset_status
+
+        self.assertEqual(
+            preset_status({"action": "copy", "src": str(self.src)})[0], "error"
+        )
+        self.assertEqual(preset_status({"action": "nope", "src": "/tmp"})[0], "error")
+        self.assertEqual(preset_status({"action": "copy"})[0], "error")
+
+    def test_status_never_mutates_anything(self):
+        from folder_watch.presets import preset_status
+
+        gone = self.tmp / "Project" / "Output"
+        before = sorted(p.name for p in self.tmp.rglob("*"))
+        cfg = {"action": "unzip", "src": str(gone)}
+        preset_status(cfg)
+        self.assertEqual(sorted(p.name for p in self.tmp.rglob("*")), before)
+        self.assertEqual(cfg, {"action": "unzip", "src": str(gone)}, "mutated the cfg")
+
+
 class TestPresetCoverage(unittest.TestCase):
     """Nothing links argparse to the preset loader — so this does.
 

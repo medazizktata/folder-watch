@@ -121,6 +121,72 @@ def load_presets() -> dict[str, dict[str, Any]]:
     return merged
 
 
+def _mount_containers() -> tuple[Path, ...]:
+    """Directories whose children are mounts rather than ordinary folders."""
+    return (Path("/Volumes"), Path.home() / "Library" / "CloudStorage")
+
+
+def _nearest_existing(path: Path) -> Path:
+    for candidate in (path, *path.parents):
+        if candidate.is_dir():
+            return candidate
+    return Path(path.anchor or "/")
+
+
+def _missing_note(label: str, path: Path) -> tuple[str, str]:
+    """Say what is actually true instead of guessing why.
+
+    Checking only the immediate parent got this wrong: for a deleted project
+    folder the parent is missing too, so it reported "volume not mounted"
+    about a path sitting plainly under an existing ~/Desktop. Walking up to
+    the nearest folder that does exist is both accurate and the thing you
+    need to know to fix it.
+    """
+    anchor = _nearest_existing(path)
+    if anchor in _mount_containers():
+        return "warn", f"{label} unreachable — volume not mounted under {anchor}"
+    return "error", f"{label} missing — nearest existing folder is {anchor}"
+
+
+def preset_status(cfg: dict[str, Any]) -> tuple[str, str]:
+    """Health of a preset, for display only. Never touches anything.
+
+    The tool cannot tell "this project is over" from "the drive is unplugged",
+    and its own runtime already assumes a missing folder is temporary —
+    src_lost/src_restored exist for exactly that. So this reports and leaves
+    the decision alone.
+
+    The distinction it CAN make is worth surfacing, because the two point in
+    opposite directions: if the parent still exists someone deleted or renamed
+    the folder and you need to act; if the whole path is gone it is probably an
+    unmounted volume and you need to do nothing.
+
+    Returns (level, note); level is "ok", "warn" or "error".
+    """
+    action = cfg.get("action", "copy")
+    if action not in ("copy", "unzip", "convx"):
+        return "error", f"unknown action {action!r}"
+
+    raw_src = cfg.get("src")
+    if not raw_src:
+        return "error", "no src"
+    src = Path(str(raw_src)).expanduser()
+    if not src.is_dir():
+        return _missing_note("source", src)
+
+    if action == "copy" and not cfg.get("to"):
+        return "error", "copy requires 'to'"
+    if action == "unzip" and cfg.get("mode") == "to" and not cfg.get("to"):
+        return "error", "mode=to requires 'to'"
+
+    raw_to = cfg.get("to")
+    if raw_to:
+        dest = Path(str(raw_to)).expanduser()
+        if not dest.is_dir() and not dest.parent.is_dir():
+            return _missing_note("destination", dest)
+    return "ok", ""
+
+
 def save_preset(name: str, cfg: dict[str, Any]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     presets: dict[str, Any] = {}

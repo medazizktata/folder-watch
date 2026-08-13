@@ -14,7 +14,7 @@ from folder_watch.actions.copy import CopyAction
 from folder_watch.actions.unzip import UnzipAction
 from folder_watch.core.util import parse_exts
 from folder_watch.core.watch import list_pending, run_watch
-from folder_watch.presets import load_presets, save_preset
+from folder_watch.presets import load_presets, preset_status, save_preset
 from folder_watch.support.launchd import (
     install_service,
     service_status,
@@ -378,10 +378,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.list_presets:
+        # Annotate rather than act: a listing that renders a dead preset
+        # identically to a live one is the whole complaint, and deleting one
+        # is a statement about your project that this tool cannot make.
+        broken = 0
         for name, cfg in presets.items():
-            print(f"{name}:")
+            level, note = preset_status(cfg)
+            if level != "ok":
+                broken += 1
+            print(f"{name}:" + (f"    [{note}]" if note else ""))
             for k, v in cfg.items():
                 print(f"  {k}: {v}")
+        if broken:
+            print(
+                f"\n{broken} of {len(presets)} preset(s) need attention. "
+                "Nothing was changed — fix the path, or remove the preset "
+                f"from {PRESETS_PATH}"
+            )
         return 0
 
     action_name = args.action

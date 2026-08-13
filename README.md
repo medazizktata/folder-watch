@@ -199,6 +199,28 @@ watch-convx ~/Inbox --format webp --ext png,jpg
 
 Presets: `~/.config/folder-watch/presets.json`
 
+`--list-presets` reports the health of each one rather than rendering a dead
+preset identically to a live one:
+
+```
+la-chaise-v1:    [source missing — nearest existing folder is /Users/MAC/Desktop]
+emna-ragheb-assets:
+  ...
+1 of 3 preset(s) need attention. Nothing was changed.
+```
+
+It reports and stops there. The tool cannot tell "this project is finished"
+from "the drive is unplugged" — and its own runtime already assumes a missing
+folder is temporary, which is what `src_lost` / `src_restored` are for. So it
+never removes a preset for you.
+
+It does distinguish the two cases where it honestly can, because they call for
+opposite responses: a path whose nearest existing folder is an ordinary
+directory was **deleted or renamed** and needs your attention, while one under
+`/Volumes` or `~/Library/CloudStorage` is an **unmounted volume** and needs
+nothing. Using a broken preset already fails loudly (`error reason=src_missing`,
+exit 2); this only fixes the inventory view.
+
 A preset can carry the safety flags too — `no_clobber`, `create_dest`,
 `exclusive`, `no_done_store`, `retry_hours`. That matters because unattended
 runs use `--preset`, so without it the options that most need to be on for an
