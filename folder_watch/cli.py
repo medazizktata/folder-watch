@@ -14,7 +14,12 @@ from folder_watch.actions.copy import CopyAction
 from folder_watch.actions.unzip import UnzipAction
 from folder_watch.core.util import parse_exts
 from folder_watch.core.watch import list_pending, run_watch
-from folder_watch.presets import load_presets, preset_status, save_preset
+from folder_watch.presets import (
+    load_presets,
+    load_raw_preset,
+    preset_status,
+    save_preset,
+)
 from folder_watch.support.launchd import (
     install_service,
     service_status,
@@ -212,6 +217,64 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--list-actions", action="store_true")
     p.add_argument("--save-preset", metavar="NAME")
     return p
+
+
+def explicit_dests(argv: list[str]) -> set[str]:
+    """Which settings the user actually typed, by argparse dest.
+
+    --save-preset used to rebuild the whole config from resolved values, so
+    re-saving to change one field silently reset every other one to its
+    default — ext back to mp4, min_bytes back to 1000000, no_clobber gone —
+    while reporting success. Knowing what was typed turns that into a patch.
+    """
+    passed = {a.split("=")[0] for a in argv}
+    out: set[str] = set()
+    for action in build_parser()._actions:
+        if action.option_strings and any(o in passed for o in action.option_strings):
+            out.add(action.dest)
+    return out
+
+
+def persist_preset(
+    name: str,
+    cfg: dict[str, Any],
+    *,
+    argv: list[str],
+    loaded_preset: str | None,
+) -> None:
+    """Write a preset, merging rather than replacing, and say what changed."""
+    existing = load_raw_preset(name)
+
+    if existing is None:
+        final = dict(cfg)
+    elif loaded_preset:
+        # Values came from a preset the user deliberately loaded, so the
+        # resolved config is intentional in full.
+        final = {**existing, **cfg}
+    else:
+        # Only what was typed, plus the identity of the watch itself.
+        keep = explicit_dests(argv) | {"action", "src"}
+        final = {**existing, **{k: v for k, v in cfg.items() if k in keep}}
+
+    if existing is not None:
+        print(f"note: preset {name!r} already exists — modifying it, not creating it")
+        changes = [
+            (k, existing.get(k, "<unset>"), v)
+            for k, v in final.items()
+            if existing.get(k) != v
+        ]
+        removed = [k for k in existing if k not in final]
+        if not changes and not removed:
+            print(f"  no changes; {name!r} left as it was")
+            return
+        for key, before, after in changes:
+            print(f"  {key}: {before} -> {after}")
+        for key in removed:
+            print(f"  {key}: {existing[key]} -> <removed>")
+
+    save_preset(name, final)
+    verb = "updated" if existing is not None else "saved"
+    print(f"{verb} preset {name!r} -> {PRESETS_PATH}")
 
 
 def build_action(
@@ -561,8 +624,9 @@ def main(argv: list[str] | None = None) -> int:
                 cfg["max_size"] = max_size
             if convx_bin:
                 cfg["convx_bin"] = convx_bin
-            save_preset(args.save_preset, cfg)
-            print(f"saved preset {args.save_preset!r} -> {PRESETS_PATH}")
+            persist_preset(
+                args.save_preset, cfg, argv=argv, loaded_preset=args.preset
+            )
             return 0
 
         watch_name = args.preset or f"convx-{src.name}"
@@ -631,8 +695,7 @@ def main(argv: list[str] | None = None) -> int:
                 cfg[key] = True
         if getattr(args, "retry_hours", None) is not None:
             cfg["retry_hours"] = args.retry_hours
-        save_preset(args.save_preset, cfg)
-        print(f"saved preset {args.save_preset!r} -> {PRESETS_PATH}")
+        persist_preset(args.save_preset, cfg, argv=argv, loaded_preset=args.preset)
         return 0
 
     try:

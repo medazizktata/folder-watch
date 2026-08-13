@@ -187,6 +187,25 @@ def preset_status(cfg: dict[str, Any]) -> tuple[str, str]:
     return "ok", ""
 
 
+def load_raw_preset(name: str) -> dict[str, Any] | None:
+    """A preset exactly as stored, without built-in defaults merged in.
+
+    save_preset needs to know whether it is creating or modifying, and
+    load_presets() cannot answer that — it folds DEFAULT_PRESETS in, so a
+    name that exists only as a built-in would look like a stored preset.
+    """
+    if not PRESETS_PATH.is_file():
+        return None
+    try:
+        data = json.loads(PRESETS_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    stored = data.get(name)
+    return dict(stored) if isinstance(stored, dict) else None
+
+
 def save_preset(name: str, cfg: dict[str, Any]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     presets: dict[str, Any] = {}

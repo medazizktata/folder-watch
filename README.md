@@ -199,6 +199,22 @@ watch-convx ~/Inbox --format webp --ext png,jpg
 
 Presets: `~/.config/folder-watch/presets.json`
 
+`--save-preset NAME` **merges** into an existing preset rather than replacing
+it, and says which it is doing:
+
+```
+note: preset 'job' already exists — modifying it, not creating it
+  stable: 7 -> 9
+updated preset 'job'
+```
+
+Only what you actually typed changes (plus anything you loaded with
+`--preset`). Rebuilding the whole config from resolved values meant that
+re-saving to change one field silently reset every other one to its default —
+`ext` back to `mp4`, `min_bytes` back to `1000000`, `no_clobber` gone — while
+reporting success. Creating a new preset still captures the full config, which
+is what makes one useful.
+
 `--list-presets` reports the health of each one rather than rendering a dead
 preset identically to a live one:
 

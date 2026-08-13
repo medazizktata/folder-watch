@@ -1152,6 +1152,116 @@ class TestDoneStoreWriteCost(unittest.TestCase):
         self.assertEqual(sorted(DoneStore(p)._data), ["k1", "k2", "k3"])
 
 
+class TestPresetSaveMerges(unittest.TestCase):
+    """Re-saving used to reset every field you didn't retype, and say 'saved'."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.cfg_dir = self.tmp / "config"
+        self.cfg_dir.mkdir()
+        self.src = self.tmp / "src"
+        self.dest = self.tmp / "dest"
+        self.src.mkdir()
+        self.dest.mkdir()
+        import os
+
+        self._prev = os.environ.get("FOLDER_WATCH_CONFIG_DIR")
+        os.environ["FOLDER_WATCH_CONFIG_DIR"] = str(self.cfg_dir)
+        self._reload()
+
+    def tearDown(self):
+        import os
+
+        if self._prev is None:
+            os.environ.pop("FOLDER_WATCH_CONFIG_DIR", None)
+        else:
+            os.environ["FOLDER_WATCH_CONFIG_DIR"] = self._prev
+        self._reload()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _reload(self):
+        import importlib
+
+        import folder_watch.cli as cli_mod
+        import folder_watch.presets as presets_mod
+        import folder_watch.support.paths as paths_mod
+
+        importlib.reload(paths_mod)
+        importlib.reload(presets_mod)
+        importlib.reload(cli_mod)
+        return cli_mod
+
+    def _stored(self, name="job"):
+        import json
+
+        return json.loads((self.cfg_dir / "presets.json").read_text())[name]
+
+    def _save(self, argv):
+        import contextlib
+        import io
+
+        cli = self._reload()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = cli.main(argv)
+        self.assertEqual(code, 0, buf.getvalue())
+        return buf.getvalue()
+
+    def _create(self):
+        self._save([
+            "copy", str(self.src), "--to", str(self.dest),
+            "--ext", "mp4,mov", "--stable", "7", "--min-bytes", "500",
+            "--recursive", "--no-clobber", "--retry-hours", "12",
+            "--save-preset", "job",
+        ])
+
+    def test_changing_one_field_keeps_the_rest(self):
+        self._create()
+        self._save([
+            "copy", str(self.src), "--to", str(self.dest),
+            "--stable", "9", "--save-preset", "job",
+        ])
+        got = self._stored()
+        self.assertEqual(got["stable"], 9)
+        self.assertEqual(got["ext"], ["mp4", "mov"], "ext reset to the default")
+        self.assertEqual(got["min_bytes"], 500, "min_bytes reset to the default")
+        self.assertTrue(got["recursive"], "recursive silently turned off")
+        self.assertTrue(got["no_clobber"], "safety flag silently dropped")
+        self.assertEqual(got["retry_hours"], 12.0)
+
+    def test_it_says_it_is_modifying_not_creating(self):
+        self._create()
+        out = self._save([
+            "copy", str(self.src), "--to", str(self.dest),
+            "--stable", "9", "--save-preset", "job",
+        ])
+        self.assertIn("already exists", out)
+        self.assertIn("modifying", out)
+        self.assertIn("stable: 7 -> 9", out)
+
+    def test_no_op_save_reports_no_changes(self):
+        self._create()
+        out = self._save([
+            "copy", str(self.src), "--to", str(self.dest),
+            "--ext", "mp4,mov", "--stable", "7", "--min-bytes", "500",
+            "--recursive", "--no-clobber", "--retry-hours", "12",
+            "--save-preset", "job",
+        ])
+        self.assertIn("no changes", out)
+
+    def test_creating_a_new_preset_captures_everything(self):
+        out = self._save([
+            "copy", str(self.src), "--to", str(self.dest),
+            "--ext", "png", "--save-preset", "fresh",
+        ])
+        self.assertNotIn("already exists", out)
+        got = self._stored("fresh")
+        self.assertEqual(got["ext"], ["png"])
+        # Defaults are captured on creation, which is what makes a preset useful.
+        self.assertIn("backend", got)
+        self.assertIn("settle", got)
+
+
 class TestPresetStatus(unittest.TestCase):
     """A listing that renders a dead preset like a live one is the defect.
 
