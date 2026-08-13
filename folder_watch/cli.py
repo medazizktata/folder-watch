@@ -15,13 +15,17 @@ from folder_watch.actions.unzip import UnzipAction
 from folder_watch.core.util import parse_exts
 from folder_watch.core.watch import list_pending, run_watch
 from folder_watch.presets import (
+    DEFAULT_PRESETS,
+    env_keys_for,
     load_presets,
     load_raw_preset,
     preset_status,
+    remove_preset,
     save_preset,
 )
 from folder_watch.support.launchd import (
     install_service,
+    service_plist_path,
     service_status,
     uninstall_service,
 )
@@ -30,6 +34,7 @@ from folder_watch.support.paths import PRESETS_PATH, STATE_DIR
 from folder_watch.support.pidfile import (
     clear_pidfile,
     collect_watch_status,
+    live_watchers,
     prune_pidfiles,
     write_pidfile,
 )
@@ -53,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  service install|uninstall|status --preset NAME\n"
             "  status [--preset NAME]   # running watchers\n"
             "  prune [--yes]            # drop dead done-state and stale pidfiles\n"
+            "  presets forget NAME [--yes]  # remove a preset\n"
         ),
     )
     p.add_argument("action", nargs="?", help="Action or 'service'")
@@ -277,6 +283,59 @@ def persist_preset(
     print(f"{verb} preset {name!r} -> {PRESETS_PATH}")
 
 
+def run_presets_cli(argv: list[str]) -> int:
+    """Remove a preset — explicitly, never as a side effect of anything else."""
+    ap = argparse.ArgumentParser(prog="folder-watch presets")
+    ap.add_argument("cmd", choices=("forget",))
+    ap.add_argument("name", help="preset to forget")
+    ap.add_argument("--yes", action="store_true", help="actually remove (default: dry)")
+    args = ap.parse_args(argv)
+
+    name = args.name
+    stored = load_raw_preset(name)
+    builtin = name in DEFAULT_PRESETS
+    if stored is None and not builtin:
+        print(f"error: no preset named {name!r}", file=sys.stderr)
+        known = ", ".join(sorted(load_presets())) or "(none)"
+        print(f"known: {known}", file=sys.stderr)
+        return 1
+
+    # Pulling config out from under a running watcher is not a tidy-up.
+    running = live_watchers(name)
+    if running:
+        print(
+            f"error: {name!r} is in use by running watcher(s) {running}. "
+            "Stop it first.",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"preset {name!r}")
+    if stored is not None:
+        print(f"  stored in: {PRESETS_PATH}")
+    plist = service_plist_path(name)
+    if plist.is_file():
+        print(f"  LaunchAgent installed: {plist}")
+        print("    -> run `folder-watch service uninstall --preset "
+              f"{name}` first, or it will fail on next login")
+    env_keys = env_keys_for(name)
+    if builtin and env_keys:
+        print("  also built from .env: " + ", ".join(env_keys))
+        print("    -> it will reappear on next run unless those are cleared")
+
+    if not args.yes:
+        print("\ndry run — re-run with --yes to remove")
+        return 0
+
+    if stored is not None and remove_preset(name):
+        print(f"\nremoved {name!r} from {PRESETS_PATH}")
+    else:
+        print(f"\nnothing stored to remove for {name!r}")
+    if builtin and env_keys:
+        print("still built from .env — clear those keys to finish removing it")
+    return 0
+
+
 def build_action(
     name: str, args: argparse.Namespace, *, src_root: Path | None = None
 ) -> Action:
@@ -414,6 +473,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_status_cli(argv[1:])
     if argv and argv[0] == "prune":
         return run_prune_cli(argv[1:])
+    if argv and argv[0] == "presets":
+        return run_presets_cli(argv[1:])
 
     args = build_parser().parse_args(argv)
     level = args.log_level

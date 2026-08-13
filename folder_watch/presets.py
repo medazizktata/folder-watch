@@ -148,6 +148,38 @@ def _missing_note(label: str, path: Path) -> tuple[str, str]:
     return "error", f"{label} missing — nearest existing folder is {anchor}"
 
 
+def remove_preset(name: str) -> bool:
+    """Delete a stored preset. Returns whether anything was removed.
+
+    Only touches presets.json — a name also synthesised from .env will come
+    back, and the caller is expected to say so rather than leave the user
+    wondering why it reappeared.
+    """
+    if not PRESETS_PATH.is_file():
+        return False
+    try:
+        data = json.loads(PRESETS_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict) or name not in data:
+        return False
+    data.pop(name)
+    PRESETS_PATH.write_text(json.dumps(data, indent=2) + "\n")
+    return True
+
+
+def env_keys_for(name: str) -> list[str]:
+    """Environment variables that would rebuild this preset after removal."""
+    if name != "la-chaise-v1":
+        return []
+    return [
+        "FOLDER_WATCH_LA_CHAISE_SRC",
+        "FOLDER_WATCH_LA_CHAISE_DEST",
+        "FOLDER_WATCH_DRIVE_EMAIL",
+        "FOLDER_WATCH_DRIVE_SHORTCUT_ID",
+    ]
+
+
 def preset_status(cfg: dict[str, Any]) -> tuple[str, str]:
     """Health of a preset, for display only. Never touches anything.
 

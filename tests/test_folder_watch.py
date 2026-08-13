@@ -1152,6 +1152,104 @@ class TestDoneStoreWriteCost(unittest.TestCase):
         self.assertEqual(sorted(DoneStore(p)._data), ["k1", "k2", "k3"])
 
 
+class TestPresetForget(unittest.TestCase):
+    """Removal is explicit, dry by default, and never yanks live config."""
+
+    def setUp(self):
+        import os
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.cfg_dir = self.tmp / "config"
+        self.cfg_dir.mkdir()
+        self.src = self.tmp / "src"
+        self.src.mkdir()
+        self._prev = os.environ.get("FOLDER_WATCH_CONFIG_DIR")
+        os.environ["FOLDER_WATCH_CONFIG_DIR"] = str(self.cfg_dir)
+        self._reload()
+
+    def tearDown(self):
+        import os
+
+        if self._prev is None:
+            os.environ.pop("FOLDER_WATCH_CONFIG_DIR", None)
+        else:
+            os.environ["FOLDER_WATCH_CONFIG_DIR"] = self._prev
+        self._reload()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _reload(self):
+        import importlib
+
+        import folder_watch.cli as cli_mod
+        import folder_watch.presets as presets_mod
+        import folder_watch.support.paths as paths_mod
+
+        importlib.reload(paths_mod)
+        importlib.reload(presets_mod)
+        importlib.reload(cli_mod)
+        return cli_mod
+
+    def _run(self, argv):
+        import contextlib
+        import io
+
+        cli = self._reload()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(argv)
+        return code, out.getvalue() + err.getvalue()
+
+    def _make(self, name):
+        self._run(["unzip", str(self.src), "--mode", "named", "--save-preset", name])
+
+    def test_dry_by_default(self):
+        self._make("doomed")
+        code, out = self._run(["presets", "forget", "doomed"])
+        self.assertEqual(code, 0)
+        self.assertIn("dry run", out)
+        self.assertIn("doomed", (self.cfg_dir / "presets.json").read_text())
+
+    def test_yes_removes_only_that_one(self):
+        self._make("keep")
+        self._make("doomed")
+        code, _ = self._run(["presets", "forget", "doomed", "--yes"])
+        self.assertEqual(code, 0)
+        stored = (self.cfg_dir / "presets.json").read_text()
+        self.assertNotIn("doomed", stored)
+        self.assertIn("keep", stored)
+
+    def test_unknown_name_exits_one_and_lists_known(self):
+        self._make("keep")
+        code, out = self._run(["presets", "forget", "nope"])
+        self.assertEqual(code, 1)
+        self.assertIn("no preset named", out)
+        self.assertIn("keep", out)
+
+    def test_refuses_while_a_watcher_holds_it(self):
+        import folder_watch.support.pidfile as pid_mod
+
+        self._make("busy")
+        real = pid_mod.live_watchers
+        cli = self._reload()
+        cli.live_watchers = lambda _n: [4242]
+        try:
+            code, out = self._run_no_reload(cli, ["presets", "forget", "busy", "--yes"])
+            self.assertEqual(code, 2)
+            self.assertIn("in use", out)
+            self.assertIn("busy", (self.cfg_dir / "presets.json").read_text())
+        finally:
+            cli.live_watchers = real
+
+    def _run_no_reload(self, cli, argv):
+        import contextlib
+        import io
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(argv)
+        return code, out.getvalue() + err.getvalue()
+
+
 class TestPresetSaveMerges(unittest.TestCase):
     """Re-saving used to reset every field you didn't retype, and say 'saved'."""
 
