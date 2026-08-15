@@ -69,7 +69,7 @@ def copy_main(argv: list[str] | None = None) -> int:
         print(
             "watch-copy → folder-watch copy SRC --to DEST\n"
             "  watch-copy ./Out ./Drive\n"
-            "  watch-copy --preset la-chaise-v1"
+            "  watch-copy --preset nightly-render"
         )
         return 0
     if _is_passthrough(argv):

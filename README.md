@@ -87,10 +87,10 @@ If the binary is absent, the action fails immediately with exit **127** and
 folder-watch copy ./Out --to ./Drive --once --dry-run
 
 # log file + JSON lines
-folder-watch --preset la-chaise-v1 --log ~/.local/state/folder-watch/la-chaise.log --json
+folder-watch --preset nightly-render --log ~/.local/state/folder-watch/nightly-render.log --json
 
 # verbose settle/progress
-folder-watch --preset la-chaise-v1 -v
+folder-watch --preset nightly-render -v
 
 # disable persistent done-state
 folder-watch copy ./Out --to ./Drive --no-done-store
@@ -100,7 +100,7 @@ folder-watch copy ./Out --to ./Drive --retries 8
 
 # status of running watchers
 folder-watch status
-folder-watch status --preset la-chaise-v1
+folder-watch status --preset nightly-render
 
 # drop done-state whose source is gone, and stale pidfiles (dry by default)
 folder-watch prune
@@ -126,7 +126,7 @@ written, no `lsof`, safe against a folder a watcher is running on right now:
 
 ```bash
 folder-watch unzip ~/Inbox --mode named --pending
-folder-watch --preset la-chaise-v1 --pending
+folder-watch --preset nightly-render --pending
 ```
 
 Exits 1 if anything is pending. `--catch-up` then processes them, and clears
@@ -217,9 +217,9 @@ Key = action + src + dest/mode + size + mtime (scheme **B**).
 ## LaunchAgent
 
 ```bash
-folder-watch service install --preset la-chaise-v1
-folder-watch service status --preset la-chaise-v1
-folder-watch service uninstall --preset la-chaise-v1
+folder-watch service install --preset nightly-render
+folder-watch service status --preset nightly-render
+folder-watch service uninstall --preset nightly-render
 ```
 
 Keeps the preset running at login (`KeepAlive`). Logs default to `~/.local/state/folder-watch/<preset>.log`.
@@ -230,7 +230,7 @@ Keeps the preset running at login (`KeepAlive`). Logs default to `~/.local/state
 folder-watch copy ./Output --to ./Drive/V2 --ext mp4
 folder-watch unzip ~/Downloads/inbox
 folder-watch convx ~/Inbox --format webp --ext png,jpg
-folder-watch --preset la-chaise-v1
+folder-watch --preset nightly-render
 
 watch-copy ./Output ./Drive/V2
 watch-unzip ~/Downloads/inbox
@@ -275,8 +275,8 @@ is what makes one useful.
 preset identically to a live one:
 
 ```
-la-chaise-v1:    [source missing — nearest existing folder is /Users/MAC/Desktop]
-emna-ragheb-assets:
+nightly-render:  [source missing — nearest existing folder is ~/Desktop]
+client-assets:
   ...
 1 of 3 preset(s) need attention. Nothing was changed.
 ```
@@ -315,13 +315,9 @@ one of them.
 ## Tests
 
 ```bash
-cd ~/Desktop/folder-watch
 .venv/bin/python -m unittest discover -s tests -v
 ./bin/test-addons
 ```
-
-For manual/interactive testing — a simulated encode that holds its write handle
-open, test zips, and a state reset — see `~/Desktop/folder-watch-lab/`.
 
 ```bash
 make check    # lint + types + unit tests (~5s) — what the commit hook runs
@@ -342,6 +338,26 @@ tool built on FSEvents, `lsof` and launchd. It also asserts `lsof` stays
 reachable, since a watcher that cannot find it once treated every file as
 permanently open and silently processed nothing.
 
-Config lives in `pyproject.toml`. `E402` is ignored under `tests/` — both
-suites must put the repo on `sys.path` and import `tests/_isolate` (which
+Config lives in `pyproject.toml`. `E402` is ignored under `tests/` — every
+suite must put the repo on `sys.path` and import `tests/_isolate` (which
 redirects state off `~/.local/state`) before `folder_watch` is imported.
+
+### Testing the watch loops
+
+The loops are the hard part to test: they never return, their timeouts run to a
+full day, and the event backend only wakes when the filesystem says so. So
+`tests/_loopharness.py` replaces three things and nothing else —
+
+* a **virtual clock** installed over the module's `time`, where sleeping
+  advances the clock instead of blocking, and doubles as the tick callback a
+  test uses to delete a directory, release a writer or skip past a timeout;
+* a **stub observer** that captures the event handler instead of starting a
+  watchdog thread, so events are a function call rather than a race;
+* a **scripted `lsof`**, since whether a writer still holds a file is the one
+  thing the settle logic cannot work out for itself.
+
+Everything else is real: real files, real state, real queue. The result is that
+`core/watch.py` — where all three audit rounds found their bugs — is covered at
+96% by tests that finish in well under a tenth of a second and cannot flake on a
+loaded machine. What is left uncovered there is error handling for filesystem
+races that cannot be provoked without patching the standard library.

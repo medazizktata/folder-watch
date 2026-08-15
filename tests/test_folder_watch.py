@@ -2016,7 +2016,7 @@ class TestLaunchAgentPlist(unittest.TestCase):
         """A path with & or < produced a plist launchctl refuses to load."""
         import xml.etree.ElementTree as ET
 
-        log = Path("/s/Aziz & Co <v2>.log")
+        log = Path("/s/Acme & Co <v2>.log")
         root = ET.fromstring(self._plist(log))  # raises if malformed
         self.assertIn(str(log), [e.text for e in root.iter("string")])
 
@@ -2107,7 +2107,7 @@ class TestSettleNonBlocking(unittest.TestCase):
             watch_mod.is_open = old
 
     def test_stalled_zero_byte_file_ages_out(self):
-        """The Video-5-v2.mp4 case: 0 bytes forever must not watch forever."""
+        """An aborted export: 0 bytes forever must not be watched forever."""
         import folder_watch.core.watch as watch_mod
         from folder_watch import settle_step
 
