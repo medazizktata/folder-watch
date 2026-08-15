@@ -29,16 +29,56 @@ uses them — it works either way.
 2. Skip files already finished at startup (**new-only**; use `--catch-up` to process old)
 3. Run action; persist done-state (scheme B) so restarts don’t redo work
 
-**convx** wraps `convx watch` (ConvX owns FSEvents).
+**convx** is different: it hands off to [ConvX](https://github.com/JSBtechnologies/convx),
+a separate third-party binary that owns the watching itself. See below.
 
 ## Actions
+
+### Built in
 
 | Action | Behavior | Defaults |
 |--------|----------|----------|
 | `copy` | Atomic copy → `--to DIR` (retry on OSError); never deletes source; macOS notif. Mirrors subdirectories under `--recursive` | `--ext mp4 --min-bytes 1000000` |
 | `unzip` | Extract `.zip`; delete zip only after **every** member is verified present. `--no-clobber` refuses an archive that would overwrite | `--ext zip --min-bytes 1` |
-| `convx` | → `convx watch` (in-place) |
-| `service` | LaunchAgent install / uninstall / status |
+
+`service` (LaunchAgent install / uninstall / status), `status`, `prune` and
+`presets` are subcommands rather than actions.
+
+### `convx` — a wrapper around a separate tool, not an action
+
+**[ConvX](https://github.com/JSBtechnologies/convx)** is a third-party
+program — "local-first universal file converter for CLI, Desktop, and AI
+agents" — with its own repository, release cycle and issue tracker. It is
+**not bundled, vendored or installed by folder-watch**, and it cannot be: it
+is a compiled binary, not a Python package, so `pip install folder-watch`
+will never bring it along.
+
+`folder-watch convx` does not convert anything itself. It translates
+folder-watch flags into a `convx watch` command line, execs it, and then just
+supervises the process:
+
+```
+folder-watch → /Users/you/.local/bin/convx watch ~/Inbox -t webp --filter *.png --debounce 500 --overwrite
+```
+
+**ConvX owns the watching.** That is the important consequence, because almost
+none of this README applies to the `convx` action:
+
+| | `copy` / `unzip` | `convx` |
+|---|---|---|
+| settle loop, `lsof`, `--stable` / `--settle` | yes | **no** — ConvX decides when a file is ready |
+| done-store, `--catch-up`, `baseline_pending` | yes | **no** |
+| retry queue, `--retry-hours` | yes | **no** |
+| `--pending` | yes | **no** |
+| `--once` | yes | **no** — rejected; `convx watch` is continuous |
+
+What folder-watch does still provide is a pidfile (so `folder-watch status`
+sees it), preset resolution, and lifecycle management — it terminates the
+ConvX child when it exits, rather than orphaning it.
+
+If the binary is absent, the action fails immediately with exit **127** and
+`error: convx not found`. Install ConvX separately, or point at it with
+`--convx-bin /path/to/convx`.
 
 ## Reliability / logging
 
