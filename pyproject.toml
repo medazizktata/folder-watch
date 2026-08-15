@@ -65,7 +65,7 @@ path = "folder_watch/_version.py"
 packages = ["folder_watch"]
 
 [tool.hatch.build.targets.sdist]
-include = ["folder_watch", "tests", "bin", "README.md"]
+include = ["folder_watch", "tests", "bin", "README.md", "CHANGELOG.md"]
 
 [tool.mypy]
 python_version = "3.10"

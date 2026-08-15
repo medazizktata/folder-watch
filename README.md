@@ -405,3 +405,50 @@ Everything else is real: real files, real state, real queue. The result is that
 loaded machine. What is left uncovered there is error handling for filesystem
 races that cannot be provoked without patching the standard library.
 
+## Versioning and releases
+
+`folder_watch/_version.py` is the single source of truth. `pyproject.toml`
+reads it through hatch and `--version` prints it, so the wheel metadata, the
+tag and the running binary cannot disagree — a test enforces that, and the
+release workflow refuses a tag that does not match.
+
+Versions are **semantic**, read from the point of view of someone who has a
+watcher running unattended:
+
+| | means |
+|---|---|
+| **major** | an existing invocation changes behaviour or stops working — a removed flag, a preset key that no longer means what it did, a different default |
+| **minor** | new actions, flags or subcommands; existing setups keep working untouched |
+| **patch** | fixes and internals only |
+
+State on disk gets the same treatment as the CLI. The done-store, retry queue
+and preset files are read by whatever version happens to be installed after an
+upgrade, so a format change that an older version cannot read is a major bump.
+
+### Cutting one
+
+```bash
+# record what changed under ## [Unreleased] in CHANGELOG.md first
+make release V=0.5.0
+git push origin main --follow-tags
+```
+
+`bin/release` refuses a dirty tree, a branch other than `main`, a
+non-semantic version, a tag that already exists and an empty `[Unreleased]`
+section. Then it runs `make all`, bumps the version, promotes `[Unreleased]`
+to the new heading with today's date, commits and tags — and stops.
+
+**Pushing the tag is the publish step**, and nothing before it leaves the
+machine. `git tag -d v0.5.0 && git reset --soft HEAD~1` undoes the lot.
+
+Once the tag lands, `.github/workflows/release.yml` re-runs the full gate at
+that commit, checks the tag against `__version__`, builds the sdist and wheel,
+and opens a GitHub Release using that version's changelog section as the notes.
+A release is never published from a build that did not pass.
+
+The first tag is a bootstrap — `bin/release` bumps, and 0.4.0 is already the
+version in the tree:
+
+```bash
+git tag -a v0.4.0 -m "v0.4.0" && git push origin v0.4.0
+```

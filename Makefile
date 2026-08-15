@@ -2,7 +2,7 @@ PY := .venv/bin/python
 VENV := .venv/bin
 
 .DEFAULT_GOAL := check
-.PHONY: check all lint types test smoke cover install-hooks dev clean-cover
+.PHONY: check all lint types test smoke cover install-hooks dev clean-cover release version
 
 # The gate: fast, deterministic, safe to run on every commit (~7s).
 check: lint types test
@@ -41,3 +41,12 @@ dev:
 
 clean-cover:
 	@rm -f .coverage
+
+version:
+	@$(PY) -c "from folder_watch._version import __version__; print(__version__)"
+
+# Verifies, bumps, promotes the changelog, commits and tags — but never pushes.
+#   make release V=0.5.0
+release:
+	@test -n "$(V)" || { echo "usage: make release V=X.Y.Z" >&2; exit 2; }
+	@./bin/release $(V)

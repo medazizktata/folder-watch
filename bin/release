@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Cut a release: verify, bump, changelog, commit, tag.
+#
+# Deliberately stops before pushing. A tag is the thing CI turns into a public
+# GitHub Release, so the last step is yours:
+#
+#   ./bin/release 0.5.0
+#   git push origin main --follow-tags
+#
+# Everything before that is reversible with `git tag -d` and `git reset --soft`.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+VERSION_FILE="folder_watch/_version.py"
+CHANGELOG="CHANGELOG.md"
+
+# Exit 2 for "cannot do what you asked", matching the rest of the tool.
+die() { printf 'release: %s\n' "$1" >&2; exit 2; }
+
+new="${1:-}"
+[ -n "$new" ] || die "usage: bin/release X.Y.Z"
+printf '%s' "$new" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || die "version must be X.Y.Z, got '$new'"
+
+current=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$VERSION_FILE")
+[ -n "$current" ] || die "could not read a version out of $VERSION_FILE"
+[ "$new" != "$current" ] || die "already at $new"
+
+# A release built from a dirty tree is not reproducible from its own tag.
+[ -z "$(git status --porcelain)" ] || die "working tree is not clean"
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+[ "$branch" = "main" ] || die "releases are cut from main, not '$branch'"
+
+git rev-parse -q --verify "refs/tags/v$new" >/dev/null \
+  && die "tag v$new already exists"
+
+grep -q '^## \[Unreleased\]' "$CHANGELOG" \
+  || die "$CHANGELOG has no [Unreleased] section to promote"
+
+# An empty Unreleased section means nothing has been recorded, which almost
+# always means the entries were forgotten rather than that nothing changed.
+if ! awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && NF' "$CHANGELOG" \
+     | grep -q .; then
+  die "[Unreleased] is empty — write the entries before cutting a release"
+fi
+
+echo "release: $current -> $new"
+echo "release: running the full gate (lint, types, tests, smoke, coverage)"
+make all >/dev/null || die "make all failed — not releasing"
+
+today=$(date +%Y-%m-%d)
+
+python3 - "$new" "$today" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+new, today = sys.argv[1], sys.argv[2]
+
+version_file = Path("folder_watch/_version.py")
+text = version_file.read_text()
+text, n = re.subn(r'^__version__ = ".*"$', f'__version__ = "{new}"', text, flags=re.M)
+assert n == 1, "version line not found"
+version_file.write_text(text)
+
+changelog = Path("CHANGELOG.md")
+text = changelog.read_text()
+
+# Promote Unreleased to the new version and open a fresh empty one above it.
+text = text.replace(
+    "## [Unreleased]",
+    f"## [Unreleased]\n\n## [{new}] - {today}",
+    1,
+)
+
+# Keep the compare links at the bottom pointing somewhere real.
+text = re.sub(
+    r"^\[Unreleased\]: .*$",
+    f"[Unreleased]: https://github.com/medazizktata/folder-watch/compare/v{new}...HEAD\n"
+    f"[{new}]: https://github.com/medazizktata/folder-watch/releases/tag/v{new}",
+    text,
+    count=1,
+    flags=re.M,
+)
+changelog.write_text(text)
+PY
+
+git add "$VERSION_FILE" "$CHANGELOG"
+git commit -q -m "release: v$new"
+git tag -a "v$new" -m "v$new"
+
+cat <<EOF
+
+release: committed and tagged v$new
+
+  git push origin main --follow-tags
+
+Pushing the tag is what publishes it: the release workflow builds the
+artefacts and opens the GitHub Release from this changelog section.
+
+To undo before pushing:
+
+  git tag -d v$new && git reset --soft HEAD~1
+EOF

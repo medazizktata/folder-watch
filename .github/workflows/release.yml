@@ -1,0 +1,74 @@
+name: Release
+
+# Pushing a v* tag is the publish action. bin/release creates the tag but
+# never pushes it, so nothing goes out without a deliberate push.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip build
+          .venv/bin/pip install --quiet -e '.[dev]'
+
+      # The tag is only trustworthy if the code at it passes. A tag that
+      # publishes a broken build is worse than no release process at all.
+      - name: Gate
+        run: |
+          .venv/bin/ruff check .
+          .venv/bin/mypy folder_watch --ignore-missing-imports
+          .venv/bin/python -m unittest discover -s tests
+          ./bin/test-addons
+
+      # A tag saying one thing and --version saying another is the failure
+      # mode a release process exists to prevent.
+      - name: Tag matches the packaged version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(.venv/bin/python -c "from folder_watch._version import __version__; print(__version__)")
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag does not match __version__ $pkg" >&2
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: .venv/bin/python -m build
+
+      - name: Notes from the changelog
+        run: |
+          .venv/bin/python - <<'PY' > release-notes.md
+          import os, re
+          from pathlib import Path
+          version = os.environ["version"]
+          text = Path("CHANGELOG.md").read_text()
+          # \Z, not just the next heading — the oldest section has none after
+          # it, and that is exactly the one an initial release publishes.
+          match = re.search(
+              rf"^## \[{re.escape(version)}\].*?$(.*?)(?=^## \[|\Z)",
+              text, re.M | re.S,
+          )
+          print((match.group(1).strip() if match else "See CHANGELOG.md."))
+          PY
+          cat release-notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: dist/*
+          fail_on_unmatched_files: true
