@@ -9,12 +9,13 @@ Entries are written for someone deciding whether to upgrade. A fix says what
 went wrong and what it cost, because for a tool that runs unattended, "what was
 silently not happening" is the part that matters.
 
-0.4.0 is the first version to carry a version number at all — everything
-before it lives in the commit log, unversioned and unreleased.
+0.1.0 is the first release. The work in it predates any versioning — the tool
+was built and run unattended for weeks before there was a number to put on it —
+which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-15
+## [0.1.0] - 2026-08-15
 
 ### Added
 
@@ -88,5 +89,5 @@ before it lives in the commit log, unversioned and unreleased.
   pre-commit hook; GitHub Actions runs the same on macOS across Python 3.10
   and 3.13.
 
-[Unreleased]: https://github.com/medazizktata/folder-watch/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/medazizktata/folder-watch/releases/tag/v0.4.0
+[Unreleased]: https://github.com/medazizktata/folder-watch/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/medazizktata/folder-watch/releases/tag/v0.1.0

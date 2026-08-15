@@ -446,9 +446,9 @@ that commit, checks the tag against `__version__`, builds the sdist and wheel,
 and opens a GitHub Release using that version's changelog section as the notes.
 A release is never published from a build that did not pass.
 
-The first tag is a bootstrap — `bin/release` bumps, and 0.4.0 is already the
+The first tag is a bootstrap — `bin/release` bumps, and 0.1.0 is already the
 version in the tree:
 
 ```bash
-git tag -a v0.4.0 -m "v0.4.0" && git push origin v0.4.0
+git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
 ```
