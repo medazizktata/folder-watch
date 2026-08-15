@@ -1397,12 +1397,33 @@ class TestPresetStatus(unittest.TestCase):
         self.assertIn("not mounted", note)
 
     def test_cloudstorage_counts_as_a_mount(self):
+        """Must not depend on whether Google Drive is installed here.
+
+        This passed locally and failed on a clean CI runner: the check walked
+        up to the nearest EXISTING ancestor, so with Drive installed it found
+        ~/Library/CloudStorage and said unmounted, and without it landed on
+        ~/Library and said deleted. Same path, different answer per machine.
+        """
         from folder_watch.presets import preset_status
 
         src = Path.home() / "Library/CloudStorage/GoogleDrive-nobody/Shared/x"
         level, note = preset_status({"action": "unzip", "src": str(src)})
         self.assertEqual(level, "warn")
         self.assertIn("not mounted", note)
+
+    def test_mount_detection_ignores_whether_the_container_exists(self):
+        import folder_watch.presets as presets_mod
+
+        real = presets_mod._mount_containers
+        presets_mod._mount_containers = lambda: (Path("/nowhere/Mounts"),)
+        try:
+            level, note = presets_mod.preset_status(
+                {"action": "unzip", "src": "/nowhere/Mounts/Drive/x"}
+            )
+            self.assertEqual(level, "warn")
+            self.assertIn("not mounted", note)
+        finally:
+            presets_mod._mount_containers = real
 
     def test_structurally_invalid_presets(self):
         from folder_watch.presets import preset_status

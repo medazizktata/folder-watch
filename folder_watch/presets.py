@@ -91,18 +91,40 @@ def _nearest_existing(path: Path) -> Path:
     return Path(path.anchor or "/")
 
 
+def _under_mount_container(path: Path) -> Path | None:
+    """The mount container this path sits under, by shape rather than existence.
+
+    Checking whether the nearest EXISTING ancestor is a container made the
+    answer depend on the machine: with Google Drive installed
+    ~/Library/CloudStorage exists and the path reads as unmounted, without it
+    the walk lands on ~/Library and the same path reads as deleted. The path
+    shape is the durable signal — a CloudStorage path with no CloudStorage
+    directory at all is still an unmounted drive, not a deleted folder.
+    """
+    for container in _mount_containers():
+        if path == container:
+            continue
+        try:
+            path.relative_to(container)
+        except ValueError:
+            continue
+        return container
+    return None
+
+
 def _missing_note(label: str, path: Path) -> tuple[str, str]:
     """Say what is actually true instead of guessing why.
 
     Checking only the immediate parent got this wrong: for a deleted project
     folder the parent is missing too, so it reported "volume not mounted"
-    about a path sitting plainly under an existing ~/Desktop. Walking up to
-    the nearest folder that does exist is both accurate and the thing you
-    need to know to fix it.
+    about a path sitting plainly under an existing ~/Desktop. Naming the
+    nearest folder that does exist is both accurate and the thing you need in
+    order to fix it.
     """
+    container = _under_mount_container(path)
+    if container is not None:
+        return "warn", f"{label} unreachable — volume not mounted under {container}"
     anchor = _nearest_existing(path)
-    if anchor in _mount_containers():
-        return "warn", f"{label} unreachable — volume not mounted under {anchor}"
     return "error", f"{label} missing — nearest existing folder is {anchor}"
 
 
