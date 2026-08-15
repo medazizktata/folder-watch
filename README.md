@@ -29,8 +29,8 @@ uses them — it works either way.
 2. Skip files already finished at startup (**new-only**; use `--catch-up` to process old)
 3. Run action; persist done-state (scheme B) so restarts don’t redo work
 
-**convx** is different: it hands off to [ConvX](https://github.com/JSBtechnologies/convx),
-a separate third-party binary that owns the watching itself. See below.
+Some actions don't run that loop at all: they **hand the folder to another
+tool** that does its own watching. See [Wrapping another tool](#wrapping-another-tool).
 
 ## Actions
 
@@ -44,41 +44,84 @@ a separate third-party binary that owns the watching itself. See below.
 `service` (LaunchAgent install / uninstall / status), `status`, `prune` and
 `presets` are subcommands rather than actions.
 
-### `convx` — a wrapper around a separate tool, not an action
+## Wrapping another tool
 
-**[ConvX](https://github.com/JSBtechnologies/convx)** is a third-party
-program — "local-first universal file converter for CLI, Desktop, and AI
-agents" — with its own repository, release cycle and issue tracker. It is
-**not bundled, vendored or installed by folder-watch**, and it cannot be: it
-is a compiled binary, not a Python package, so `pip install folder-watch`
-will never bring it along.
+Not every job is worth reimplementing. Plenty of tools already watch a folder
+competently — converters, encoders, sync clients, uploaders — and the useful
+thing folder-watch can add is not a second settle loop on top of theirs, but
+the **operational shell around it**: one config format, one way to start it at
+login, one place to see whether it is running, and a guarantee that it dies
+when you stop it.
 
-`folder-watch convx` does not convert anything itself. It translates
-folder-watch flags into a `convx watch` command line, execs it, and then just
-supervises the process:
+So there is a second kind of action: a **wrapper**. It converts nothing and
+watches nothing. It translates folder-watch flags into the other tool's command
+line, launches it, prints exactly what it ran, and then supervises the process.
 
 ```
-folder-watch → /Users/you/.local/bin/convx watch ~/Inbox -t webp --filter *.png --debounce 500 --overwrite
+folder-watch → /path/to/tool watch ~/Inbox -t webp --filter *.png --debounce 500
 ```
 
-**ConvX owns the watching.** That is the important consequence, because almost
-none of this README applies to the `convx` action:
+### What you get, and what you give up
 
-| | `copy` / `unzip` | `convx` |
+A wrapper hands ownership of the watching to the wrapped tool, so most of this
+README stops applying to it — the settle loop, the done-store and the retry
+queue all belong to a pipeline folder-watch is no longer running:
+
+| | built-in actions | wrapper actions |
 |---|---|---|
-| settle loop, `lsof`, `--stable` / `--settle` | yes | **no** — ConvX decides when a file is ready |
+| settle loop, `lsof`, `--stable` / `--settle` | yes | **no** — the wrapped tool decides when a file is ready |
 | done-store, `--catch-up`, `baseline_pending` | yes | **no** |
 | retry queue, `--retry-hours` | yes | **no** |
 | `--pending` | yes | **no** |
-| `--once` | yes | **no** — rejected; `convx watch` is continuous |
+| `--once` | yes | **no** — rejected when the wrapped command is continuous |
 
-What folder-watch does still provide is a pidfile (so `folder-watch status`
-sees it), preset resolution, and lifecycle management — it terminates the
-ConvX child when it exits, rather than orphaning it.
+What you keep is the part that made you reach for a watcher in the first place:
 
-If the binary is absent, the action fails immediately with exit **127** and
-`error: convx not found`. Install ConvX separately, or point at it with
-`--convx-bin /path/to/convx`.
+* **Presets** — the same `--save-preset` / `--list-presets` / `presets forget`
+  lifecycle, so a wrapped tool is configured the way everything else is.
+* **`folder-watch status`** — a wrapper writes a pidfile like any other watch,
+  so it shows up in the same table with the same log tail.
+* **LaunchAgent** — `service install --preset NAME` works unchanged.
+* **Lifecycle.** This is the one that actually earns its keep. A wrapped
+  `watch` command runs forever, so anything that ends the wrapper without
+  taking the child with it leaves an orphan watching the same folder — and
+  those stack up silently over restarts. The wrapper turns `SIGTERM` into a
+  clean unwind, terminates the child, escalates to `SIGKILL` if it will not
+  go, and only then exits.
+
+### The contract
+
+A wrapper action is a small amount of code — an argv builder and a supervised
+`exec` — and it commits to three things:
+
+1. **Never bundle the tool.** A wrapped binary keeps its own repository,
+   release cycle and issue tracker. `pip install folder-watch` must never
+   drag it along, and for compiled tools it could not anyway.
+2. **Fail loudly when it is missing.** Exit **127** with the binary name in
+   the message, and accept an explicit path so a non-standard install still
+   works, rather than silently doing nothing.
+3. **Print the translated command line.** The flag mapping is the whole
+   surface area of a wrapper; showing it means a mismatch is one glance away
+   instead of a debugging session.
+
+### Currently wrapped
+
+**`convx`** → [ConvX](https://github.com/JSBtechnologies/convx), a third-party
+"local-first universal file converter for CLI, Desktop, and AI agents". It is a
+compiled binary, not a Python package, and it is not bundled, vendored or
+installed by folder-watch. Install it separately, or point at it with
+`--convx-bin /path/to/convx`; if it is absent the action exits **127** with
+`error: convx not found`.
+
+```bash
+folder-watch convx ~/Inbox --format webp --ext png,jpg
+```
+
+`--ext` becomes ConvX's `--filter`, `--format` becomes `-t`, and
+`--quality` / `--width` / `--fps` / `--max-size` / `--convx-preset` pass
+through. ConvX converts in place, so `--to` is rejected rather than quietly
+ignored, and `convx watch` is continuous, so `--once` is rejected too — use
+`convx convert` directly for a one-shot run.
 
 ## Reliability / logging
 
@@ -361,3 +404,4 @@ Everything else is real: real files, real state, real queue. The result is that
 96% by tests that finish in well under a tenth of a second and cannot flake on a
 loaded machine. What is left uncovered there is error handling for filesystem
 races that cannot be provoked without patching the standard library.
+
