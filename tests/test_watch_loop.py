@@ -436,35 +436,76 @@ class TestProcessFile(LoopCase):
         reasons = [i["reason"] for i in fields(log, "ignored")]
         self.assertIn("below_min_bytes", reasons)
 
-    def test_the_too_small_note_is_made_once_not_once_per_scan(self):
-        """The poll backend rescans every cycle and builds a fresh track each
-        time, so the "already said this" flag has to live in state instead.
-
-        It did not: the branch that returns for a sub-floor file skipped the
-        line at the bottom of the loop that persists the flag, so a file
-        parked below the threshold announced itself on every scan for as long
-        as the watcher ran — twice, in fact, since the branch re-emitted what
-        settle_step had just emitted.
-        """
-        f = self.make_file(size=10)
+    def poll_cycles(self, f, count_, *, grow_by=0, min_bytes=1_000_000):
+        """Run process_file the way the poll backend does: a fresh track each
+        cycle, one shared state."""
         state: dict[str, dict] = {}
         action = ScriptedAction()
-
-        with captured() as log, patched(Clock(stop_after=99), OpenScript(0)):
-            for _ in range(4):
+        with captured() as log, patched(Clock(stop_after=999), OpenScript(0)):
+            for cycle in range(count_):
+                if grow_by:
+                    f.write_bytes(b"x" * (grow_by * (cycle + 1)))
                 watch_mod.process_file(
                     f,
                     action,
                     state=state,
-                    min_bytes=1_000_000,
+                    min_bytes=min_bytes,
                     stable_needed=3,
                     settle_interval=0.1,
                     wait=False,
                 )
+        return log, state, action
 
-        self.assertEqual(count(log, "ignored"), 1, "announced more than once")
+    def test_a_file_parked_below_the_floor_is_mentioned_once_and_then_left(self):
+        """The poll backend rescans every cycle and builds a fresh track each
+        time, so "already said this" has to live in state instead.
+
+        It did not. The branch that returns for a sub-floor file skipped the
+        line at the bottom of the loop that persists the flag, so the file
+        announced itself on every scan for as long as the watcher ran — twice
+        per scan, in fact, since the branch re-emitted what settle_step had
+        just emitted. `progress` then went on doing the same thing on its own,
+        which is worse than noise: it reads as work in flight for a file that
+        will never be touched.
+
+        copy defaults to --min-bytes 1000000, so any small file left in a
+        watched folder hit this, at roughly 34,000 lines a day each.
+        """
+        f = self.make_file(size=10)
+
+        log, state, action = self.poll_cycles(f, 10)
+
+        self.assertEqual([name for name, _ in log], ["ignored"])
         self.assertTrue(state[str(f)]["said_small"])
+        self.assertEqual(state[str(f)]["small_size"], 10)
         self.assertEqual(action.calls, [])
+
+    def test_a_file_growing_towards_the_floor_still_reports_progress(self):
+        """Silence is right for a file that is parked, and wrong for one on
+        its way up — which is why the size has to be carried across scans as
+        well as the flag."""
+        f = self.make_file(size=10)
+
+        log, _state, action = self.poll_cycles(f, 5, grow_by=10_000)
+
+        self.assertEqual(count(log, "ignored"), 1)
+        self.assertEqual(count(log, "progress"), 4, "went quiet on a live file")
+        self.assertEqual(action.calls, [])
+
+    def test_the_event_backend_also_stops_reporting_a_parked_file(self):
+        """There the track persists, so nothing needs carrying — but the same
+        rule has to hold, or a stalled sub-floor file produces a progress line
+        every couple of seconds until the stall timeout fires."""
+        f = self.make_file(size=10)
+        track: dict = {}
+
+        with captured() as log, patched(None, OpenScript(0)):
+            for _ in range(8):
+                watch_mod.settle_step(
+                    f, track, min_bytes=1_000_000, stable_needed=3
+                )
+
+        self.assertEqual([name for name, _ in log], ["ignored"])
 
     def test_a_file_still_growing_is_left_for_the_next_scan(self):
         """Non-blocking has a budget. A file that outlasts it is not a

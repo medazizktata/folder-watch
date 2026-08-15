@@ -323,6 +323,7 @@ def settle_step(
         track["last_change"] = time.monotonic()
 
     if size < min_bytes:
+        moved = prev is not None and size != prev
         track["stable"] = 0
         track["prev"] = size
         if not track.get("said_small"):
@@ -336,7 +337,12 @@ def settle_step(
                 reason="below_min_bytes",
                 min_bytes=min_bytes,
             )
-        _progress(track, src, size)
+        elif moved:
+            # Below the floor but growing towards it — worth a line. Parked at
+            # the same size it is not: `progress` reads as work in flight, and
+            # the poll backend would repeat it every scan for as long as the
+            # file sat there.
+            _progress(track, src, size)
         return "waiting"
 
     changed = prev is None or size != prev
@@ -439,11 +445,17 @@ def process_file(
             return result
 
     track: dict[str, Any] = {}
-    # Carry the "already said this is too small" flag across scans. The poll
-    # backend builds a fresh track every cycle, so without this it re-emits
-    # `ignored` for the same file forever and the log grows without bound.
-    if state.get(sk, {}).get("said_small"):
+    # Carry the "already said this is too small" flag across scans, along with
+    # the size it was last seen at. The poll backend builds a fresh track every
+    # cycle, so without the flag it re-emits `ignored` for the same file
+    # forever, and without the size it cannot tell a file parked below the
+    # floor from one growing towards it — the first deserves silence, the
+    # second a progress line.
+    carried = state.get(sk, {})
+    if carried.get("said_small"):
         track["said_small"] = True
+        if carried.get("small_size") is not None:
+            track["prev"] = carried["small_size"]
 
     if not wait:
         for _ in range(stable_needed + 5):
@@ -484,7 +496,9 @@ def process_file(
                             reason="below_min_bytes",
                             min_bytes=min_bytes,
                         )
-                    state.setdefault(sk, {})["said_small"] = True
+                    entry = state.setdefault(sk, {})
+                    entry["said_small"] = True
+                    entry["small_size"] = size
                     return None
             except OSError:
                 return None
