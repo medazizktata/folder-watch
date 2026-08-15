@@ -761,13 +761,13 @@ def run_watch_event(
     lock = threading.Lock()
 
     class Handler(FileSystemEventHandler):
-        def on_created(self, event):  # type: ignore[no-untyped-def]
+        def on_created(self, event):
             self._note(event)
 
-        def on_modified(self, event):  # type: ignore[no-untyped-def]
+        def on_modified(self, event):
             self._note(event)
 
-        def on_moved(self, event):  # type: ignore[no-untyped-def]
+        def on_moved(self, event):
             if getattr(event, "dest_path", None):
 
                 class _E:
@@ -776,7 +776,7 @@ def run_watch_event(
 
                 self._note(_E())
 
-        def _note(self, event):  # type: ignore[no-untyped-def]
+        def _note(self, event):
             if event.is_directory:
                 return
             path = Path(event.src_path)
@@ -880,7 +880,7 @@ def run_watch_event(
                 for p in unsettled:
                     pending[str(p)] = started
 
-    def _start_observer():  # type: ignore[no-untyped-def]
+    def _start_observer():
         obs = Observer()
         obs.schedule(handler, str(src_dir), recursive=recursive)
         obs.start()
@@ -1145,7 +1145,7 @@ def run_watch(
         # launchd stops services with SIGTERM, whose default disposition kills
         # the process outright — the finally below never runs and the pidfile
         # is left behind looking stale. Turning it into SystemExit unwinds.
-        def _on_term(_signum, _frame):  # type: ignore[no-untyped-def]
+        def _on_term(_signum, _frame):
             raise SystemExit(0)
 
         try:

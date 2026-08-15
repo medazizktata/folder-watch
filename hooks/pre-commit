@@ -1,0 +1,31 @@
+#!/bin/bash
+# Runs the fast gate before every commit: lint, types, unit tests (~5s).
+#
+# The smoke suite is deliberately excluded — it spawns real watchers and does
+# FSEvents timing, so a slow or flaky commit gate would get bypassed with
+# --no-verify, and a bypassed gate protects nothing. Run `make all` for that.
+#
+# Installed by `make install-hooks`. Skip deliberately: git commit --no-verify
+set -e
+
+# Ask git, don't infer. This file is invoked through a symlink at
+# .git/hooks/pre-commit, so walking up from BASH_SOURCE lands in .git and the
+# venv check silently "passed" by skipping itself — a gate that reports
+# success while doing nothing is worse than no gate.
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if [[ ! -x .venv/bin/python ]]; then
+  echo "pre-commit: FAILED — no .venv at $ROOT/.venv" >&2
+  echo "  run: python3 -m venv .venv && make dev" >&2
+  echo "  or bypass deliberately: git commit --no-verify" >&2
+  exit 1
+fi
+
+echo "pre-commit: lint + types + tests"
+if ! make check; then
+  echo >&2
+  echo "pre-commit: checks failed — commit aborted." >&2
+  echo "  fix, or bypass deliberately with: git commit --no-verify" >&2
+  exit 1
+fi

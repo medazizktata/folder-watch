@@ -448,8 +448,8 @@ def run_service_cli(argv: list[str]) -> int:
             print(f"installed {plist}")
             return 0
         if args.cmd == "uninstall":
-            plist = uninstall_service(preset=args.preset)
-            print(f"uninstalled {plist}" if plist else "nothing to uninstall")
+            removed = uninstall_service(preset=args.preset)
+            print(f"uninstalled {removed}" if removed else "nothing to uninstall")
             return 0
         st = service_status(preset=args.preset)
         for k, v in st.items():
@@ -659,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
             filter_exts = parse_exts(exts_raw)
 
         if args.save_preset:
-            cfg: dict[str, Any] = {
+            convx_cfg: dict[str, Any] = {
                 "action": "convx",
                 "src": str(src.expanduser()),
                 "debounce_ms": debounce_ms,
@@ -667,21 +667,21 @@ def main(argv: list[str] | None = None) -> int:
                 "ext": [] if exts_raw.strip() == "*" else list(filter_exts or []),
             }
             if fmt:
-                cfg["format"] = fmt
+                convx_cfg["format"] = fmt
             if convx_preset:
-                cfg["convx_preset"] = convx_preset
+                convx_cfg["convx_preset"] = convx_preset
             if quality is not None:
-                cfg["quality"] = quality
+                convx_cfg["quality"] = quality
             if width is not None:
-                cfg["width"] = width
+                convx_cfg["width"] = width
             if fps is not None:
-                cfg["fps"] = fps
+                convx_cfg["fps"] = fps
             if max_size is not None:
-                cfg["max_size"] = max_size
+                convx_cfg["max_size"] = max_size
             if convx_bin:
-                cfg["convx_bin"] = convx_bin
+                convx_cfg["convx_bin"] = convx_bin
             persist_preset(
-                args.save_preset, cfg, argv=argv, loaded_preset=args.preset
+                args.save_preset, convx_cfg, argv=argv, loaded_preset=args.preset
             )
             return 0
 

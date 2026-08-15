@@ -28,7 +28,7 @@ watch-unzip = "folder_watch.shortcuts:unzip_main"
 watch-convx = "folder_watch.shortcuts:convx_main"
 
 [project.optional-dependencies]
-dev = ["ruff>=0.6"]
+dev = ["ruff>=0.6", "mypy>=1.11", "coverage>=7.6"]
 
 [tool.ruff]
 line-length = 90
@@ -66,3 +66,25 @@ packages = ["folder_watch"]
 
 [tool.hatch.build.targets.sdist]
 include = ["folder_watch", "tests", "bin", "README.md"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+# Not strict: the value is catching a variable rebound to a different type,
+# which is what it found — `member` used as both Path and str, plus two
+# shadowed names. Strict mode would bury that under annotation chores.
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[tool.coverage.run]
+source = ["folder_watch"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+# A floor, not a target — so coverage cannot quietly erode. The event loop
+# sits near 39%, which is where all three audits found their bugs; that gap
+# is the thing worth closing, not the headline number.
+fail_under = 55
+skip_covered = false
+show_missing = false

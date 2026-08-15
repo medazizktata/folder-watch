@@ -149,8 +149,8 @@ class UnzipAction(Action):
                 # Vet every member before creating anything, so a rejected zip
                 # doesn't leave an empty target directory behind.
                 for info in zf.infolist():
-                    member = Path(info.filename)
-                    if member.is_absolute() or ".." in member.parts:
+                    as_path = Path(info.filename)
+                    if as_path.is_absolute() or ".." in as_path.parts:
                         emit(
                             "fail",
                             name=path.name,
@@ -164,14 +164,14 @@ class UnzipAction(Action):
                 # be overwritten by extractall and then deleted as "the
                 # archive" — losing the archive AND the extracted content
                 # while every check reports success.
-                for member in members:
+                for name in members:
                     try:
-                        if (target / member).resolve() == path.resolve():
+                        if (target / name).resolve() == path.resolve():
                             emit(
                                 "fail",
                                 name=path.name,
                                 reason="member_is_archive",
-                                member=member,
+                                member=name,
                             )
                             return "fail"
                     except OSError:
@@ -207,12 +207,12 @@ class UnzipAction(Action):
                 # its contents. Probe the filesystem rather than assuming.
                 seen: dict[str, str] = {}
                 collisions: list[tuple[str, str]] = []
-                for member in members:
-                    key = _collision_key(member)
-                    if key in seen and seen[key] != member:
-                        collisions.append((seen[key], member))
+                for name in members:
+                    key = _collision_key(name)
+                    if key in seen and seen[key] != name:
+                        collisions.append((seen[key], name))
                     else:
-                        seen.setdefault(key, member)
+                        seen.setdefault(key, name)
                 if collisions and _fs_collapses_case(target.parent):
                     first, second = collisions[0]
                     emit(

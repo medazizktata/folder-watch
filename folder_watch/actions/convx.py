@@ -86,7 +86,7 @@ def run_convx_watch(cmd: list[str]) -> int:
     # Without this SIGTERM kills the wrapper outright, so neither the finally
     # below nor the caller's pidfile cleanup ever runs. launchd happens to
     # reap the whole process group, but nothing else does.
-    def _on_term(_signum, _frame):  # type: ignore[no-untyped-def]
+    def _on_term(_signum, _frame):
         raise SystemExit(0)
 
     try:
