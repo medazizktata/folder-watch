@@ -465,22 +465,31 @@ def process_file(
                 # Reuse settle_step's lsof reading rather than paying again.
                 if track.get("open"):
                     return None
-                if src.stat().st_size < min_bytes:
-                    # Say so — copy defaults to --min-bytes 1000000, and a
+                size = src.stat().st_size
+                if size < min_bytes:
+                    # Say so once — copy defaults to --min-bytes 1000000, and a
                     # sub-threshold file otherwise vanishes without a word.
-                    emit(
-                        "ignored",
-                        name=src.name,
-                        size=src.stat().st_size,
-                        reason="below_min_bytes",
-                        min_bytes=min_bytes,
-                    )
+                    # settle_step normally does the announcing; this covers the
+                    # case where the file dropped below the floor after it
+                    # looked. Either way the flag has to be persisted here:
+                    # returning from this branch skips the one at the bottom of
+                    # the loop, so the carry-across never happened and every
+                    # scan announced the same file again, forever.
+                    if not track.get("said_small"):
+                        track["said_small"] = True
+                        emit(
+                            "ignored",
+                            name=src.name,
+                            size=size,
+                            reason="below_min_bytes",
+                            min_bytes=min_bytes,
+                        )
+                    state.setdefault(sk, {})["said_small"] = True
                     return None
             except OSError:
                 return None
             time.sleep(settle_interval)
-        if track.get("said_small"):
-            state.setdefault(sk, {})["said_small"] = True
+        # Still growing after the whole budget. Leave it for the next scan.
         return None
 
     while True:
