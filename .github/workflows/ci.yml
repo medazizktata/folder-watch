@@ -1,0 +1,61 @@
+name: CI
+
+# macOS only, deliberately. This tool is built on FSEvents, lsof and launchd —
+# a linux runner would be cheaper and would prove nothing.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared in pyproject, and the version actually in use.
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -e '.[dev]'
+
+      - name: Lint
+        run: .venv/bin/ruff check .
+
+      - name: Types
+        run: .venv/bin/mypy folder_watch --ignore-missing-imports
+
+      - name: Unit tests
+        run: .venv/bin/python -m unittest discover -s tests -v
+
+      # Spawns real watchers and exercises FSEvents end to end. The convx
+      # portion self-skips when that binary is absent, which it is here.
+      - name: Smoke tests
+        run: ./bin/test-addons
+
+      - name: Coverage
+        run: |
+          .venv/bin/coverage run --source=folder_watch -m unittest discover -s tests
+          .venv/bin/coverage report
+
+      # lsof lives in /usr/sbin, which launchd's PATH omits. A watcher that
+      # cannot find it once treated every file as permanently open and
+      # silently processed nothing. Prove the runner can still see it.
+      - name: lsof is reachable
+        run: |
+          test -x /usr/sbin/lsof
+          .venv/bin/python -c "
+          from folder_watch.core.util import lsof_binary
+          assert lsof_binary(), 'lsof unfindable'
+          print('lsof:', lsof_binary())"

@@ -283,13 +283,24 @@ cd ~/Desktop/folder-watch
 For manual/interactive testing — a simulated encode that holds its write handle
 open, test zips, and a state reset — see `~/Desktop/folder-watch-lab/`.
 
-Lint:
-
 ```bash
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/ruff check .
-.venv/bin/ruff check . --fix
+make check    # lint + types + unit tests (~5s) — what the commit hook runs
+make all      # adds the smoke suite and coverage
+make dev      # install the dev dependencies
+make install-hooks
 ```
+
+`make check` runs on every commit via `hooks/pre-commit` (symlinked into
+`.git/hooks` by `make install-hooks`, since that directory isn't versioned).
+The smoke suite is deliberately outside the commit gate: it spawns real
+watchers and does FSEvents timing, and a gate that is slow or flaky gets
+bypassed with `--no-verify`, at which point it protects nothing.
+
+GitHub Actions runs the same checks on **macOS runners** across Python 3.10
+and 3.13 — a linux runner would be cheaper and would prove nothing about a
+tool built on FSEvents, `lsof` and launchd. It also asserts `lsof` stays
+reachable, since a watcher that cannot find it once treated every file as
+permanently open and silently processed nothing.
 
 Config lives in `pyproject.toml`. `E402` is ignored under `tests/` — both
 suites must put the repo on `sys.path` and import `tests/_isolate` (which
