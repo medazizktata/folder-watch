@@ -1764,14 +1764,29 @@ class TestConvxChildReaping(unittest.TestCase):
             "time.sleep(300)"
         )
 
-        if os.fork() == 0:  # SIGTERM the wrapper, the way launchd would
-            time.sleep(0.5)
-            try:
-                os.kill(os.getppid(), signal.SIGTERM)
-            finally:
-                os._exit(0)
+        # A subprocess, not os.fork(). Forking a multi-threaded process is
+        # unsafe — Python warns about it now and is moving toward refusing —
+        # and the test runner has threads. This delivers the same SIGTERM that
+        # launchd would, from outside.
+        killer_code = (
+            f"import os,signal,time; time.sleep(0.5); "
+            f"os.kill({os.getpid()}, signal.SIGTERM)"
+        )
 
-        rc = run_convx_watch([sys.executable, "-c", child_code])
+        # Guard the runner itself: run_convx_watch installs its own SIGTERM
+        # handler and restores THIS one when it returns, so a signal arriving
+        # late cannot kill the test process.
+        caught: list[int] = []
+        prev = signal.signal(signal.SIGTERM, lambda *_a: caught.append(1))
+        killer = subprocess.Popen([sys.executable, "-c", killer_code])
+        try:
+            rc = run_convx_watch([sys.executable, "-c", child_code])
+        finally:
+            signal.signal(signal.SIGTERM, prev)
+            try:
+                killer.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                killer.kill()
         self.assertEqual(rc, 0)
 
         self.assertTrue(marker.is_file(), "stand-in child never started")
