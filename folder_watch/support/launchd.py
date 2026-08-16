@@ -47,9 +47,47 @@ def service_plist_path(preset: str) -> Path:
     return LAUNCH_AGENTS / f"{service_label(preset)}.plist"
 
 
-def _resolve_python_and_root(program: Path) -> tuple[Path, Path]:
-    """Prefer venv python + package root over a bash wrapper (Desktop TCC)."""
+def _installed_venv(program: Path) -> Path | None:
+    """The venv `program` is installed into, if it is installed into one.
+
+    A venv is identifiable by the pyvenv.cfg beside its bin/ — no guessing
+    from directory names. Returns the interpreter, not the directory, because
+    that is what the plist needs.
+    """
+    bin_dir = program.parent
+    if bin_dir.name != "bin" or not (bin_dir.parent / "pyvenv.cfg").is_file():
+        return None
+    for name in ("python", "python3"):
+        candidate = bin_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _resolve_python_and_root(program: Path) -> tuple[Path, Path | None]:
+    """Which interpreter runs the service, and whether it needs a PYTHONPATH.
+
+    A `root` of None means the package is installed into the interpreter's own
+    site-packages, so the service must NOT be handed a PYTHONPATH — pointing it
+    at a checkout would put that checkout ahead of the installed copy on
+    sys.path, and the service would silently go back to running whatever is in
+    the working tree. Which is the entire thing an installed copy exists to
+    avoid.
+    """
+    # Installed layout: <venv>/bin/{folder-watch,python}, package in
+    # site-packages. Checked BEFORE resolving, and never on a resolved path:
+    # a venv's bin/python is a symlink to the base interpreter, so resolve()
+    # walks straight out of the venv into Cellar and the layout stops being
+    # recognisable. That is the same trap the checkout branch below documents,
+    # and it is what put a Homebrew interpreter with no folder_watch on it
+    # into a live plist.
+    venv_python = _installed_venv(program.expanduser())
+    if venv_python is not None:
+        return venv_python, None
+
     program = program.expanduser().resolve()
+
+    # Checkout layout: <root>/bin/folder-watch with <root>/.venv beside it.
     root = (
         program.parent.parent
         if program.name == "folder-watch" and program.parent.name == "bin"
@@ -76,14 +114,28 @@ def build_plist(
     label: str,
     preset: str,
     python: Path,
-    root: Path,
+    root: Path | None,
     log_path: Path,
     stdio_path: Path,
     path_env: str,
 ) -> str:
     """The plist body. Separate from install_service so it can be checked
-    without registering anything with launchd."""
+    without registering anything with launchd.
+
+    `root` None means an installed copy: no PYTHONPATH, because the package is
+    already on the interpreter's path and naming a checkout would let that
+    checkout win. The working directory becomes home, since there is no repo
+    to sit in and launchd's default of / is not somewhere to write.
+    """
     x = xml_escape  # paths and preset names are user data going into XML
+    workdir = root if root is not None else Path.home()
+    pythonpath = (
+        f"""
+    <key>PYTHONPATH</key>
+    <string>{x(str(root))}</string>"""
+        if root is not None
+        else ""
+    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -102,11 +154,9 @@ def build_plist(
     <string>{x(str(log_path))}</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>{x(str(root))}</string>
+  <string>{x(str(workdir))}</string>
   <key>EnvironmentVariables</key>
-  <dict>
-    <key>PYTHONPATH</key>
-    <string>{x(str(root))}</string>
+  <dict>{pythonpath}
     <key>PATH</key>
     <string>{x(path_env)}</string>
     <key>HOME</key>

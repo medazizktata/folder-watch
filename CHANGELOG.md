@@ -15,6 +15,20 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`service install` could not point a LaunchAgent at an installed copy.** It
+  only understood the checkout layout — a clone with a `.venv` beside it — so
+  run from a `pip install`ed venv it fell through to the base interpreter and
+  wrote a plist naming a Python with no `folder_watch` on it. The service then
+  crash-looped on "No module named folder_watch" with KeepAlive restarting it,
+  which is a failure that never surfaces at install time: the plist is valid
+  and launchd accepts it. The venv is now detected by its `pyvenv.cfg`, before
+  any `resolve()` — a venv's `bin/python` is a symlink to the base interpreter,
+  so resolving first walks straight out of the venv. An installed copy also
+  gets **no `PYTHONPATH`**: naming a checkout there would put the checkout
+  ahead of site-packages and quietly hand the service the working tree back.
+
 ## [0.2.0] - 2026-08-16
 
 ### Changed

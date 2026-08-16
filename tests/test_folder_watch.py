@@ -2424,6 +2424,116 @@ class TestRetryQueue(unittest.TestCase):
         self.assertEqual(len(q), 0, "successful copy left a stale retry entry")
 
 
+class TestServiceInterpreter(unittest.TestCase):
+    """Which interpreter a LaunchAgent is pointed at, and what is on its path.
+
+    Getting this wrong does not fail loudly at install time — the plist is
+    valid, launchd accepts it, and the service then crash-loops on "No module
+    named folder_watch" with KeepAlive dutifully restarting it. Which is how a
+    live watcher went down for several minutes.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _fake_venv(self, name="venv") -> Path:
+        """A venv shaped like a real one, symlinked python included.
+
+        The symlink is the point. A venv's bin/python points at the base
+        interpreter, so anything that resolve()s it walks out of the venv and
+        loses the site-packages the whole install lives in.
+        """
+        base = self.tmp / "base-python"
+        base.write_text("#!/bin/sh\n")
+        venv = self.tmp / name
+        (venv / "bin").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /somewhere\n")
+        (venv / "bin" / "python").symlink_to(base)
+        (venv / "bin" / "folder-watch").write_text("#!/bin/sh\n")
+        return venv
+
+    def test_an_installed_copy_keeps_its_own_interpreter(self):
+        from folder_watch.support.launchd import _resolve_python_and_root
+
+        venv = self._fake_venv()
+
+        python, root = _resolve_python_and_root(venv / "bin" / "python")
+
+        self.assertEqual(python, venv / "bin" / "python")
+        self.assertIsNone(root, "an installed copy must not be given a root")
+
+    def test_the_console_script_resolves_to_the_same_interpreter(self):
+        from folder_watch.support.launchd import _resolve_python_and_root
+
+        venv = self._fake_venv()
+
+        python, root = _resolve_python_and_root(venv / "bin" / "folder-watch")
+
+        self.assertEqual(python, venv / "bin" / "python")
+        self.assertIsNone(root)
+
+    def test_an_installed_copy_gets_no_pythonpath(self):
+        """The one that matters. A PYTHONPATH naming a checkout puts that
+        checkout ahead of site-packages, so the service silently goes back to
+        running the working tree — the exact coupling an installed copy exists
+        to remove."""
+        from folder_watch.support.launchd import build_plist, stdio_log_path
+
+        body = build_plist(
+            label="com.folder-watch.demo",
+            preset="demo",
+            python=self.tmp / "venv" / "bin" / "python",
+            root=None,
+            log_path=self.tmp / "demo.log",
+            stdio_path=stdio_log_path(self.tmp / "demo.log"),
+            path_env="/usr/bin:/bin:/usr/sbin",
+        )
+
+        import xml.etree.ElementTree as ET
+
+        self.assertNotIn("PYTHONPATH", body)
+        self.assertIn("/usr/sbin", body, "lsof must stay reachable")
+        ET.fromstring(body)  # still valid XML
+
+    def test_a_checkout_still_gets_its_root_on_the_path(self):
+        """The other layout has to keep working: run from a clone with a
+        .venv, the package is not installed and PYTHONPATH is what finds it."""
+        from folder_watch.support.launchd import (
+            _resolve_python_and_root,
+            build_plist,
+            stdio_log_path,
+        )
+
+        root = self.tmp / "checkout"
+        (root / ".venv" / "bin").mkdir(parents=True)
+        (root / ".venv" / "bin" / "python").write_text("#!/bin/sh\n")
+        (root / "bin").mkdir()
+        (root / "bin" / "folder-watch").write_text("#!/bin/sh\n")
+
+        python, resolved_root = _resolve_python_and_root(root / "bin" / "folder-watch")
+
+        self.assertEqual(python, root / ".venv" / "bin" / "python")
+        self.assertEqual(resolved_root, root)
+
+        body = build_plist(
+            label="com.folder-watch.demo",
+            preset="demo",
+            python=python,
+            root=resolved_root,
+            log_path=self.tmp / "demo.log",
+            stdio_path=stdio_log_path(self.tmp / "demo.log"),
+            path_env="/usr/bin:/bin",
+        )
+        import xml.etree.ElementTree as ET
+
+        self.assertIn("PYTHONPATH", body)
+        self.assertIn(str(root), body)
+        ET.fromstring(body)
+
+
 class TestLaunchAgentPlist(unittest.TestCase):
     def _plist(self, log: Path) -> str:
         from folder_watch.support.launchd import build_plist, stdio_log_path
