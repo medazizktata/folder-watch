@@ -37,9 +37,12 @@ which is why the first entry covers so much ground.
   a *rejected* archive creates nothing, but an archive whose central directory
   is intact and whose local file headers are damaged passes vetting and dies
   inside `extractall`. Found in production: an empty directory had been sitting
-  beside a corrupt 75 MB archive since July. The directory is now removed —
-  only ever the one that run created, never a pre-existing one and never the
-  watched folder itself under `--mode same`.
+  beside a corrupt 75 MB archive since July. The directory is now removed with
+  `rmdir`, which the kernel refuses to apply to anything non-empty — so the
+  cleanup can take back an empty directory this run created, and can never take
+  a file. A pre-existing directory and the watched folder itself (what
+  `--mode same` targets) are both excluded outright. A partial extraction is
+  kept and reported as incomplete rather than deleted.
 - Preset keys were checked for classification but never for wiring. A key
   could sit in `PRESET_KEYS`, pass the guard, and still be ignored when a
   preset was loaded — the same shape as the original `--no-clobber` bug the

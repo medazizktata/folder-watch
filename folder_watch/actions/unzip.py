@@ -1,13 +1,12 @@
 """Unzip action."""
 from __future__ import annotations
 
-import shutil
 import unicodedata
 import zipfile
 from pathlib import Path
 
 from folder_watch.actions.base import Action
-from folder_watch.support.log import emit
+from folder_watch.support.log import emit, emit_debug
 from folder_watch.support.notify import notify
 from folder_watch.support.paths import (
     DestNotADirectory,
@@ -125,20 +124,37 @@ class UnzipAction(Action):
 
     @staticmethod
     def _undo_target(target: Path, src: Path, created: bool) -> None:
-        """Take back the directory this run made, when the extract failed.
+        """Take back the empty directory this run made, when the extract failed.
 
-        Only ever the one we created ourselves — `created` is False whenever
-        the directory was already there, which for --mode same is always, since
-        the target is the archive's own folder. A half-extracted directory is
-        worse than none: it is what makes an incomplete extract look finished
-        to the next scan.
+        Deliberately `rmdir` and not `rmtree`. rmdir cannot remove a directory
+        with anything in it — that refusal comes from the kernel, not from a
+        check here that could be wrong or could race. A watched folder is
+        somebody's live project; the tool creating an empty directory by
+        accident is untidy, but the tool deleting files is not recoverable, and
+        those two mistakes do not deserve the same appetite for risk.
+
+        Three conditions have to hold, and the last one is free:
+
+        * `created` — the directory did not exist a moment ago. An existing one
+          belongs to someone else, whatever is or is not inside it.
+        * not the archive's own folder — that is what --mode same targets, and
+          it is the watched folder itself.
+        * empty — enforced by rmdir refusing anything else.
+
+        Removing a *partial* extraction used to be the argument for rmtree: a
+        half-filled directory made an incomplete extract look finished. That
+        reason is gone. output_exists now asks the archive for its full member
+        list, so leftover files report as incomplete rather than as done, and
+        keeping them costs nothing but a directory to look at.
         """
         if not created or target == src.parent:
             return
         try:
-            shutil.rmtree(target)
-        except OSError as e:
-            emit("warn", reason="cleanup_failed", dest=target, err=str(e))
+            target.rmdir()
+        except OSError:
+            # Not empty, or gone already. Both are fine: output_exists reports
+            # what is actually there, so nothing downstream is misled.
+            emit_debug("cleanup_skipped", dest=target, reason="not_empty_or_gone")
 
     def _target_dir(self, zip_path: Path) -> Path:
         stem = zip_path.stem

@@ -227,6 +227,58 @@ class TestUnzipAction(unittest.TestCase):
 
         self.assertTrue((target / "someone-elses.txt").is_file())
 
+    def test_cleanup_cannot_remove_a_directory_with_anything_in_it(self):
+        """The guarantee is rmdir's, not ours.
+
+        A watched folder is somebody's live project. `created` is decided a
+        moment before the directory is made, so a file landing in between —
+        someone working in that folder, or a partial extract — would otherwise
+        be inside something we believed was ours to delete. rmdir refuses a
+        non-empty directory at the kernel, which no check here can race.
+        """
+        target = self.inbox / "half-done"
+        target.mkdir()
+        (target / "landed-anyway.mov").write_bytes(b"irreplaceable")
+
+        UnzipAction._undo_target(target, self.inbox / "half-done.zip", True)
+
+        self.assertTrue(target.is_dir(), "a non-empty directory was removed")
+        self.assertEqual((target / "landed-anyway.mov").read_bytes(), b"irreplaceable")
+
+    def test_cleanup_removes_only_an_empty_directory_it_made(self):
+        target = self.inbox / "empty-one"
+        target.mkdir()
+
+        UnzipAction._undo_target(target, self.inbox / "empty-one.zip", True)
+
+        self.assertFalse(target.exists())
+
+    def test_cleanup_leaves_a_directory_it_did_not_create(self):
+        target = self.inbox / "not-ours"
+        target.mkdir()
+
+        UnzipAction._undo_target(target, self.inbox / "not-ours.zip", False)
+
+        self.assertTrue(target.is_dir())
+
+    def test_a_partial_extraction_is_kept_and_reported_not_deleted(self):
+        """Files the tool half-wrote are still files. Keeping them is safe now
+        that output_exists reports the directory as incomplete rather than
+        finished, so nothing downstream is misled by their presence."""
+        z = self._make_zip("pack.zip")
+        with zipfile.ZipFile(z, "a") as zf:
+            zf.writestr("second.txt", b"more")
+        target = self.inbox / "pack"
+        target.mkdir()
+        (target / "payload.txt").write_bytes(b"half of it")
+
+        UnzipAction._undo_target(target, z, True)
+
+        self.assertTrue((target / "payload.txt").is_file())
+        self.assertIs(
+            UnzipAction(mode="named", notify_on_done=False).output_exists(z), False
+        )
+
     def test_mode_same_never_removes_the_watched_folder(self):
         """The target there is the archive's own folder. Removing it would
         take the inbox, the archive and everything else with it."""
