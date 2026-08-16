@@ -15,6 +15,8 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-16
+
 ### Changed
 
 - **`--once` now honours `--stable` and `--settle` set in a preset**, not only
@@ -143,5 +145,6 @@ which is why the first entry covers so much ground.
   pre-commit hook; GitHub Actions runs the same on macOS across Python 3.10
   and 3.13.
 
-[Unreleased]: https://github.com/medazizktata/folder-watch/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/medazizktata/folder-watch/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/medazizktata/folder-watch/releases/tag/v0.2.0
 [0.1.0]: https://github.com/medazizktata/folder-watch/releases/tag/v0.1.0
