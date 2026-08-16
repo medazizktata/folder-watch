@@ -28,6 +28,10 @@ PRESET_KEYS = frozenset(
         "format", "convx_preset", "convx_bin", "quality", "width", "fps",
         "max_size", "overwrite", "passthru",
         "cmd", "exec_timeout",
+        # Preset-settable, unlike notify: the watchers that run unattended are
+        # exactly the ones you want to hear, and they are started from a
+        # preset with no other flags.
+        "sound", "sound_name",
     }
 )
 
@@ -41,6 +45,7 @@ NOT_PERSISTED = frozenset(
         # Arguably these could be persisted; they are a deliberate omission
         # rather than an oversight, and the LaunchAgent passes --log itself.
         "log", "log_level", "json", "verbose", "notify", "retries",
+        "list_sounds",
     }
 )
 

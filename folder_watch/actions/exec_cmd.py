@@ -63,6 +63,7 @@ class ExecAction(Action):
         timeout: float = DEFAULT_TIMEOUT,
         dry_run: bool = False,
         notify_on_done: bool = False,
+        sound: str | None = None,
     ) -> None:
         if not cmd or not cmd.strip():
             raise ValueError("exec requires a non-empty --cmd")
@@ -74,6 +75,7 @@ class ExecAction(Action):
         self.timeout = timeout
         self.dry_run = dry_run
         self.notify_on_done = notify_on_done
+        self.sound = sound
 
     def describe(self) -> str:
         bits = [f"exec {self.cmd!r}"]
@@ -223,7 +225,16 @@ class ExecAction(Action):
         if not self.notify_on_done:
             return
         if result == "ran":
-            notify("folder-watch ran", f"{self.template[0]} on {path.name}",
-                   reveal=path)
+            notify(
+                "folder-watch ran",
+                f"{self.template[0]} on {path.name}",
+                reveal=path,
+                sound=self.sound,
+            )
         else:
-            notify("folder-watch command failed", path.name, reveal=path)
+            notify(
+                "folder-watch command failed",
+                path.name,
+                reveal=path,
+                sound=self.sound,
+            )

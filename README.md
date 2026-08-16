@@ -47,6 +47,40 @@ button, off with `--no-notify`. A failed extract says the archive was kept — a
 folder where nothing happened and one where something went wrong look identical
 otherwise.
 
+### Notification sound
+
+On by default, and deliberately quiet — `Tink`, which is a click rather than an
+announcement. This fires once per finished file on a folder that can take a
+batch of them, so anything with a tail or a melody stops being information and
+starts being noise.
+
+```bash
+folder-watch copy ./Out --to ./Drive --no-sound          # silent
+folder-watch copy ./Out --to ./Drive --sound-name Purr   # something else
+folder-watch --list-sounds                               # what this Mac has
+```
+
+Sounds come from `~/Library/Sounds` and `/System/Library/Sounds`, yours first —
+so a `.wav` you drop in the former is selectable by name. The quiet end is
+`Tink`, `Pop`, `Purr`, `Morse`; `Basso`, `Sosumi`, `Funk` and `Submarine`
+announce themselves and will wear out their welcome.
+
+The sound rides along with the notification rather than being played
+separately, so turning notifications off silences it too, and it can never
+drift out of sync with the popup.
+
+A name that matches no sound is **reported once** rather than passed through:
+every notifier accepts an unknown name and simply plays nothing, which makes a
+typo indistinguishable from having the feature switched off.
+
+Unlike `--notify`, this is preset-settable — the watchers that run unattended
+are exactly the ones you want to hear, and they start from a preset with no
+other flags:
+
+```json
+{ "nightly-render": { "action": "copy", "sound": true, "sound_name": "Tink" } }
+```
+
 ### `exec` — run any command per finished file
 
 ```bash

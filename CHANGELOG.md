@@ -17,6 +17,18 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **A sound with the notification**, on by default and deliberately quiet:
+  `Tink`, a click rather than an announcement, because this fires once per
+  finished file on a folder that can take a batch of them. `--no-sound`
+  silences it, `--sound-name NAME` picks another, `--list-sounds` shows what
+  the machine has — including anything in `~/Library/Sounds`. It rides along
+  with the notification rather than playing separately, so it cannot drift out
+  of sync with the popup and turning notifications off silences it too. A name
+  matching no sound is reported once instead of passed through: every notifier
+  accepts an unknown name and plays nothing, which makes a typo
+  indistinguishable from the feature being off. Preset-settable, unlike
+  `--notify`, since unattended watchers start from a preset and no other flags.
+
 - `--list-presets` says so when there are none, instead of printing nothing at
   all. Silence reads as "the command did nothing" rather than "there is
   nothing to show".

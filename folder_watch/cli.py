@@ -30,6 +30,7 @@ from folder_watch.support.launchd import (
     uninstall_service,
 )
 from folder_watch.support.log import set_json_mode, set_verbose, setup_logging
+from folder_watch.support.notify import DEFAULT_SOUND, available_sounds
 from folder_watch.support.paths import PRESETS_PATH, STATE_DIR
 from folder_watch.support.pidfile import (
     clear_pidfile,
@@ -168,6 +169,27 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="macOS notification on copy success/fail (default: on)",
+    )
+    p.add_argument(
+        "--sound",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="play a sound with the notification (default: on; --no-sound off)",
+    )
+    p.add_argument(
+        "--sound-name",
+        default=DEFAULT_SOUND,
+        dest="sound_name",
+        metavar="NAME",
+        help=(
+            f"which macOS sound to play (default {DEFAULT_SOUND} — short and "
+            "quiet). --list-sounds shows what this machine has"
+        ),
+    )
+    p.add_argument(
+        "--list-sounds",
+        action="store_true",
+        help="print the sound names available on this machine, then exit",
     )
     p.add_argument(
         "--log",
@@ -361,6 +383,13 @@ def run_presets_cli(argv: list[str]) -> int:
     return 1
 
 
+def chosen_sound(args: argparse.Namespace) -> str | None:
+    """The sound to pass an action, or None for a silent notification."""
+    if not getattr(args, "sound", True):
+        return None
+    return getattr(args, "sound_name", None) or DEFAULT_SOUND
+
+
 def build_action(
     name: str, args: argparse.Namespace, *, src_root: Path | None = None
 ) -> Action:
@@ -371,6 +400,7 @@ def build_action(
         return CopyAction(
             Path(args.to),
             notify_on_done=getattr(args, "notify", True) and not dry,
+            sound=chosen_sound(args),
             retries=getattr(args, "retries", 5),
             dry_run=dry,
             create_dest=getattr(args, "create_dest", False),
@@ -390,6 +420,7 @@ def build_action(
             # and then deletes both.
             src_root=src_root,
             notify_on_done=getattr(args, "notify", True) and not dry,
+            sound=chosen_sound(args),
         )
     if name == "exec":
         if not getattr(args, "cmd", None):
@@ -404,6 +435,7 @@ def build_action(
                 # every file in a busy folder, and a notification per file is
                 # not a feature. --notify opts in.
                 notify_on_done="--notify" in getattr(args, "_passed", ()) and not dry,
+                sound=chosen_sound(args),
             )
         except ValueError as e:
             raise SystemExit(f"error: {e}") from None
@@ -532,6 +564,11 @@ def main(argv: list[str] | None = None) -> int:
     # BooleanOptionalAction cannot tell those apart on its own, and for exec
     # the difference decides whether every processed file raises a notification.
     args._passed = frozenset(passed)
+
+    if args.list_sounds:
+        names = available_sounds()
+        print("\n".join(names) if names else "no sounds found")
+        return 0
 
     if args.list_actions:
         print("copy  — copy finished files to --to DIR (never deletes source)")
@@ -664,6 +701,11 @@ def main(argv: list[str] | None = None) -> int:
         if "--passthru" not in passed and cfg.get("passthru"):
             passthru = cfg["passthru"]
             args.passthru = passthru
+        if "--sound" not in passed and "--no-sound" not in passed \
+                and cfg.get("sound") is not None:
+            args.sound = bool(cfg["sound"])
+        if "--sound-name" not in passed and cfg.get("sound_name"):
+            args.sound_name = str(cfg["sound_name"])
         if "--cmd" not in passed and cfg.get("cmd"):
             args.cmd = cfg["cmd"]
         if "--exec-timeout" not in passed and cfg.get("exec_timeout") is not None:
@@ -827,6 +869,10 @@ def main(argv: list[str] | None = None) -> int:
         for key in ("no_clobber", "create_dest", "exclusive", "no_done_store"):
             if getattr(args, key, False):
                 cfg[key] = True
+        # Round-trip the sound settings too, so a saved preset sounds the way
+        # the command that made it did.
+        cfg["sound"] = bool(getattr(args, "sound", True))
+        cfg["sound_name"] = getattr(args, "sound_name", None) or DEFAULT_SOUND
         if getattr(args, "retry_hours", None) is not None:
             cfg["retry_hours"] = args.retry_hours
         persist_preset(args.save_preset, cfg, argv=argv, loaded_preset=args.preset)

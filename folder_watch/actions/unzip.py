@@ -57,6 +57,7 @@ class UnzipAction(Action):
         no_clobber: bool = False,
         src_root: Path | None = None,
         notify_on_done: bool = True,
+        sound: str | None = None,
     ) -> None:
         if mode not in ("named", "same", "to"):
             raise ValueError(f"unknown unzip mode: {mode}")
@@ -69,6 +70,7 @@ class UnzipAction(Action):
         self.no_clobber = no_clobber
         self.src_root = src_root.expanduser() if src_root else None
         self.notify_on_done = notify_on_done
+        self.sound = sound
 
     def describe(self) -> str:
         if self.mode == "to":
@@ -201,12 +203,14 @@ class UnzipAction(Action):
                 "folder-watch extracted",
                 f"{path.name} → {target.name}",
                 reveal=target,
+                sound=self.sound,
             )
         elif result in ("fail", "error", "retry"):
             notify(
                 "folder-watch extract failed",
                 f"{path.name} — archive kept",
                 reveal=path,
+                sound=self.sound,
             )
 
     def _extract(self, path: Path) -> str:

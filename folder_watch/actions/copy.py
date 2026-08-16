@@ -35,6 +35,7 @@ class CopyAction(Action):
         dest: Path,
         *,
         notify_on_done: bool = True,
+        sound: str | None = None,
         retries: int = 5,
         dry_run: bool = False,
         create_dest: bool = False,
@@ -42,6 +43,7 @@ class CopyAction(Action):
     ) -> None:
         self.dest = dest.expanduser()
         self.notify_on_done = notify_on_done
+        self.sound = sound
         self.retries = retries
         self.dry_run = dry_run
         self.create_dest = create_dest
@@ -120,14 +122,23 @@ class CopyAction(Action):
             # Never mark done — the file must be retried once the volume is back.
             emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
             if self.notify_on_done:
-                notify("folder-watch destination missing", f"{path.name} not copied")
+                notify(
+                    "folder-watch destination missing",
+                    f"{path.name} not copied",
+                    sound=self.sound,
+                )
             return "retry"
         try:
             atomic_copy(path, dest, retries=self.retries)
         except OSError as e:
             emit("fail", name=path.name, reason="copy_error", err=str(e))
             if self.notify_on_done:
-                notify("folder-watch copy failed", path.name, reveal=dest)
+                notify(
+                    "folder-watch copy failed",
+                    path.name,
+                    reveal=dest,
+                    sound=self.sound,
+                )
             # A read-only or forbidden destination will not fix itself; queueing
             # it would retry a certainty for three days. Anything else (network
             # volume, transient IO) is worth another go.
@@ -143,13 +154,19 @@ class CopyAction(Action):
                 wrote=dest.stat().st_size if dest.is_file() else 0,
             )
             if self.notify_on_done:
-                notify("folder-watch copy failed", path.name, reveal=dest)
+                notify(
+                    "folder-watch copy failed",
+                    path.name,
+                    reveal=dest,
+                    sound=self.sound,
+                )
             return "retry"
         if self.notify_on_done:
             notify(
                 "folder-watch copied",
                 f"{path.name} ({human_size(size)}) → {self.dest.name}",
                 reveal=dest,
+                sound=self.sound,
             )
         return "copied"
 
