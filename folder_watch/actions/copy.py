@@ -5,7 +5,7 @@ import errno
 from pathlib import Path
 
 from folder_watch.actions.base import Action
-from folder_watch.support.copy_io import atomic_copy
+from folder_watch.support.copy_io import atomic_copy, verify_copy
 from folder_watch.support.log import emit
 from folder_watch.support.notify import human_size, notify
 from folder_watch.support.paths import (
@@ -36,6 +36,7 @@ class CopyAction(Action):
         *,
         notify_on_done: bool = True,
         sound: str | None = None,
+        verify: bool = False,
         retries: int = 5,
         dry_run: bool = False,
         create_dest: bool = False,
@@ -44,6 +45,7 @@ class CopyAction(Action):
         self.dest = dest.expanduser()
         self.notify_on_done = notify_on_done
         self.sound = sound
+        self.verify = verify
         self.retries = retries
         self.dry_run = dry_run
         self.create_dest = create_dest
@@ -53,6 +55,8 @@ class CopyAction(Action):
         bits = [f"copy -> {self.dest}"]
         if self.notify_on_done:
             bits.append("notify")
+        if self.verify:
+            bits.append("verify=sha256")
         if self.dry_run:
             bits.append("dry-run")
         return " ".join(bits)
@@ -161,6 +165,24 @@ class CopyAction(Action):
                     sound=self.sound,
                 )
             return "retry"
+        if self.verify:
+            # Size already matches. This is the only check that can tell the
+            # right number of wrong bytes from a good copy, so when it fails
+            # the destination is removed rather than left looking finished.
+            problem = verify_copy(path, dest)
+            if problem is not None:
+                emit("fail", name=path.name, reason="verify_failed", err=problem)
+                try:
+                    dest.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if self.notify_on_done:
+                    notify(
+                        "folder-watch copy corrupt",
+                        f"{path.name} — removed, will retry",
+                        sound=self.sound,
+                    )
+                return "retry"
         if self.notify_on_done:
             notify(
                 "folder-watch copied",

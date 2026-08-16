@@ -15,6 +15,32 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Added
+
+- **`--verify`** re-reads both files after a copy and compares sha256. The
+  size check catches a truncated write and nothing else; this catches the
+  right number of wrong bytes, which is rare on local disk, less rare across a
+  network mount, and silent. A copy that fails is deleted rather than left
+  looking finished, and goes back on the retry queue. Off by default — it
+  costs a full read of each file.
+- **`--webhook URL`** POSTs outcome events as JSON. Hooked onto the log rather
+  than each action, so a new action is covered automatically. It cannot block
+  the watch loop (bounded queue, daemon thread, drops and counts under load),
+  cannot crash the watcher, and never puts the URL in a log — endpoint URLs
+  carry the secret in the path.
+- **`presets show NAME`** — one preset in full, including which file each
+  value came from. A preset defined in two files is merged and nothing said so.
+- `--help` is grouped by action instead of listing 45 flags in one block.
+
+### Testing
+
+- **Crash recovery**: a watcher is now killed with SIGKILL mid-copy and
+  mid-extract, asserting no half-written destination, an untouched source, the
+  archive kept, and a clean recovery on re-run. The first version killed on the
+  *appearance* of a temp file, which is before any bytes move — mutation
+  testing showed it caught neither a non-atomic copy nor an archive deleted
+  before extraction.
+
 ## [0.2.2] - 2026-08-16
 
 ### Added

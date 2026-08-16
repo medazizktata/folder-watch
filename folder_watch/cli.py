@@ -41,6 +41,7 @@ from folder_watch.support.pidfile import (
 )
 from folder_watch.support.retry import GIVE_UP_AFTER, RetryQueue, retry_path_for
 from folder_watch.support.state import DoneStore
+from folder_watch.support.webhook import configure as configure_webhook
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,31 +62,43 @@ def build_parser() -> argparse.ArgumentParser:
             "  service install|uninstall|status --preset NAME\n"
             "  status [--preset NAME]   # running watchers\n"
             "  prune [--yes]            # drop dead done-state and stale pidfiles\n"
+            "  presets show NAME            # one preset, with its source files\n"
             "  presets forget NAME [--yes]  # remove a preset\n"
         ),
     )
+    g_act = p.add_argument_group('actions: copy / unzip')
+    g_exec = p.add_argument_group('actions: exec')
+    g_convx = p.add_argument_group('actions: convx (wraps another tool)')
+    g_watch = p.add_argument_group('what to watch, and when a file counts as finished')
+    g_run = p.add_argument_group('how to run')
+    g_tell = p.add_argument_group('being told about it')
+    g_log = p.add_argument_group('logging')
+    g_state = p.add_argument_group('state and retries')
+    g_pre = p.add_argument_group('presets')
     p.add_argument("action", nargs="?", help="Action or 'service'")
     p.add_argument("src", nargs="?", help="Folder to watch (or service subcommand)")
-    p.add_argument("--to", dest="to", help="Destination / output directory (copy/unzip)")
-    p.add_argument(
+    g_act.add_argument(
+        "--to", dest="to", help="Destination / output directory (copy/unzip)"
+    )
+    g_act.add_argument(
         "--mode",
         choices=("named", "same", "to"),
         default="named",
         help="unzip: named|same|to",
     )
-    p.add_argument("--format", dest="format", help="convx watch -t output format")
-    p.add_argument("--convx-preset", dest="convx_preset", help="ConvX -p preset")
-    p.add_argument("--quality", type=int, help="convx quality 0-100")
-    p.add_argument("--width", type=int, help="convx width")
-    p.add_argument("--fps", type=float, help="convx fps")
-    p.add_argument("--max-size", type=int, dest="max_size", help="convx max bytes")
-    p.add_argument(
+    g_convx.add_argument("--format", dest="format", help="convx watch -t output format")
+    g_convx.add_argument("--convx-preset", dest="convx_preset", help="ConvX -p preset")
+    g_convx.add_argument("--quality", type=int, help="convx quality 0-100")
+    g_convx.add_argument("--width", type=int, help="convx width")
+    g_convx.add_argument("--fps", type=float, help="convx fps")
+    g_convx.add_argument("--max-size", type=int, dest="max_size", help="convx max bytes")
+    g_convx.add_argument(
         "--overwrite",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="convx --overwrite (default true)",
     )
-    p.add_argument(
+    g_exec.add_argument(
         "--cmd",
         default=None,
         metavar="COMMAND",
@@ -106,71 +119,73 @@ def build_parser() -> argparse.ArgumentParser:
             "A command that hangs stops the watcher silently"
         ),
     )
-    p.add_argument("--convx-bin", default=None, help="Path to convx")
-    p.add_argument(
+    g_convx.add_argument("--convx-bin", default=None, help="Path to convx")
+    g_convx.add_argument(
         "--passthru",
         default=None,
         metavar="ARGS",
         help='convx: extra args appended verbatim, e.g. --passthru "--new-flag 3"',
     )
-    p.add_argument(
+    g_watch.add_argument(
         "--ext",
         default=None,
         help="Extensions, or * (default: copy=mp4, unzip=zip)",
     )
-    p.add_argument("--poll", type=float, default=30, help="poll backend interval")
-    p.add_argument(
+    g_watch.add_argument("--poll", type=float, default=30, help="poll backend interval")
+    g_watch.add_argument(
         "--backend",
         choices=("event", "poll"),
         default="event",
         help="copy/unzip: event=FSEvents (default); poll=timer",
     )
-    p.add_argument(
+    g_watch.add_argument(
         "--debounce",
         type=int,
         default=500,
         dest="debounce_ms",
         help="quiet window ms (default 500); passed to convx watch",
     )
-    p.add_argument(
+    g_watch.add_argument(
         "--settle",
         type=float,
         default=0.5,
         help="copy/unzip: seconds between size/lsof checks after event",
     )
-    p.add_argument("--recursive", action="store_true", help="copy/unzip: watch subdirs")
-    p.add_argument(
+    g_watch.add_argument(
+        "--recursive", action="store_true", help="copy/unzip: watch subdirs"
+    )
+    g_watch.add_argument(
         "--stable",
         type=int,
         default=3,
         help="copy/unzip: same-size checks before action (default 3)",
     )
-    p.add_argument(
+    g_watch.add_argument(
         "--min-bytes",
         type=int,
         default=None,
         help="ignore files smaller than this (default: copy=1000000, unzip=1)",
     )
-    p.add_argument(
+    g_run.add_argument(
         "--once", action="store_true", help="copy/unzip: process ready files and exit"
     )
-    p.add_argument(
+    g_run.add_argument(
         "--catch-up",
         action="store_true",
         help="also process files already finished in SRC (default: new/in-progress only)",
     )
-    p.add_argument(
+    g_run.add_argument(
         "--dry-run",
         action="store_true",
         help="log would_copy/would_extract without writing or deleting",
     )
-    p.add_argument(
+    g_tell.add_argument(
         "--notify",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="macOS notification on copy success/fail (default: on)",
     )
-    p.add_argument(
+    g_tell.add_argument(
         "--sound",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -186,46 +201,64 @@ def build_parser() -> argparse.ArgumentParser:
             "quiet). --list-sounds shows what this machine has"
         ),
     )
-    p.add_argument(
+    g_tell.add_argument(
         "--list-sounds",
         action="store_true",
         help="print the sound names available on this machine, then exit",
     )
-    p.add_argument(
+    g_log.add_argument(
         "--log",
         type=Path,
         default=None,
         help="also write logs to this file",
     )
-    p.add_argument(
+    g_log.add_argument(
         "--log-level",
         default="INFO",
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
         help="log level (default INFO; --verbose → DEBUG unless set)",
     )
-    p.add_argument(
+    g_log.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="verbose: DEBUG level + frequent progress/settle lines",
     )
-    p.add_argument(
+    g_log.add_argument(
         "--json",
         action="store_true",
         help="emit machine-readable JSON lines on stdout",
     )
-    p.add_argument(
+    g_state.add_argument(
         "--no-done-store",
         action="store_true",
         help="disable persistent done-state (scheme B)",
     )
     p.add_argument(
+        "--webhook",
+        default=None,
+        metavar="URL",
+        help=(
+            "POST outcome events (copied/extracted/ran/fail/...) as JSON to "
+            "this URL. Never blocks the watch loop; the URL is not logged"
+        ),
+    )
+    g_act.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "copy: re-read both files and compare sha256 after copying. Costs "
+            "a full read of each; catches the right number of wrong bytes, "
+            "which the size check cannot"
+        ),
+    )
+    g_act.add_argument(
         "--retries",
         type=int,
         default=5,
         help="copy: retries on OSError (default 5)",
     )
-    p.add_argument(
+    g_run.add_argument(
         "--pending",
         action="store_true",
         help=(
@@ -243,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
             "not destructive — --pending and --catch-up still see the file"
         ),
     )
-    p.add_argument(
+    g_run.add_argument(
         "--exclusive",
         action="store_true",
         help=(
@@ -251,12 +284,12 @@ def build_parser() -> argparse.ArgumentParser:
             "default: under launchd a refusing service flaps instead of running"
         ),
     )
-    p.add_argument(
+    g_act.add_argument(
         "--no-clobber",
         action="store_true",
         help="unzip: refuse an archive that would overwrite existing files",
     )
-    p.add_argument(
+    g_act.add_argument(
         "--create-dest",
         action="store_true",
         help=(
@@ -269,10 +302,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"folder-watch {__version__}",
     )
-    p.add_argument("--preset", help="folder-watch JSON preset")
-    p.add_argument("--list-presets", action="store_true")
-    p.add_argument("--list-actions", action="store_true")
-    p.add_argument("--save-preset", metavar="NAME")
+    g_pre.add_argument("--preset", help="folder-watch JSON preset")
+    g_pre.add_argument("--list-presets", action="store_true")
+    g_pre.add_argument("--list-actions", action="store_true")
+    g_pre.add_argument("--save-preset", metavar="NAME")
     return p
 
 
@@ -334,15 +367,50 @@ def persist_preset(
     print(f"{verb} preset {name!r} -> {PRESETS_PATH}")
 
 
+def run_presets_show(name: str) -> int:
+    """One preset in full: what it sets, where it came from, whether it works.
+
+    --list-presets prints every preset, which is the wrong tool when you have
+    a dozen and a question about one of them. This also answers "why is it not
+    doing what I told it to", by naming the file each key came from — a preset
+    defined twice is merged, and until now nothing said so for a single name.
+    """
+    presets = load_presets()
+    if name not in presets:
+        print(f"error: no preset named {name!r}", file=sys.stderr)
+        print(f"known: {', '.join(sorted(presets)) or '(none)'}", file=sys.stderr)
+        return 1
+
+    cfg = presets[name]
+    level, note = preset_status(cfg)
+    print(f"{name}:" + (f"    [{note}]" if note else ""))
+    for key in sorted(cfg):
+        print(f"  {key}: {cfg[key]}")
+
+    sources = preset_sources(name)
+    for path in sources:
+        print(f"  defined in: {path}")
+    if len(sources) > 1:
+        print("  -> defined more than once; later files win key by key")
+
+    running = live_watchers(name)
+    print(f"  running: {running}" if running else "  running: no")
+    plist = service_plist_path(name)
+    print(f"  launchagent: {plist if plist.is_file() else 'not installed'}")
+    return 0 if level == "ok" else 1
+
+
 def run_presets_cli(argv: list[str]) -> int:
-    """Remove a preset — explicitly, never as a side effect of anything else."""
+    """Show or remove a preset — never as a side effect of anything else."""
     ap = argparse.ArgumentParser(prog="folder-watch presets")
-    ap.add_argument("cmd", choices=("forget",))
-    ap.add_argument("name", help="preset to forget")
+    ap.add_argument("cmd", choices=("show", "forget"))
+    ap.add_argument("name", help="preset to show or forget")
     ap.add_argument("--yes", action="store_true", help="actually remove (default: dry)")
     args = ap.parse_args(argv)
 
     name = args.name
+    if args.cmd == "show":
+        return run_presets_show(name)
     sources = preset_sources(name)
     if not sources:
         print(f"error: no preset named {name!r}", file=sys.stderr)
@@ -404,6 +472,7 @@ def build_action(
             retries=getattr(args, "retries", 5),
             dry_run=dry,
             create_dest=getattr(args, "create_dest", False),
+            verify=getattr(args, "verify", False),
             # Needed to mirror subdirectories under --to; without it a
             # --recursive watch flattens same-named files onto each other.
             src_root=src_root,
@@ -557,6 +626,8 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(level=level, log_file=args.log, json_mode=args.json)
     set_json_mode(args.json)
     set_verbose(args.verbose)
+    if getattr(args, "webhook", None):
+        configure_webhook(args.webhook)
 
     presets = load_presets()
     passed = {a.split("=")[0] for a in argv}
@@ -706,6 +777,9 @@ def main(argv: list[str] | None = None) -> int:
             args.sound = bool(cfg["sound"])
         if "--sound-name" not in passed and cfg.get("sound_name"):
             args.sound_name = str(cfg["sound_name"])
+        if "--webhook" not in passed and cfg.get("webhook"):
+            args.webhook = str(cfg["webhook"])
+            configure_webhook(args.webhook)
         if "--cmd" not in passed and cfg.get("cmd"):
             args.cmd = cfg["cmd"]
         if "--exec-timeout" not in passed and cfg.get("exec_timeout") is not None:
@@ -719,6 +793,7 @@ def main(argv: list[str] | None = None) -> int:
             ("--create-dest", "create_dest"),
             ("--exclusive", "exclusive"),
             ("--no-done-store", "no_done_store"),
+            ("--verify", "verify"),
         ):
             if flag not in passed and cfg.get(key):
                 setattr(args, key, True)
@@ -866,7 +941,8 @@ def main(argv: list[str] | None = None) -> int:
             cfg["exec_timeout"] = args.exec_timeout
         # Round-trip the safety flags too, so a saved preset preserves how the
         # command was actually invoked rather than silently dropping them.
-        for key in ("no_clobber", "create_dest", "exclusive", "no_done_store"):
+        for key in ("no_clobber", "create_dest", "exclusive", "no_done_store",
+                    "verify"):
             if getattr(args, key, False):
                 cfg[key] = True
         # Round-trip the sound settings too, so a saved preset sounds the way

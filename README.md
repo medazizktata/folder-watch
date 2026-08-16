@@ -222,6 +222,40 @@ folder-watch convx ~/Inbox --format webp --passthru "--some-new-flag 3"
 It is split with `shlex` and appended to the argv list. There is no shell in
 the chain, so this adds arguments to `convx` — never a second command.
 
+### Verifying a copy
+
+```bash
+folder-watch copy ./Out --to ./Drive --verify
+```
+
+A copy is normally checked by size, which catches a truncated write and
+nothing else. `--verify` re-reads both files and compares sha256, which is the
+only check that catches the right number of *wrong* bytes — rare on local disk,
+less rare across a network mount or a syncing client, and silent when it
+happens. A copy that fails verification is **deleted** rather than left looking
+finished, and goes back on the retry queue.
+
+It costs a full read of both files, which is why it is off by default. sha256
+rather than something faster so you can reproduce it with `shasum -a 256`.
+
+### Telling something else
+
+```bash
+folder-watch copy ./Out --to ./Drive --webhook https://example.com/hook
+```
+
+POSTs outcome events — `copied`, `extracted`, `ran`, `fail`, `give_up`,
+`src_lost`, `src_restored` — as JSON. Progress chatter is not forwarded; it
+fires continuously and would make the webhook a firehose that says nothing.
+
+It is hooked onto the log rather than onto each action, so a new action is
+covered without being asked to remember. Three guarantees: it **never blocks
+the watch loop** (bounded queue, one daemon thread, events dropped and counted
+if an endpoint cannot keep up), it **never crashes the watcher** (an
+unreachable endpoint is a lost notification, not a lost file), and the **URL is
+never logged** — Slack and Discord put the secret in the path, and this log
+gets pasted into bug reports.
+
 ## Reliability / logging
 
 ```bash
@@ -247,6 +281,9 @@ folder-watch status --preset nightly-render
 # drop done-state whose source is gone, and stale pidfiles (dry by default)
 folder-watch prune
 folder-watch prune --yes
+
+# one preset in full: values, which file each came from, is it running
+folder-watch presets show nightly-render
 ```
 
 ## Files already in the folder at startup

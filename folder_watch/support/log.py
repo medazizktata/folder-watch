@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from folder_watch.support import webhook
+
 log = logging.getLogger("folder_watch")
 
 _JSON_MODE = False
@@ -101,6 +103,8 @@ def _plain(value: Any) -> str:
 
 def emit(event: str, **fields: Any) -> None:
     payload = {"event": event, **{k: _jsonable(v) for k, v in fields.items()}}
+    # Fire-and-forget; returns immediately whether or not anything is listening.
+    webhook.post(event, payload)
     if _JSON_MODE:
         line = json.dumps(payload, ensure_ascii=False)
     else:
