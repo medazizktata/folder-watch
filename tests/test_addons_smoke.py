@@ -30,9 +30,21 @@ from folder_watch import main as fw_main
 
 
 def fw_cmd(*args: str) -> list[str]:
-    """argv for a child folder-watch process."""
+    """argv for a child folder-watch process.
+
+    Always --no-notify. A test suite has no business drawing notifications on
+    the machine running it, or making a noise every few seconds through four
+    consecutive runs, and on CI it puts an osascript call on the critical path
+    of a test that is timing-sensitive for entirely unrelated reasons.
+    """
     py = ROOT / ".venv" / "bin" / "python"
-    return [str(py) if py.is_file() else sys.executable, "-m", "folder_watch", *args]
+    return [
+        str(py) if py.is_file() else sys.executable,
+        "-m",
+        "folder_watch",
+        *args,
+        "--no-notify",
+    ]
 
 
 def fw_env() -> dict[str, str]:
@@ -369,10 +381,20 @@ def test_event_unzip(skip: bool) -> list[str]:
         z = inbox / "drop.zip"
         with zipfile.ZipFile(z, "w") as zf:
             zf.writestr("ok.txt", "event")
-        deadline = time.time() + 8
+
+        # The baseline line says the watcher has seeded, not that FSEvents has
+        # armed its stream — obs.start() returns before the OS registers it,
+        # and there is no signal for that. So re-touch the zip periodically
+        # until the extraction lands, exactly as the convx case does.
+        deadline = time.time() + 20
         dest = inbox / "drop" / "ok.txt"
+        nudged = time.time()
         while time.time() < deadline and not dest.is_file():
-            time.sleep(0.2)
+            now = time.time()
+            if now - nudged > 1.5 and z.is_file():
+                nudged = now
+                os.utime(z, None)
+            time.sleep(0.1)
         _reap(p)
         if not dest.is_file() or z.exists():
             fails.append("event-unzip")
