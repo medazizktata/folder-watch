@@ -271,14 +271,21 @@ def test_convx(skip: bool) -> list[str]:
                 ):
                     break
                 time.sleep(0.1)
-            time.sleep(0.3)
+            # The banner says convx has started, not that its FSEvents stream
+            # is armed, and there is no signal for the latter — it is someone
+            # else's binary. So write, then keep re-touching until the output
+            # appears. A single write plus one fixed-delay nudge is the same
+            # guess wearing a different hat: if neither was delivered, the test
+            # fails on a slow machine rather than on a broken tool.
             write_tiny_png(png)
-            # nudge FSEvents if first write was missed
-            time.sleep(0.3)
-            png.write_bytes(png.read_bytes())
-            deadline = time.time() + 12
+            deadline = time.time() + 20
+            nudged = 0.0
             while time.time() < deadline and not webp.is_file():
-                time.sleep(0.25)
+                now = time.time()
+                if now - nudged > 1.0 and png.is_file():
+                    nudged = now
+                    png.write_bytes(png.read_bytes())
+                time.sleep(0.1)
             _reap(p)
 
             text = log.read_text() if log.exists() else ""

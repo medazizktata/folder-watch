@@ -10,6 +10,7 @@ These check the harness reports what actually happened.
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib
 import io
@@ -24,6 +25,70 @@ import _isolate  # noqa: F401  (must precede folder_watch — redirects state)
 from _loopharness import _emit_importers, captured, count, fields
 
 import folder_watch.support.log as log_mod
+
+
+class TestNoSleepAsSynchronisation(unittest.TestCase):
+    """The smoke suite spawns real watchers, so it is the one place that can
+    be tempted to sleep and hope.
+
+    Every such sleep is a guess about someone else's machine. It looks generous
+    right up until a cold CI runner disagrees, and then it fails somewhere
+    nobody can reproduce — which is exactly how a working watcher was reported
+    as broken on 3.13 while passing on 3.10 from a commit that touched neither.
+
+    The rule this enforces: a sleep may only be a poll interval, i.e. sit
+    inside a loop with a real condition and a deadline. A sleep on its own is
+    waiting for something to have happened, and the thing to do instead is
+    wait for the signal that says it did.
+    """
+
+    SUITES = ("test_addons_smoke.py",)
+
+    @staticmethod
+    def _sleeps(tree):
+        """(every sleep call, those lexically inside a while loop)."""
+        every, in_loop = set(), set()
+
+        def is_sleep(node):
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "sleep"
+            )
+
+        for node in ast.walk(tree):
+            if is_sleep(node):
+                every.add(node.lineno)
+            if isinstance(node, ast.While):
+                for inner in ast.walk(node):
+                    if is_sleep(inner):
+                        in_loop.add(inner.lineno)
+        return every, in_loop
+
+    def test_no_sleep_stands_alone(self):
+        for name in self.SUITES:
+            path = Path(__file__).parent / name
+            with self.subTest(suite=name):
+                every, in_loop = self._sleeps(ast.parse(path.read_text()))
+                bare = sorted(every - in_loop)
+                self.assertEqual(
+                    bare,
+                    [],
+                    f"{name}: sleep used to wait for something at line(s) "
+                    f"{bare} — poll for the signal instead",
+                )
+
+    def test_the_check_can_actually_fail(self):
+        """A guard that cannot fail is decoration."""
+        tree = ast.parse(
+            "import time\n"
+            "while x:\n"
+            "    time.sleep(0.1)\n"   # a poll interval — allowed
+            "time.sleep(0.5)\n"       # waiting and hoping — not
+        )
+        every, in_loop = self._sleeps(tree)
+
+        self.assertEqual(sorted(every - in_loop), [4])
 
 
 class TestCapture(unittest.TestCase):
