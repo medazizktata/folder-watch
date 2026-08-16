@@ -29,7 +29,7 @@ UNZIP_VALUE_FLAGS = _SHARED_VALUE_FLAGS
 CONVX_VALUE_FLAGS = frozenset(
     {"--ext", "--format", "--convx-preset", "--quality", "--width", "--fps",
      "--max-size", "--convx-bin", "--debounce", "--save-preset",
-     "--log", "--log-level"}
+     "--log", "--log-level", "--passthru"}
 )
 
 

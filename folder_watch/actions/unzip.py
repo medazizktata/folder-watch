@@ -7,6 +7,7 @@ from pathlib import Path
 
 from folder_watch.actions.base import Action
 from folder_watch.support.log import emit
+from folder_watch.support.notify import notify
 from folder_watch.support.paths import (
     DestNotADirectory,
     DestUnavailable,
@@ -55,6 +56,7 @@ class UnzipAction(Action):
         create_dest: bool = False,
         no_clobber: bool = False,
         src_root: Path | None = None,
+        notify_on_done: bool = True,
     ) -> None:
         if mode not in ("named", "same", "to"):
             raise ValueError(f"unknown unzip mode: {mode}")
@@ -66,12 +68,15 @@ class UnzipAction(Action):
         self.create_dest = create_dest
         self.no_clobber = no_clobber
         self.src_root = src_root.expanduser() if src_root else None
+        self.notify_on_done = notify_on_done
 
     def describe(self) -> str:
         if self.mode == "to":
             base = f"unzip mode=to -> {self.to}/<stem>/"
         else:
             base = f"unzip mode={self.mode}"
+        if self.notify_on_done:
+            base += " notify"
         return f"{base} dry-run" if self.dry_run else base
 
     def destination_ready(self) -> bool:
@@ -132,6 +137,38 @@ class UnzipAction(Action):
         return base / stem
 
     def run(self, path: Path) -> str:
+        """Extract, then say so.
+
+        The notification is decided here rather than at each of the thirteen
+        exits below, so a new failure path cannot be silently un-announced.
+        """
+        result = self._extract(path)
+        if self.notify_on_done:
+            self._announce(path, result)
+        return result
+
+    def _announce(self, path: Path, result: str) -> None:
+        """One notification per outcome, with the archive's fate spelled out.
+
+        Which matters more here than for copy: a failed extract leaves the
+        archive in place, so "nothing happened" and "something went wrong and
+        nothing happened" look identical in the folder.
+        """
+        target = self._target_dir(path)
+        if result == "extracted":
+            notify(
+                "folder-watch extracted",
+                f"{path.name} → {target.name}",
+                reveal=target,
+            )
+        elif result in ("fail", "error", "retry"):
+            notify(
+                "folder-watch extract failed",
+                f"{path.name} — archive kept",
+                reveal=path,
+            )
+
+    def _extract(self, path: Path) -> str:
         if path.suffix.lower() != ".zip":
             return "skip"
         if not zipfile.is_zipfile(path):

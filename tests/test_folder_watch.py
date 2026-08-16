@@ -105,6 +105,70 @@ class TestUnzipAction(unittest.TestCase):
             zf.write(payload_path, arcname=payload)
         return zpath
 
+    def _notifications(self, action, zip_path):
+        """Capture what the user would have been shown."""
+        import folder_watch.actions.unzip as unzip_mod
+
+        seen: list[tuple[str, str, Path | None]] = []
+        old = unzip_mod.notify
+        unzip_mod.notify = lambda t, b, **kw: seen.append((t, b, kw.get("reveal")))
+        try:
+            result = action.run(zip_path)
+        finally:
+            unzip_mod.notify = old
+        return result, seen
+
+    def test_a_successful_extract_is_announced(self):
+        """copy has notified since July; unzip never did, so an inbox watcher
+        ran in total silence."""
+        z = self._make_zip("delivery.zip")
+        action = UnzipAction(mode="named", notify_on_done=True)
+
+        result, seen = self._notifications(action, z)
+
+        self.assertEqual(result, "extracted")
+        self.assertEqual(len(seen), 1)
+        title, body, reveal = seen[0]
+        self.assertIn("extracted", title)
+        self.assertIn("delivery.zip", body)
+        self.assertEqual(reveal, self.inbox / "delivery")
+
+    def test_a_failed_extract_says_the_archive_was_kept(self):
+        """A failure leaves the zip sitting there, so the folder looks exactly
+        the same as if nothing had happened yet."""
+        z = self.inbox / "broken.zip"
+        z.write_bytes(b"not a zip at all")
+        action = UnzipAction(mode="named", notify_on_done=True)
+
+        result, seen = self._notifications(action, z)
+
+        self.assertEqual(result, "fail")
+        self.assertEqual(len(seen), 1)
+        title, body, reveal = seen[0]
+        self.assertIn("failed", title)
+        self.assertIn("kept", body)
+        self.assertEqual(reveal, z)
+        self.assertTrue(z.is_file(), "the archive was not actually kept")
+
+    def test_nothing_is_announced_when_notifications_are_off(self):
+        z = self._make_zip("quiet.zip")
+        action = UnzipAction(mode="named", notify_on_done=False)
+
+        result, seen = self._notifications(action, z)
+
+        self.assertEqual(result, "extracted")
+        self.assertEqual(seen, [])
+
+    def test_a_dry_run_announces_nothing(self):
+        """Nothing happened, so there is nothing to tell the user about."""
+        z = self._make_zip("preview.zip")
+        action = UnzipAction(mode="named", notify_on_done=True, dry_run=True)
+
+        result, seen = self._notifications(action, z)
+
+        self.assertEqual(result, "would_extract")
+        self.assertEqual(seen, [])
+
     def test_mode_named_default(self):
         z = self._make_zip("demo.zip")
         action = UnzipAction(mode="named")
@@ -285,6 +349,46 @@ class TestConvxWrapper(unittest.TestCase):
 
         cmd = build_convx_watch_cmd(self.src, format="mp3", overwrite=False)
         self.assertNotIn("--overwrite", cmd)
+
+    def test_passthru_appends_verbatim_and_last(self):
+        """The escape hatch: a flag ConvX grows tomorrow is usable today,
+        without a release here first. Last, so it can override a mapped one."""
+        from folder_watch import build_convx_watch_cmd
+
+        cmd = build_convx_watch_cmd(
+            self.src, format="webp", passthru="--new-flag 3 --other"
+        )
+
+        self.assertEqual(cmd[-3:], ["--new-flag", "3", "--other"])
+
+    def test_passthru_quoting_survives(self):
+        from folder_watch import build_convx_watch_cmd
+
+        cmd = build_convx_watch_cmd(
+            self.src, format="webp", passthru='--label "two words"'
+        )
+
+        self.assertEqual(cmd[-2:], ["--label", "two words"])
+
+    def test_passthru_cannot_smuggle_a_second_command(self):
+        """Split into argv and handed to Popen, never to a shell — so the
+        metacharacters stay arguments to convx rather than becoming a command."""
+        from folder_watch import build_convx_watch_cmd
+
+        cmd = build_convx_watch_cmd(
+            self.src, format="webp", passthru="--x; rm -rf /tmp/nope"
+        )
+
+        self.assertIn("--x;", cmd)
+        self.assertNotIn("&&", cmd)
+        # Every token is an argument to convx; nothing re-enters a shell.
+        self.assertEqual(cmd[0].split("/")[-1], "convx")
+
+    def test_passthru_is_absent_when_unset(self):
+        from folder_watch import build_convx_watch_cmd
+
+        base = build_convx_watch_cmd(self.src, format="webp")
+        self.assertEqual(base[-1], "--overwrite")
 
     def test_cli_rejects_to_and_once(self):
         from folder_watch import main as fw_main

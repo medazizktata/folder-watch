@@ -39,7 +39,11 @@ tool** that does its own watching. See [Wrapping another tool](#wrapping-another
 | Action | Behavior | Defaults |
 |--------|----------|----------|
 | `copy` | Atomic copy → `--to DIR` (retry on OSError); never deletes source; macOS notif. Mirrors subdirectories under `--recursive` | `--ext mp4 --min-bytes 1000000` |
-| `unzip` | Extract `.zip`; delete zip only after **every** member is verified present. `--no-clobber` refuses an archive that would overwrite | `--ext zip --min-bytes 1` |
+| `unzip` | Extract `.zip`; delete zip only after **every** member is verified present. `--no-clobber` refuses an archive that would overwrite; macOS notif | `--ext zip --min-bytes 1` |
+
+Both notify on success and failure with a **Show in folder** button, off with
+`--no-notify`. A failed extract says the archive was kept — a folder where
+nothing happened and one where something went wrong look identical otherwise.
 
 `service` (LaunchAgent install / uninstall / status), `status`, `prune` and
 `presets` are subcommands rather than actions.
@@ -122,6 +126,17 @@ folder-watch convx ~/Inbox --format webp --ext png,jpg
 through. ConvX converts in place, so `--to` is rejected rather than quietly
 ignored, and `convx watch` is continuous, so `--once` is rejected too — use
 `convx convert` directly for a one-shot run.
+
+Anything not in that mapping goes through `--passthru`, appended verbatim and
+last, so a flag ConvX grows tomorrow is usable the day it ships rather than the
+day a release here catches up:
+
+```bash
+folder-watch convx ~/Inbox --format webp --passthru "--some-new-flag 3"
+```
+
+It is split with `shlex` and appended to the argv list. There is no shell in
+the chain, so this adds arguments to `convx` — never a second command.
 
 ## Reliability / logging
 

@@ -1,6 +1,7 @@
 """ConvX watch wrapper."""
 from __future__ import annotations
 
+import shlex
 import shutil
 import signal
 import subprocess
@@ -21,6 +22,7 @@ def build_convx_watch_cmd(
     filter_exts: list[str] | None = None,
     debounce_ms: int = 500,
     convx_bin: str | None = None,
+    passthru: str | None = None,
 ) -> list[str]:
     """Map folder-watch flags → `convx watch` argv. ConvX owns FSEvents + convert."""
     if not format and not convx_preset:
@@ -50,6 +52,12 @@ def build_convx_watch_cmd(
         cmd.extend(["--max-size", str(max_size)])
     if overwrite:
         cmd.append("--overwrite")
+    if passthru:
+        # The escape hatch a wrapper needs to not lag behind the tool it wraps.
+        # Anything ConvX grows later is usable the day it ships, without a
+        # release here first. Split with shlex and appended to argv — there is
+        # no shell in the chain, so this adds arguments, never a command.
+        cmd.extend(shlex.split(passthru))
     return cmd
 
 

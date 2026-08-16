@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--convx-bin", default=None, help="Path to convx")
     p.add_argument(
+        "--passthru",
+        default=None,
+        metavar="ARGS",
+        help='convx: extra args appended verbatim, e.g. --passthru "--new-flag 3"',
+    )
+    p.add_argument(
         "--ext",
         default=None,
         help="Extensions, or * (default: copy=mp4, unzip=zip)",
@@ -359,6 +365,7 @@ def build_action(
             # --recursive watch collapses same-stemmed archives onto each other
             # and then deletes both.
             src_root=src_root,
+            notify_on_done=getattr(args, "notify", True) and not dry,
         )
     raise SystemExit(f"error: unknown action {name!r}")
 
@@ -532,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
     max_size = args.max_size
     overwrite = args.overwrite
     convx_bin = args.convx_bin
+    passthru = args.passthru
     backend = args.backend
     debounce_ms = args.debounce_ms
     settle = args.settle
@@ -597,6 +605,9 @@ def main(argv: list[str] | None = None) -> int:
         if "--convx-bin" not in passed and cfg.get("convx_bin"):
             convx_bin = cfg["convx_bin"]
             args.convx_bin = convx_bin
+        if "--passthru" not in passed and cfg.get("passthru"):
+            passthru = cfg["passthru"]
+            args.passthru = passthru
         # Flags added after presets were designed. A watcher started with
         # --preset had no way to reach them at all, so safety options like
         # --no-clobber were unavailable to exactly the unattended runs that
@@ -634,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
     args.max_size = max_size
     args.overwrite = overwrite
     args.convx_bin = convx_bin
+    args.passthru = passthru
 
     # --- convx: pure wrapper (no folder-watch settle loop) ---
     if action_name == "convx":
@@ -680,6 +692,8 @@ def main(argv: list[str] | None = None) -> int:
                 convx_cfg["max_size"] = max_size
             if convx_bin:
                 convx_cfg["convx_bin"] = convx_bin
+            if passthru:
+                convx_cfg["passthru"] = passthru
             persist_preset(
                 args.save_preset, convx_cfg, argv=argv, loaded_preset=args.preset
             )
@@ -698,6 +712,7 @@ def main(argv: list[str] | None = None) -> int:
                 overwrite=overwrite,
                 filter_exts=filter_exts,
                 debounce_ms=debounce_ms,
+                passthru=passthru,
                 convx_bin=convx_bin,
             )
         except ValueError as e:

@@ -26,7 +26,7 @@ PRESET_KEYS = frozenset(
         "poll", "stable", "settle", "backend", "debounce_ms",
         "no_clobber", "create_dest", "exclusive", "no_done_store", "retry_hours",
         "format", "convx_preset", "convx_bin", "quality", "width", "fps",
-        "max_size", "overwrite",
+        "max_size", "overwrite", "passthru",
     }
 )
 
