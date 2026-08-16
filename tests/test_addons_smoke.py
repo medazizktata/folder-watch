@@ -343,7 +343,22 @@ def test_event_unzip(skip: bool) -> list[str]:
                 env=fw_env(),
                 start_new_session=True,
             )
-        time.sleep(0.5)
+        # Wait for the watcher to say it has finished seeding, rather than
+        # guessing how long that takes. A file that lands before the baseline
+        # scan is treated as already-present and skipped — correctly, that is
+        # what new-only means — so a slow start made a working watcher look
+        # broken. The convx case above waits on its banner for the same reason.
+        ready = time.time() + 20
+        while time.time() < ready:
+            if "baseline " in log.read_text():
+                break
+            time.sleep(0.05)
+        else:
+            _reap(p)
+            fails.append("event-unzip")
+            _fail(f"watcher never seeded a baseline log={log.read_text()[:400]}")
+            return fails
+
         z = inbox / "drop.zip"
         with zipfile.ZipFile(z, "w") as zf:
             zf.writestr("ok.txt", "event")
