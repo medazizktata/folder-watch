@@ -32,14 +32,32 @@ which is why the first entry covers so much ground.
   value came from. A preset defined in two files is merged and nothing said so.
 - `--help` is grouped by action instead of listing 45 flags in one block.
 
+### Fixed
+
+- **SIGTERM could orphan the pidfile it exists to manage.** `run_watch`
+  installs a handler turning SIGTERM into `SystemExit` precisely so the
+  `finally` clears the pidfile — but the write happened *before* that `try`,
+  so a signal arriving during it raised out of an uncovered frame and the file
+  survived the process. launchd stopping a service moments after starting it
+  lands exactly there, and `launchctl kickstart -k` does it by construction.
+  Reproduced 10/10, now 0/10.
+- **Crash debris was mistaken for a done-store.** The unpublished temp from a
+  save was named `done-XXXXXX.json` and `prune` globs `done-*.json`, so a
+  process killed mid-write left a file the next tidy-up read as somebody's
+  store. Temps are now `.json.tmp`, skipped by that glob, and `prune` removes
+  them as the debris they are. Same for the retry queue.
+
 ### Testing
 
-- **Crash recovery**: a watcher is now killed with SIGKILL mid-copy and
-  mid-extract, asserting no half-written destination, an untouched source, the
-  archive kept, and a clean recovery on re-run. The first version killed on the
-  *appearance* of a temp file, which is before any bytes move — mutation
-  testing showed it caught neither a non-atomic copy nor an archive deleted
-  before extraction.
+- **Crash recovery**, 21 tests. A watcher is killed with SIGKILL mid-copy and
+  mid-extract, plus surgical kill points a poll cannot aim at: between
+  `extractall` and the archive being deleted, and between the bytes landing and
+  the done-store recording them — where an inverted statement order would mark
+  a file done that was never copied. Also covers state files staying valid JSON
+  across a crash mid-write, finished files surviving while only the in-flight
+  one is lost, three crash/restart cycles converging, and SIGTERM differing
+  from SIGKILL in exactly one visible way. Both fixes above were found here,
+  and each was verified by putting the bug back.
 
 ## [0.2.2] - 2026-08-16
 

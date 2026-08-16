@@ -81,7 +81,7 @@ class RetryQueue:
         payload = {"version": 1, "entries": self._data}
         text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         fd, tmp = tempfile.mkstemp(
-            prefix="retry-", suffix=".json", dir=str(self.path.parent)
+            prefix="retry-", suffix=".json.tmp", dir=str(self.path.parent)
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:

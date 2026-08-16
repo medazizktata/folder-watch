@@ -284,3 +284,414 @@ class TestKilledMidUnzip(CrashCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def child_script(body: str) -> str:
+    """A standalone program that crashes itself at a chosen instant.
+
+    Polling for a temp file catches the middle of the data phase, which is the
+    common case but not the interesting one. The windows that actually decide
+    whether work is lost are single statements wide — between the bytes
+    landing and the done-store recording it, between an archive being
+    extracted and being deleted — and no amount of polling from outside can
+    aim at those. Patching the exact call and killing inside it can.
+
+    SIGKILL rather than an exception, because an exception is a failure the
+    code gets to handle and this is deliberately not that.
+    """
+    preamble = (
+        "import os, signal, sys\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        f"sys.path.insert(0, {str(ROOT / 'tests')!r})\n"
+        "import _isolate\n"
+        "def die():\n"
+        "    sys.stdout.flush()\n"
+        "    os.kill(os.getpid(), signal.SIGKILL)\n"
+    )
+    return preamble + body
+
+
+class SurgicalCase(CrashCase):
+    def run_child(self, body: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-c", child_script(body)],
+            capture_output=True,
+            text=True,
+            env=dict(os.environ),
+            check=False,
+        )
+
+    def assertKilled(self, done: subprocess.CompletedProcess) -> None:
+        self.assertEqual(
+            done.returncode,
+            -signal.SIGKILL,
+            f"child did not die where expected: rc={done.returncode} {done.stderr[:300]}",
+        )
+
+
+class TestCrashBetweenExtractAndDelete(SurgicalCase):
+    """The window where the archive has been read but not yet earned deletion.
+
+    This is the one that would lose a client delivery: the members are on disk,
+    the verification has not run, and the archive is the only complete copy of
+    the content. Nothing may delete it before the check passes.
+    """
+
+    def make_archive(self) -> Path:
+        z = self.src / "delivery.zip"
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("asset.mov", os.urandom(1 << 20))
+            zf.writestr("notes.txt", b"second member")
+        return z
+
+    def test_the_archive_survives_a_crash_right_after_extraction(self):
+        z = self.make_archive()
+
+        done = self.run_child(
+            "import zipfile\n"
+            "from pathlib import Path\n"
+            "from folder_watch.actions.unzip import UnzipAction\n"
+            "real = zipfile.ZipFile.extractall\n"
+            "def boom(self, path=None, **kw):\n"
+            "    real(self, path, **kw)\n"
+            "    die()\n"          # extracted, not yet verified or deleted
+            "zipfile.ZipFile.extractall = boom\n"
+            f"UnzipAction(mode='named', notify_on_done=False).run(Path({str(z)!r}))\n"
+        )
+
+        self.assertKilled(done)
+        self.assertTrue(z.is_file(), "the archive was lost in the unverified window")
+        self.assertTrue(zipfile.is_zipfile(z))
+
+    def test_the_half_state_is_not_mistaken_for_finished(self):
+        from folder_watch.actions.unzip import UnzipAction
+
+        z = self.make_archive()
+        self.run_child(
+            "import zipfile\n"
+            "from pathlib import Path\n"
+            "from folder_watch.actions.unzip import UnzipAction\n"
+            "real = zipfile.ZipFile.extractall\n"
+            "def boom(self, path=None, **kw):\n"
+            "    # die partway: the directory exists, the members do not all\n"
+            "    Path(path).mkdir(parents=True, exist_ok=True)\n"
+            "    die()\n"
+            "zipfile.ZipFile.extractall = boom\n"
+            f"UnzipAction(mode='named', notify_on_done=False).run(Path({str(z)!r}))\n"
+        )
+
+        action = UnzipAction(mode="named", notify_on_done=False)
+        self.assertIs(action.output_exists(z), False)
+
+    def test_a_rerun_finishes_the_job(self):
+        z = self.make_archive()
+        self.run_child(
+            "import zipfile\n"
+            "from pathlib import Path\n"
+            "from folder_watch.actions.unzip import UnzipAction\n"
+            "real = zipfile.ZipFile.extractall\n"
+            "def boom(self, path=None, **kw):\n"
+            "    real(self, path, **kw)\n"
+            "    die()\n"
+            "zipfile.ZipFile.extractall = boom\n"
+            f"UnzipAction(mode='named', notify_on_done=False).run(Path({str(z)!r}))\n"
+        )
+
+        subprocess.run(
+            [sys.executable, "-m", "folder_watch", "unzip", str(self.src),
+             "--mode", "named", "--once", "--catch-up", "--no-done-store", "--no-notify"],
+            capture_output=True, env=dict(os.environ), check=False,
+        )
+
+        target = self.src / "delivery"
+        self.assertTrue((target / "asset.mov").is_file())
+        self.assertTrue((target / "notes.txt").is_file())
+        self.assertFalse(z.exists(), "verified content should retire the archive")
+
+
+class TestCrashBetweenCopyAndRecord(SurgicalCase):
+    """Between the bytes landing and the done-store admitting it.
+
+    Getting this order wrong the other way round — record first, copy second —
+    would mean a crash here marks a file done that was never copied, and no
+    later scan ever looks at it again. That is silent, permanent data loss,
+    and the only thing standing between it and the user is the statement
+    order in apply_action.
+    """
+
+    def test_a_file_recorded_but_not_copied_is_impossible(self):
+        from folder_watch.support.state import DoneStore
+
+        src = self.make_payload("clip.mp4")
+        store_path = self.tmp / "done.json"
+
+        done = self.run_child(
+            "from pathlib import Path\n"
+            "import folder_watch.core.watch as watch\n"
+            "import folder_watch.actions.copy as cmod\n"
+            "from folder_watch.actions.copy import CopyAction\n"
+            "from folder_watch.support.state import DoneStore\n"
+            "real = cmod.atomic_copy\n"
+            "def boom(s, d, **kw):\n"
+            "    real(s, d, **kw)\n"
+            "    die()\n"          # copied; done-store not yet written
+            "cmod.atomic_copy = boom\n"
+            f"store = DoneStore(Path({str(store_path)!r}))\n"
+            f"action = CopyAction(Path({str(self.dest)!r}), notify_on_done=False)\n"
+            f"watch.apply_action(Path({str(src)!r}), action, state={{}},\n"
+            "                   stable_needed=1, done_store=store)\n"
+        )
+
+        self.assertKilled(done)
+        self.assertTrue((self.dest / src.name).is_file(), "the copy did not land")
+        store = DoneStore(store_path)
+        self.assertEqual(
+            len(store), 0, "a crash left the file marked done outside apply_action"
+        )
+
+    def test_the_rerun_is_idempotent(self):
+        """Redoing a copy that already landed is harmless; skipping one that
+        did not is not. The order chooses the harmless failure."""
+        src = self.make_payload("clip.mp4")
+
+        subprocess.run(
+            [sys.executable, "-m", "folder_watch", "copy", str(self.src),
+             "--to", str(self.dest), "--once", "--catch-up", "--min-bytes", "1",
+             "--no-notify", "--no-done-store"],
+            capture_output=True, env=dict(os.environ), check=False,
+        )
+
+        self.assertEqual((self.dest / src.name).read_bytes(), src.read_bytes())
+
+
+class TestStateFilesSurviveACrash(SurgicalCase):
+    """A corrupt done-store or retry queue would poison every later run.
+
+    Both are written with mkstemp + fsync + os.replace, so a crash mid-write
+    leaves the previous file intact and the new one unpublished. Worth
+    asserting, because "it was atomic" is the kind of claim that quietly stops
+    being true.
+    """
+
+    def test_the_done_store_is_still_valid_json_after_a_crash_mid_write(self):
+        import json
+
+        store_path = self.tmp / "done.json"
+        done = self.run_child(
+            "import os\n"
+            "from pathlib import Path\n"
+            "from folder_watch.support.state import DoneStore\n"
+            f"store = DoneStore(Path({str(store_path)!r}))\n"
+            "store.mark('first|a|b|c|1|2', name='a.mp4', result='copied')\n"
+            "real = os.replace\n"
+            "def boom(a, b):\n"
+            "    die()\n"          # temp written and fsynced; never published
+            "os.replace = boom\n"
+            "store.mark('second|a|b|c|3|4', name='b.mp4', result='copied')\n"
+        )
+
+        self.assertKilled(done)
+        self.assertTrue(store_path.is_file(), "the previous store vanished")
+        data = json.loads(store_path.read_text())
+        self.assertIn("entries", data)
+        self.assertEqual(len(data["entries"]), 1, "an unpublished write leaked in")
+
+    def test_the_retry_queue_is_still_valid_json_after_a_crash_mid_write(self):
+        import json
+
+        queue_path = self.tmp / "retry.json"
+        src = self.make_payload("clip.mp4")
+        done = self.run_child(
+            "import os\n"
+            "from pathlib import Path\n"
+            "from folder_watch.support.retry import RetryQueue\n"
+            f"q = RetryQueue(Path({str(queue_path)!r}))\n"
+            f"q.schedule(Path({str(src)!r}), action='copy', reason='transient',\n"
+            "           size=1, mtime_ns=2)\n"
+            "real = os.replace\n"
+            "def boom(a, b):\n"
+            "    die()\n"
+            "os.replace = boom\n"
+            f"q.schedule(Path({str(src)!r}), action='copy', reason='transient',\n"
+            "           size=9, mtime_ns=9)\n"
+        )
+
+        self.assertKilled(done)
+        data = json.loads(queue_path.read_text())
+        self.assertEqual(len(data["entries"]), 1)
+
+    def test_crash_debris_is_not_mistaken_for_a_store(self):
+        """The unpublished temp used to be named done-XXXX.json, which is
+        exactly what prune globs for. So a process killed mid-save left behind
+        a file that the next prune read as somebody's done-store and tidied as
+        one. Naming it .json.tmp is what keeps the two apart."""
+        from folder_watch.support.state import DoneStore
+
+        store_path = self.tmp / "done.json"
+        self.run_child(
+            "import os\n"
+            "from pathlib import Path\n"
+            "from folder_watch.support.state import DoneStore\n"
+            f"store = DoneStore(Path({str(store_path)!r}))\n"
+            "real = os.replace\n"
+            "def boom(a, b):\n"
+            "    die()\n"
+            "os.replace = boom\n"
+            "store.mark('k|a|b|c|1|2', name='a.mp4', result='copied')\n"
+        )
+
+        debris = [p for p in self.tmp.iterdir() if p.name.startswith("done-")]
+        self.assertTrue(debris, "expected the unpublished temp to remain")
+        for p in debris:
+            self.assertTrue(
+                p.name.endswith(".json.tmp"),
+                f"{p.name} would be globbed as a real store",
+            )
+        self.assertEqual(len(DoneStore(store_path)), 0)
+
+
+class TestManyFilesInFlight(CrashCase):
+    """A crash must cost at most the file being written, never the ones
+    already finished."""
+
+    def test_finished_files_survive_and_only_the_in_flight_one_is_missing(self):
+        for i in range(6):
+            (self.src / f"clip{i}.mp4").write_bytes(os.urandom(1 << 20) * 2)
+
+        self.start(
+            "copy", str(self.src), "--to", str(self.dest),
+            "--once", "--catch-up", "--no-done-store", "--min-bytes", "1",
+        )
+        # Kill once a couple have landed, so there is finished work to lose.
+        caught = self.kill_when(
+            lambda: len(list(self.dest.glob("clip*.mp4"))) >= 2 and self.copy_in_flight()
+        )
+        self.assertTrue(caught, "never caught it with work both done and in flight")
+
+        landed = sorted(self.dest.glob("clip*.mp4"))
+        self.assertGreaterEqual(len(landed), 2)
+        for f in landed:
+            self.assertEqual(
+                f.read_bytes(), (self.src / f.name).read_bytes(),
+                f"{f.name} was finished before the crash but is corrupt",
+            )
+
+    def test_a_rerun_completes_every_file(self):
+        for i in range(6):
+            (self.src / f"clip{i}.mp4").write_bytes(os.urandom(1 << 20) * 2)
+
+        self.start(
+            "copy", str(self.src), "--to", str(self.dest),
+            "--once", "--catch-up", "--no-done-store", "--min-bytes", "1",
+        )
+        self.kill_when(self.copy_in_flight)
+
+        subprocess.run(
+            [sys.executable, "-m", "folder_watch", "copy", str(self.src),
+             "--to", str(self.dest), "--once", "--catch-up", "--no-done-store",
+             "--min-bytes", "1", "--no-notify"],
+            capture_output=True, env=dict(os.environ), check=False,
+        )
+
+        for i in range(6):
+            name = f"clip{i}.mp4"
+            self.assertEqual(
+                (self.dest / name).read_bytes(), (self.src / name).read_bytes(), name
+            )
+        # The crash temp is deliberately spared: it is younger than the sweep
+        # threshold, and a fresh temp can belong to a copy still running.
+        self.assertLessEqual(len(self.temps()), 1)
+
+
+class TestRepeatedCrashes(CrashCase):
+    """Crash, restart, crash, restart. State has to converge, not accumulate."""
+
+    def test_three_crashes_still_end_with_a_correct_copy(self):
+        src = self.make_payload("clip.mp4")
+
+        for _ in range(3):
+            self.start(
+                "copy", str(self.src), "--to", str(self.dest),
+                "--once", "--catch-up", "--min-bytes", "1",
+            )
+            self.kill_when(self.copy_in_flight)
+
+        final = subprocess.run(
+            [sys.executable, "-m", "folder_watch", "copy", str(self.src),
+             "--to", str(self.dest), "--once", "--catch-up", "--min-bytes", "1",
+             "--no-notify"],
+            capture_output=True, text=True, env=dict(os.environ), check=False,
+        )
+
+        self.assertEqual(final.returncode, 0, final.stdout + final.stderr)
+        self.assertEqual((self.dest / src.name).read_bytes(), src.read_bytes())
+
+    def test_the_temps_do_not_pile_up_unboundedly(self):
+        """Each crash leaves one. They are swept by age, so the count should
+        track the crashes rather than the runs."""
+        self.make_payload("clip.mp4")
+
+        for _ in range(3):
+            self.start(
+                "copy", str(self.src), "--to", str(self.dest),
+                "--once", "--catch-up", "--no-done-store", "--min-bytes", "1",
+            )
+            self.kill_when(self.copy_in_flight)
+
+        self.assertLessEqual(len(self.temps()), 3)
+        for t in self.temps():
+            self.assertTrue(t.name.startswith("."), "a leftover is not hidden")
+
+
+class TestSignalsComparedToCrashes(CrashCase):
+    """SIGTERM is a request; SIGKILL is not. They should differ in exactly one
+    visible way — whether the process got to tidy up after itself."""
+
+    def watcher(self) -> subprocess.Popen:
+        return self.start(
+            "copy", str(self.src), "--to", str(self.dest),
+            "--backend", "poll", "--poll", "0.2", "--min-bytes", "1",
+            "--no-done-store",
+        )
+
+    def pidfiles(self) -> list[Path]:
+        from folder_watch.support.paths import PID_DIR
+
+        return list(PID_DIR.glob("copy-src.*.json"))
+
+    def wait_for(self, condition, timeout=20.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if condition():
+                return True
+        return False
+
+    def test_sigterm_lets_the_watcher_clear_its_pidfile(self):
+        for p in self.pidfiles():
+            p.unlink(missing_ok=True)
+        proc = self.watcher()
+        self.assertTrue(self.wait_for(lambda: bool(self.pidfiles())), "no pidfile")
+
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=15)
+
+        self.assertTrue(
+            self.wait_for(lambda: not self.pidfiles(), 10),
+            "SIGTERM left a stale pidfile — the handler did not unwind",
+        )
+
+    def test_sigkill_leaves_one_for_prune_to_find(self):
+        for p in self.pidfiles():
+            p.unlink(missing_ok=True)
+        proc = self.watcher()
+        self.assertTrue(self.wait_for(lambda: bool(self.pidfiles())), "no pidfile")
+
+        proc.send_signal(signal.SIGKILL)
+        proc.wait(timeout=15)
+
+        self.assertTrue(self.pidfiles(), "expected a stale pidfile after SIGKILL")
+        subprocess.run(
+            [sys.executable, "-m", "folder_watch", "prune", "--yes"],
+            capture_output=True, env=dict(os.environ), check=False,
+        )
+        self.assertEqual(self.pidfiles(), [], "prune did not clear it")

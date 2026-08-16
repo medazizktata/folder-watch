@@ -1183,19 +1183,25 @@ def run_watch(
             prev_term = signal.signal(signal.SIGTERM, _on_term)
         except ValueError:
             prev_term = None  # not the main thread; nothing to install
-        write_pidfile(
-            name,
-            {
-                "name": name,
-                "preset": preset,
-                "src": str(src_dir),
-                "action": action.name,
-                "to": to,
-                "log": str(log_path) if log_path else None,
-            },
-        )
 
     try:
+        # Inside the try, not before it. The handler above turns SIGTERM into
+        # SystemExit, and a signal arriving *during* this write — launchd
+        # stopping a service moments after starting it — raised out of a frame
+        # the cleanup below did not cover, orphaning the very pidfile it was
+        # written to manage. The window is small and entirely reproducible.
+        if not once and not dry_run:
+            write_pidfile(
+                name,
+                {
+                    "name": name,
+                    "preset": preset,
+                    "src": str(src_dir),
+                    "action": action.name,
+                    "to": to,
+                    "log": str(log_path) if log_path else None,
+                },
+            )
         if once:
             state: dict[str, dict] = {}
             failures = scan_once(

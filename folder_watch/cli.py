@@ -545,7 +545,13 @@ def run_prune_cli(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     dry = not args.yes
 
-    stores = sorted(STATE_DIR.glob("done-*.json"))
+    # ".json" not ".json.tmp": a crash during a save leaves an unpublished
+    # temp beside the real file, and it used to match this glob — so prune
+    # read somebody's half-written debris as a store and tidied it as one.
+    stores = sorted(
+        p for p in STATE_DIR.glob("done-*.json") if not p.name.endswith(".json.tmp")
+    )
+    orphan_temps = sorted(STATE_DIR.glob("*.json.tmp"))
     dropped_entries = 0
     emptied: list[Path] = []
     for path in stores:
@@ -571,6 +577,16 @@ def run_prune_cli(argv: list[str]) -> int:
         print(f"  {verb} {len(emptied)} store file(s) left with nothing in them:")
         for p in emptied:
             print(f"    {p.name}")
+    if orphan_temps:
+        # Left by a process killed mid-save. The real file is intact — this is
+        # the copy that never got published — so it is pure debris.
+        print(f"  {verb} {len(orphan_temps)} unpublished temp file(s) from a crash")
+        for t in orphan_temps:
+            if not dry:
+                try:
+                    t.unlink(missing_ok=True)
+                except OSError:
+                    pass
     print(f"pidfiles: {verb} {len(pidfiles)} stale")
     for p in pidfiles:
         print(f"    {p.name}")
