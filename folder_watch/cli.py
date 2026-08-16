@@ -589,6 +589,10 @@ def main(argv: list[str] | None = None) -> int:
     debounce_ms = args.debounce_ms
     settle = args.settle
     recursive = args.recursive
+    # Which keys the preset itself defined, as opposed to what a flag default
+    # left in place. --once needs the difference: a preset is configuration the
+    # user wrote down, not a default to be overridden.
+    preset_supplied: set[str] = set()
 
     if args.preset:
         if args.preset not in presets:
@@ -596,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
             print("known:", ", ".join(presets) or "(none)", file=sys.stderr)
             return 2
         cfg = presets[args.preset]
+        preset_supplied = set(cfg)
         action_name = action_name or cfg.get("action", "copy")
         if src is None and cfg.get("src"):
             src = Path(cfg["src"])
@@ -833,10 +838,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.once:
         # --once used to hardcode these while the start line printed the
         # user's values as if they were in effect. Keep the fast defaults,
-        # but honour whatever was actually passed.
-        if "--stable" not in passed:
+        # but honour whatever was actually specified — which includes a
+        # preset, not just the command line. Both of these decide when a file
+        # counts as finished, so a preset raising them because that encoder
+        # needs it must not be quietly dropped for a single pass.
+        if "--stable" not in passed and "stable" not in preset_supplied:
             stable = 1
-        if "--settle" not in passed:
+        if "--settle" not in passed and "settle" not in preset_supplied:
             settle = 0.05
 
     if args.pending:

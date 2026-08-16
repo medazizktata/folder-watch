@@ -11,30 +11,38 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterable
 
+from folder_watch.cli import build_parser
 from folder_watch.cli import main as fw_main
 
 # Flags that folder-watch itself handles; hand the whole argv over untouched.
 PASSTHROUGH = ("--list-presets", "--list-actions", "--preset")
 
-# Every folder-watch flag that takes a value. A flag missing here has its
-# value mistaken for a positional and the shim errors with "unexpected [...]"
-# — which is what happened to --log, --retries and --log-level.
-_SHARED_VALUE_FLAGS = frozenset(
-    {"--ext", "--poll", "--stable", "--min-bytes", "--save-preset",
-     "--backend", "--debounce", "--settle", "--log", "--log-level",
-     "--retries", "--retry-hours", "--to", "--mode",
-     # exec has no shim of its own — `folder-watch exec SRC --cmd …` needs no
-     # rearranging — but the parser is shared, so its flags still have to be
-     # declared here or their values would be read as positionals.
-     "--cmd", "--exec-timeout"}
-)
-COPY_VALUE_FLAGS = _SHARED_VALUE_FLAGS
-UNZIP_VALUE_FLAGS = _SHARED_VALUE_FLAGS
-CONVX_VALUE_FLAGS = frozenset(
-    {"--ext", "--format", "--convx-preset", "--quality", "--width", "--fps",
-     "--max-size", "--convx-bin", "--debounce", "--save-preset",
-     "--log", "--log-level", "--passthru"}
-)
+
+def _value_flags() -> frozenset[str]:
+    """Which flags take a value — asked of the parser, not remembered.
+
+    A flag missing from this set has its value read as a positional, so the
+    shim rejects a perfectly good command line with "unexpected [...]". That
+    happened to --log, --retries and --log-level, and a guard test caught
+    --cmd and --exec-timeout the same way later. A guard that reports drift
+    still needs someone to go and fix it; deriving the answer means there is
+    no second list to drift from.
+
+    argparse already knows: everything that consumes no argument — store_true,
+    the boolean pairs, --help, --version — declares nargs=0.
+    """
+    return frozenset(
+        opt
+        for action in build_parser()._actions
+        for opt in action.option_strings
+        if action.nargs != 0
+    )
+
+
+# One set for every shim. The parser is shared, so a convx flag passed to
+# watch-copy is now rejected by argparse with a real message, instead of being
+# silently mis-split into a bogus positional first.
+VALUE_FLAGS = _value_flags()
 
 
 def _is_passthrough(argv: Iterable[str]) -> bool:
@@ -78,7 +86,7 @@ def copy_main(argv: list[str] | None = None) -> int:
         return 0
     if _is_passthrough(argv):
         return fw_main(argv)
-    positional, flags = _split(argv, COPY_VALUE_FLAGS)
+    positional, flags = _split(argv, VALUE_FLAGS)
     if len(positional) < 2:
         print("usage: watch-copy SRC DEST [options]", file=sys.stderr)
         return 2
@@ -99,7 +107,7 @@ def unzip_main(argv: list[str] | None = None) -> int:
         return 0
     if _is_passthrough(argv):
         return fw_main(argv)
-    positional, flags = _split(argv, UNZIP_VALUE_FLAGS)
+    positional, flags = _split(argv, VALUE_FLAGS)
     if len(positional) != 1:
         print("usage: watch-unzip SRC [options]", file=sys.stderr)
         return 2
@@ -117,7 +125,7 @@ def convx_main(argv: list[str] | None = None) -> int:
         return 0
     if _is_passthrough(argv):
         return fw_main(argv)
-    positional, flags = _split(argv, CONVX_VALUE_FLAGS)
+    positional, flags = _split(argv, VALUE_FLAGS)
     if len(positional) != 1:
         print(
             "usage: watch-convx SRC --format EXT [--ext png,jpg] [options]",

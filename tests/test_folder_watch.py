@@ -1584,6 +1584,181 @@ class TestPresetCoverage(unittest.TestCase):
             "NOT_PERSISTED:\n  " + "\n  ".join(unclassified),
         )
 
+    def test_every_preset_key_is_actually_read_when_loading(self):
+        """Classification is not wiring, and only one of them was checked.
+
+        The sibling test asserts each flag is listed in PRESET_KEYS or
+        NOT_PERSISTED — its own failure message even says "(and wire it in
+        cli.py)" — but nothing confirmed that second half ever happened. A key
+        could be added to PRESET_KEYS, turn the test green, and still be
+        ignored at load time: exactly the --no-clobber bug the guard was
+        written for, which worked on the command line and did nothing from a
+        preset.
+
+        So read the loader instead of trusting it, and ask which keys it
+        actually takes off `cfg`.
+        """
+        import ast
+
+        from folder_watch.presets import PRESET_KEYS
+
+        source = (ROOT / "folder_watch" / "cli.py").read_text()
+        block = self._preset_block(ast.parse(source))
+        self.assertIsNotNone(block, "could not find the `if args.preset:` block")
+
+        read = self._cfg_keys_read(block)
+        # src and action are resolved by different names above the branch.
+        unread = sorted(PRESET_KEYS - read - {"src", "action"})
+
+        self.assertEqual(
+            unread,
+            [],
+            "preset key(s) declared but never read when a preset is loaded — "
+            "a preset setting them would be silently ignored: " + ", ".join(unread),
+        )
+
+    def test_the_loader_reads_nothing_it_has_not_declared(self):
+        """The other direction: a key read but not in PRESET_KEYS works, yet
+        load_presets warns "unknown key" about it every single run."""
+        import ast
+
+        from folder_watch.presets import PRESET_KEYS
+
+        source = (ROOT / "folder_watch" / "cli.py").read_text()
+        block = self._preset_block(ast.parse(source))
+        undeclared = sorted(self._cfg_keys_read(block) - PRESET_KEYS)
+
+        self.assertEqual(undeclared, [], f"read but not declared: {undeclared}")
+
+    @staticmethod
+    def _preset_block(tree):
+        """The `if args.preset:` body in main(), where a preset is applied."""
+        import ast
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test = node.test
+            if (
+                isinstance(test, ast.Attribute)
+                and test.attr == "preset"
+                and isinstance(test.value, ast.Name)
+                and test.value.id == "args"
+            ):
+                return node
+        return None
+
+    @staticmethod
+    def _cfg_keys_read(block) -> set[str]:
+        """Keys the block takes off `cfg`, however it spells the access."""
+        import ast
+
+        found: set[str] = set()
+        for node in ast.walk(block):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "cfg"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                found.add(node.args[0].value)
+            elif (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "cfg"
+                and isinstance(node.slice, ast.Constant)
+            ):
+                found.add(node.slice.value)
+            # The ("--flag", "key") pairs the late-added flags loop over.
+            elif (
+                isinstance(node, ast.Tuple)
+                and len(node.elts) == 2
+                and all(
+                    isinstance(e, ast.Constant) and isinstance(e.value, str)
+                    for e in node.elts
+                )
+                and node.elts[0].value.startswith("--")
+            ):
+                found.add(node.elts[1].value)
+        return found
+
+    def test_preset_values_reach_a_real_run(self):
+        """End to end through the actual CLI, not a copy of its logic.
+
+        The static guard above proves each key is read. This proves reading it
+        has the effect it claims — every value here is deliberately different
+        from the flag default, so a key that quietly fell through would report
+        the default and fail.
+        """
+        import json
+        import os
+        import subprocess
+
+        cfg_dir = Path(os.environ["FOLDER_WATCH_CONFIG_DIR"])
+        presets_path = cfg_dir / "presets.json"
+        before = presets_path.read_text() if presets_path.is_file() else None
+
+        src = self.tmp / "watched"
+        dest = self.tmp / "out"
+        src.mkdir()
+        dest.mkdir()
+        wanted = {
+            "action": "copy",
+            "src": str(src),
+            "to": str(dest),
+            "ext": ["mov"],
+            "backend": "poll",
+            "debounce_ms": 750,
+            "stable": 7,
+            "settle": 1.25,
+            "min_bytes": 4242,
+            "recursive": True,
+        }
+        existing = json.loads(before) if before else {}
+        existing["roundtrip-probe"] = wanted
+        presets_path.write_text(json.dumps(existing))
+
+        try:
+            run = subprocess.run(
+                [
+                    sys.executable, "-m", "folder_watch",
+                    "--preset", "roundtrip-probe", "--once", "--json",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+                check=False,
+            )
+        finally:
+            if before is None:
+                presets_path.unlink(missing_ok=True)
+            else:
+                presets_path.write_text(before)
+
+        start = next(
+            (
+                json.loads(line)
+                for line in run.stdout.splitlines()
+                if line.startswith("{") and '"event": "start"' in line
+            ),
+            None,
+        )
+        self.assertIsNotNone(start, f"no start line:\n{run.stdout}\n{run.stderr}")
+
+        self.assertEqual(Path(start["src"]), src.resolve())
+        self.assertEqual(start["ext"], ["mov"])
+        self.assertEqual(start["backend"], "poll")
+        self.assertEqual(start["debounce_ms"], 750)
+        self.assertEqual(start["stable"], 7)
+        self.assertEqual(start["settle"], 1.25)
+        self.assertEqual(start["min_bytes"], 4242)
+        self.assertIs(start["recursive"], True)
+        # `to` only shows up through the action's own description.
+        self.assertIn(str(dest), start["action"])
+
     def test_no_stale_entries(self):
         """A key nothing can set is dead weight that still silences a warning."""
         from folder_watch.cli import build_parser
@@ -1668,7 +1843,16 @@ class TestPresetCarriesSafetyFlags(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _args(self, cfg: dict, argv: list[str]):
-        """Resolve a preset the way main() does, without running a watcher."""
+        """Resolve a preset the way main() does, without running a watcher.
+
+        This mirrors cli.py rather than calling it, so on its own it would
+        prove only that the copy agrees with itself. What makes it worth
+        keeping is what comes after: build_action below is the real thing, so
+        this covers args -> action. The two halves either side are covered
+        elsewhere — TestPresetCoverage reads cli.py to prove every key is
+        actually taken off cfg, and runs one preset end to end through the
+        CLI. Do not grow this helper; grow that round-trip.
+        """
         import argparse
 
         from folder_watch.cli import build_parser

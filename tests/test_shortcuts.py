@@ -69,38 +69,69 @@ class TestCopyShim(ShimCase):
             ],
         )
 
-    def test_every_value_taking_flag_is_declared(self):
-        """Guards the list against drift: argparse knows which flags take a
-        value, so ask it rather than trusting the frozenset to stay in step."""
-        import argparse
+    def test_no_flag_value_is_ever_read_as_a_positional(self):
+        """The property itself, over every flag the parser has.
 
+        This used to assert that a hand-written frozenset agreed with the
+        parser, which caught drift but still left someone to go and fix it —
+        and it only ever compared lists, never behaviour. The shim now derives
+        the set from the parser, so the thing worth checking is the outcome:
+        whatever the flag, the two positionals still arrive as two positionals.
+        """
+        for flag in sorted(shortcuts.VALUE_FLAGS):
+            if flag == "--preset":
+                continue  # handled earlier as a passthrough; never split
+            with self.subTest(flag=flag):
+                self.seen.clear()
+                rc, _out, err = self.run_shim(
+                    shortcuts.copy_main, ["./Out", "./Drive", flag, "VALUE"]
+                )
+                self.assertEqual(rc, 0, f"{flag} broke the split: {err}")
+                built = self.built()
+                self.assertEqual(built[:4], ["copy", "./Out", "--to", "./Drive"])
+                self.assertEqual(built[-2:], [flag, "VALUE"])
+
+    def test_a_boolean_flag_does_not_swallow_the_next_word(self):
+        """The mirror image: nargs=0 flags must not eat a positional."""
         from folder_watch.cli import build_parser
 
-        parser = build_parser()
-        needs_value = {
-            opt
-            for action in parser._actions
-            for opt in action.option_strings
-            if not isinstance(
-                action,
-                (
-                    argparse._StoreTrueAction,
-                    argparse._StoreFalseAction,
-                    argparse._HelpAction,
-                    argparse._StoreConstAction,
-                ),
-            )
-            and action.nargs != 0
-        }
-        # convx-only flags live in their own set; --preset is handled earlier,
-        # as a passthrough, so it never reaches the splitter.
-        shared = needs_value - shortcuts.CONVX_VALUE_FLAGS - {"--preset"}
-
-        self.assertEqual(
-            shared - shortcuts.COPY_VALUE_FLAGS,
-            set(),
-            "a flag that takes a value would have it read as a positional",
+        booleans = sorted(
+            {
+                opt
+                for action in build_parser()._actions
+                for opt in action.option_strings
+                if action.nargs == 0
+                and opt not in ("-h", "--help", "--version")
+                # These hand the whole argv over untouched by design, so there
+                # is no rearrangement to check.
+                and opt not in shortcuts.PASSTHROUGH
+            }
         )
+        self.assertTrue(booleans, "no boolean flags found — the probe is wrong")
+
+        for flag in booleans:
+            with self.subTest(flag=flag):
+                self.seen.clear()
+                rc, _out, _err = self.run_shim(
+                    shortcuts.copy_main, [flag, "./Out", "./Drive"]
+                )
+                self.assertEqual(rc, 0)
+                self.assertEqual(
+                    self.built()[:4], ["copy", "./Out", "--to", "./Drive"]
+                )
+
+    def test_the_value_flags_come_from_the_parser(self):
+        """Derived, not remembered — so there is no second list to drift."""
+        from folder_watch.cli import build_parser
+
+        expected = {
+            opt
+            for action in build_parser()._actions
+            for opt in action.option_strings
+            if action.nargs != 0
+        }
+
+        self.assertEqual(set(shortcuts.VALUE_FLAGS), expected)
 
     def test_a_valueless_form_needs_no_help(self):
         """argparse splits --flag=value itself."""

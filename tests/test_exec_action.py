@@ -22,7 +22,6 @@ sys.path.insert(0, str(ROOT))
 import _isolate  # noqa: F401  (must precede folder_watch — redirects state)
 from _loopharness import captured, count, fields
 
-import folder_watch.actions.exec_cmd as exec_mod
 import folder_watch.core.watch as watch_mod
 from folder_watch.actions.exec_cmd import EX_TEMPFAIL, ExecAction
 from folder_watch.support.retry import RetryQueue
@@ -51,7 +50,7 @@ class ExecCase(unittest.TestCase):
         return f
 
     def run_action(self, action, path):
-        with captured(exec_mod) as log:
+        with captured() as log:
             result = action.run(path)
         return result, log
 
@@ -249,7 +248,7 @@ class TestThroughTheWatchLoop(ExecCase):
         retries = RetryQueue(self.tmp / "retry.json")
         action = ExecAction(script(f"import sys; sys.exit({EX_TEMPFAIL})"))
 
-        with captured(exec_mod) as log:
+        with captured() as log:
             result = watch_mod.apply_action(
                 f, action, state={}, stable_needed=1, retries=retries
             )
@@ -264,7 +263,7 @@ class TestThroughTheWatchLoop(ExecCase):
         f = self.make_file()
         action = ExecAction(script("pass"))
 
-        with captured(exec_mod) as log:
+        with captured() as log:
             watch_mod.apply_action(f, action, state={}, stable_needed=1)
 
         self.assertEqual(count(log, "ran"), 1)
@@ -276,7 +275,7 @@ class TestThroughTheWatchLoop(ExecCase):
         action = ExecAction(script("pass"), dry_run=True)
         state: dict[str, dict] = {}
 
-        with captured(exec_mod):
+        with captured():
             watch_mod.apply_action(
                 f, action, state=state, stable_needed=1, done_store=store
             )
@@ -290,7 +289,7 @@ class TestThroughTheWatchLoop(ExecCase):
         action = ExecAction(script("import time; open('runs','a').write('.')"))
         state: dict[str, dict] = {}
 
-        with captured(exec_mod):
+        with captured():
             for _ in range(3):
                 watch_mod.apply_action(
                     f, action, state=state, stable_needed=1, done_store=store
@@ -304,7 +303,7 @@ class TestThroughTheWatchLoop(ExecCase):
         first = ExecAction(script("open('a','w').write('x')"))
         second = ExecAction(script("open('b','w').write('x')"))
 
-        with captured(exec_mod):
+        with captured():
             watch_mod.apply_action(
                 f, first, state={}, stable_needed=1, done_store=store
             )

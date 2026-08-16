@@ -15,6 +15,24 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Changed
+
+- **`--once` now honours `--stable` and `--settle` set in a preset**, not only
+  on the command line. It kept its fast one-shot defaults over both, so a
+  preset that raised them because that encoder needs longer to finish was
+  silently dropped for single-pass runs — and those two settings are exactly
+  what decides whether a file is finished being written. A `--once` run using
+  such a preset will now take as long as the preset asks for.
+
+### Fixed
+
+- Preset keys were checked for classification but never for wiring. A key
+  could sit in `PRESET_KEYS`, pass the guard, and still be ignored when a
+  preset was loaded — the same shape as the original `--no-clobber` bug the
+  guard was written for. The guard now reads `cli.py` and proves each key is
+  taken off the config, and one preset is round-tripped end to end through the
+  real CLI. That round-trip found the `--once` bug above on its first run.
+
 ### Added
 
 - **`exec` action** — run any command when a file finishes landing, with

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import sys
 from typing import Any, ClassVar
 
 
@@ -124,22 +125,39 @@ class OpenScript:
         return self.answer
 
 
+def _emit_importers():
+    """Every folder_watch module holding its own reference to `emit`.
+
+    `from ... import emit` binds at import time, so patching the log module
+    reaches nobody. Listing the modules by hand is what made this leaky: a test
+    that named the wrong ones silently captured an empty transcript and its
+    assertions passed on absent evidence. Asking sys.modules who actually holds
+    the function cannot be forgotten by the next action added.
+    """
+    import folder_watch.support.log as log_mod
+
+    return [
+        module
+        for name, module in list(sys.modules.items())
+        if name.startswith("folder_watch")
+        and getattr(module, "emit", None) is log_mod.emit
+    ]
+
+
 @contextlib.contextmanager
-def captured(*also):
+def captured():
     """Collect emitted events as (name, fields) instead of printing them.
 
-    Each module binds `emit` at import time, so patching the log module would
-    miss every existing caller — the swap has to happen per module. `also`
-    takes any extra modules whose output belongs in the same transcript, which
-    is how an action's own lines and the loop's end up interleaved in order.
+    Captures every folder_watch module at once, so an action's own lines and
+    the loop's arrive in one transcript, in order, with nothing to declare.
     """
-    import folder_watch.core.watch as watch_mod
-
     log: list[tuple[str, dict]] = []
-    targets = (watch_mod, *also)
-    saved = [(m, m.emit) for m in targets]
-    for module in targets:
-        module.emit = lambda event, **fields: log.append((event, fields))
+    record = lambda event, **fields: log.append((event, fields))  # noqa: E731
+    saved = [(m, m.emit) for m in _emit_importers()]
+    if not saved:  # pragma: no cover - only if the import contract changes
+        raise AssertionError("no folder_watch module imports emit — capture is blind")
+    for module, _ in saved:
+        module.emit = record
     try:
         yield log
     finally:
