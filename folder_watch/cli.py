@@ -552,6 +552,12 @@ def main(argv: list[str] | None = None) -> int:
         # Annotate rather than act: a listing that renders a dead preset
         # identically to a live one is the whole complaint, and deleting one
         # is a statement about your project that this tool cannot make.
+        if not presets:
+            # Silence reads as "the command did nothing" rather than "there is
+            # nothing to show", which is the same confusion baseline_pending
+            # and `ignored` exist to clear up elsewhere.
+            print(f"no presets configured — none found in {PRESETS_PATH}")
+            return 0
         broken = 0
         for name, cfg in presets.items():
             level, note = preset_status(cfg)

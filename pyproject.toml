@@ -82,11 +82,10 @@ source = ["folder_watch"]
 omit = ["*/__main__.py"]
 
 [tool.coverage.report]
-# A floor, not a target — so coverage cannot quietly erode. The event loop is
-# the part that matters and it now sits at 96%; what is left uncovered there is
-# defensive error handling around filesystem races. The remaining headline gap
-# is argument parsing and notification plumbing, which the smoke suite exercises
-# through a subprocess where coverage cannot see it.
-fail_under = 70
+# A floor, not a target — so coverage cannot quietly erode. The event loop sits
+# at 96% and the CLI at 78%; what is left in both is defensive error handling
+# around filesystem races and subprocess plumbing. Raised as each gap closed,
+# never lowered to make a run pass.
+fail_under = 80
 skip_covered = false
 show_missing = false

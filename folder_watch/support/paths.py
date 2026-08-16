@@ -23,7 +23,13 @@ LEGACY_PRESETS = _dir(
 STATE_DIR = _dir(
     "FOLDER_WATCH_STATE_DIR", Path.home() / ".local" / "state" / "folder-watch"
 )
-LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+# Overridable like the rest, and for a sharper reason than the others: without
+# it there is no way to exercise service install without writing a plist into
+# the real LaunchAgents directory, so the one piece of code that can take a
+# live watcher down was the piece with no tests.
+LAUNCH_AGENTS = _dir(
+    "FOLDER_WATCH_LAUNCH_AGENTS", Path.home() / "Library" / "LaunchAgents"
+)
 LABEL_PREFIX = "com.folder-watch"
 PID_DIR = STATE_DIR / "pids"
 

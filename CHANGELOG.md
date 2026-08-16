@@ -15,6 +15,17 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Added
+
+- `--list-presets` says so when there are none, instead of printing nothing at
+  all. Silence reads as "the command did nothing" rather than "there is
+  nothing to show".
+- `FOLDER_WATCH_LAUNCH_AGENTS` redirects where plists are written, like the
+  config and state directories already could. Without it there was no way to
+  exercise `service install` without writing into the real
+  `~/Library/LaunchAgents`, so the one command that can take a live watcher
+  down was the one with no tests.
+
 ## [0.2.1] - 2026-08-16
 
 ### Fixed

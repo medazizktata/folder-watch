@@ -20,8 +20,12 @@ os.environ.setdefault("FOLDER_WATCH_STATE_DIR", str(SCRATCH / "state"))
 os.environ.setdefault("FOLDER_WATCH_CONFIG_DIR", str(SCRATCH / "config"))
 # Keep the real ~/.config/folder-watch/.env from leaking into test runs.
 os.environ.setdefault("FOLDER_WATCH_ENV", str(SCRATCH / "config" / ".env"))
+# Nothing in the suite may write a plist into the real ~/Library/LaunchAgents,
+# where a stray file is a service macOS will actually try to run at login.
+os.environ.setdefault("FOLDER_WATCH_LAUNCH_AGENTS", str(SCRATCH / "launch-agents"))
 
 STATE_DIR = Path(os.environ["FOLDER_WATCH_STATE_DIR"])
 CONFIG_DIR = Path(os.environ["FOLDER_WATCH_CONFIG_DIR"])
-STATE_DIR.mkdir(parents=True, exist_ok=True)
-CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+LAUNCH_AGENTS = Path(os.environ["FOLDER_WATCH_LAUNCH_AGENTS"])
+for _d in (STATE_DIR, CONFIG_DIR, LAUNCH_AGENTS):
+    _d.mkdir(parents=True, exist_ok=True)
