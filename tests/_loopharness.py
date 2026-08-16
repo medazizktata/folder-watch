@@ -125,17 +125,26 @@ class OpenScript:
 
 
 @contextlib.contextmanager
-def captured():
-    """Collect emitted events as (name, fields) instead of printing them."""
+def captured(*also):
+    """Collect emitted events as (name, fields) instead of printing them.
+
+    Each module binds `emit` at import time, so patching the log module would
+    miss every existing caller — the swap has to happen per module. `also`
+    takes any extra modules whose output belongs in the same transcript, which
+    is how an action's own lines and the loop's end up interleaved in order.
+    """
     import folder_watch.core.watch as watch_mod
 
     log: list[tuple[str, dict]] = []
-    old = watch_mod.emit
-    watch_mod.emit = lambda event, **fields: log.append((event, fields))
+    targets = (watch_mod, *also)
+    saved = [(m, m.emit) for m in targets]
+    for module in targets:
+        module.emit = lambda event, **fields: log.append((event, fields))
     try:
         yield log
     finally:
-        watch_mod.emit = old
+        for module, original in saved:
+            module.emit = original
 
 
 @contextlib.contextmanager

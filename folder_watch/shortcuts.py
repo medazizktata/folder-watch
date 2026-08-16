@@ -22,7 +22,11 @@ PASSTHROUGH = ("--list-presets", "--list-actions", "--preset")
 _SHARED_VALUE_FLAGS = frozenset(
     {"--ext", "--poll", "--stable", "--min-bytes", "--save-preset",
      "--backend", "--debounce", "--settle", "--log", "--log-level",
-     "--retries", "--retry-hours", "--to", "--mode"}
+     "--retries", "--retry-hours", "--to", "--mode",
+     # exec has no shim of its own — `folder-watch exec SRC --cmd …` needs no
+     # rearranging — but the parser is shared, so its flags still have to be
+     # declared here or their values would be read as positionals.
+     "--cmd", "--exec-timeout"}
 )
 COPY_VALUE_FLAGS = _SHARED_VALUE_FLAGS
 UNZIP_VALUE_FLAGS = _SHARED_VALUE_FLAGS

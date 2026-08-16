@@ -11,6 +11,7 @@ from folder_watch.actions import ACTION_NAMES, ACTIONS
 from folder_watch.actions.base import Action
 from folder_watch.actions.convx import build_convx_watch_cmd, run_convx_watch
 from folder_watch.actions.copy import CopyAction
+from folder_watch.actions.exec_cmd import ExecAction
 from folder_watch.actions.unzip import UnzipAction
 from folder_watch.core.util import parse_exts
 from folder_watch.core.watch import list_pending, run_watch
@@ -46,13 +47,15 @@ def build_parser() -> argparse.ArgumentParser:
         prog="folder-watch",
         description=(
             "Watch a folder for finished files, then run an action "
-            "(copy, unzip), or wrap ConvX watch (convx)."
+            "(copy, unzip, exec), or wrap another tool that watches for "
+            "itself (convx)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "actions:\n"
             "  copy   SRC --to DEST          # defaults: --ext mp4 --min-bytes 1000000\n"
             "  unzip  SRC [--mode named|same|to] [--to DIR]\n"
+            "  exec   SRC --cmd 'COMMAND {path}'       # any command, per file\n"
             "  convx  SRC --format EXT [--ext png,jpg]   # → convx watch\n"
             "  service install|uninstall|status --preset NAME\n"
             "  status [--preset NAME]   # running watchers\n"
@@ -80,6 +83,27 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="convx --overwrite (default true)",
+    )
+    p.add_argument(
+        "--cmd",
+        default=None,
+        metavar="COMMAND",
+        help=(
+            "exec: command to run per settled file. {path} {dir} {name} "
+            "{stem} {ext} {rel} are substituted. No shell — exit 0 done, "
+            "75 retry later, other fail"
+        ),
+    )
+    p.add_argument(
+        "--exec-timeout",
+        type=float,
+        default=3600.0,
+        dest="exec_timeout",
+        metavar="SECONDS",
+        help=(
+            "exec: kill the command after this long (default 3600, 0 = never). "
+            "A command that hangs stops the watcher silently"
+        ),
     )
     p.add_argument("--convx-bin", default=None, help="Path to convx")
     p.add_argument(
@@ -367,6 +391,22 @@ def build_action(
             src_root=src_root,
             notify_on_done=getattr(args, "notify", True) and not dry,
         )
+    if name == "exec":
+        if not getattr(args, "cmd", None):
+            raise SystemExit("error: exec requires --cmd 'COMMAND {path}'")
+        try:
+            return ExecAction(
+                args.cmd,
+                src_root=src_root,
+                timeout=getattr(args, "exec_timeout", 3600.0),
+                dry_run=dry,
+                # Off by default, unlike copy: a command action can fire on
+                # every file in a busy folder, and a notification per file is
+                # not a feature. --notify opts in.
+                notify_on_done="--notify" in getattr(args, "_passed", ()) and not dry,
+            )
+        except ValueError as e:
+            raise SystemExit(f"error: {e}") from None
     raise SystemExit(f"error: unknown action {name!r}")
 
 
@@ -488,9 +528,14 @@ def main(argv: list[str] | None = None) -> int:
 
     presets = load_presets()
     passed = {a.split("=")[0] for a in argv}
+    # Which flags the user actually typed, as opposed to which have a default.
+    # BooleanOptionalAction cannot tell those apart on its own, and for exec
+    # the difference decides whether every processed file raises a notification.
+    args._passed = frozenset(passed)
 
     if args.list_actions:
         print("copy  — copy finished files to --to DIR (never deletes source)")
+        print("exec  — run any command per settled file ({path} etc. substituted)")
         print("unzip — extract .zip; delete only after verified success")
         print("         --mode named (default) | same | to")
         print(
@@ -608,6 +653,10 @@ def main(argv: list[str] | None = None) -> int:
         if "--passthru" not in passed and cfg.get("passthru"):
             passthru = cfg["passthru"]
             args.passthru = passthru
+        if "--cmd" not in passed and cfg.get("cmd"):
+            args.cmd = cfg["cmd"]
+        if "--exec-timeout" not in passed and cfg.get("exec_timeout") is not None:
+            args.exec_timeout = float(cfg["exec_timeout"])
         # Flags added after presets were designed. A watcher started with
         # --preset had no way to reach them at all, so safety options like
         # --no-clobber were unavailable to exactly the unattended runs that
@@ -759,6 +808,9 @@ def main(argv: list[str] | None = None) -> int:
             cfg["to"] = str(Path(to).expanduser())
         if action_name == "unzip":
             cfg["mode"] = mode
+        if action_name == "exec":
+            cfg["cmd"] = args.cmd
+            cfg["exec_timeout"] = args.exec_timeout
         # Round-trip the safety flags too, so a saved preset preserves how the
         # command was actually invoked rather than silently dropping them.
         for key in ("no_clobber", "create_dest", "exclusive", "no_done_store"):

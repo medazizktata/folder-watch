@@ -15,6 +15,25 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Added
+
+- **`exec` action** — run any command when a file finishes landing, with
+  `{path}` / `{dir}` / `{name}` / `{stem}` / `{ext}` / `{rel}` substituted into
+  it. Settle detection, the done-store, the retry queue, `status` and the
+  LaunchAgent were always action-agnostic; reaching them used to mean adding
+  Python to this repo. There is no shell — the template is split into argv once
+  and placeholders go into the resulting tokens, so a file named
+  `note; rm -rf ~.mp4` is an argument rather than a second command. Exit 0 is
+  done, 75 asks to be retried later (`EX_TEMPFAIL`), anything else is a
+  permanent failure with the command's own stderr quoted in the log. A default
+  one-hour timeout stops a hung command from silently stopping the watcher.
+- **`unzip` notifies**, like `copy` has since July, with Show in folder. A
+  failure says the archive was kept — otherwise a folder where nothing has
+  happened and one where something went wrong look identical.
+- **`convx --passthru`** appends extra arguments verbatim, so a flag ConvX
+  grows tomorrow is usable the day it ships rather than the day a release here
+  catches up.
+
 ## [0.1.0] - 2026-08-15
 
 ### Added

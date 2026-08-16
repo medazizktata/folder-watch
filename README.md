@@ -40,10 +40,60 @@ tool** that does its own watching. See [Wrapping another tool](#wrapping-another
 |--------|----------|----------|
 | `copy` | Atomic copy → `--to DIR` (retry on OSError); never deletes source; macOS notif. Mirrors subdirectories under `--recursive` | `--ext mp4 --min-bytes 1000000` |
 | `unzip` | Extract `.zip`; delete zip only after **every** member is verified present. `--no-clobber` refuses an archive that would overwrite; macOS notif | `--ext zip --min-bytes 1` |
+| `exec` | Run any command per finished file; exit code decides done/retry/fail | `--ext * --min-bytes 1` |
 
-Both notify on success and failure with a **Show in folder** button, off with
-`--no-notify`. A failed extract says the archive was kept — a folder where
-nothing happened and one where something went wrong look identical otherwise.
+`copy` and `unzip` notify on success and failure with a **Show in folder**
+button, off with `--no-notify`. A failed extract says the archive was kept — a
+folder where nothing happened and one where something went wrong look identical
+otherwise.
+
+### `exec` — run any command per finished file
+
+```bash
+folder-watch exec ~/Inbox --ext wav \
+  --cmd 'ffmpeg -i {path} -c:a libmp3lame {dir}/{stem}.mp3'
+```
+
+Settle detection, the done-store, the retry queue, pidfiles, `status` and the
+LaunchAgent are the expensive part of this tool and none of it is specific to
+copying. `exec` is what opens all of it to anything with a command line,
+instead of requiring Python in this repo.
+
+| placeholder | for `~/Inbox/shots/take-3.mov` |
+|---|---|
+| `{path}` | `/Users/you/Inbox/shots/take-3.mov` |
+| `{dir}` | `/Users/you/Inbox/shots` |
+| `{name}` | `take-3.mov` |
+| `{stem}` | `take-3` |
+| `{ext}` | `mov` |
+| `{rel}` | `shots/take-3.mov` (from the watched root) |
+
+The command runs with its working directory set to the file's own folder, so a
+relative output lands beside the input.
+
+**There is no shell.** `--cmd` is split into argv once, and placeholders are
+substituted into the resulting tokens afterwards — so a file called
+`note; rm -rf ~.mp4` arrives as a single argument, not as a second command.
+Substituting first and splitting after is the entire bug class, and it needs no
+attacker: an unlucky export name is enough. It does mean `--cmd` is quoted the
+way `xargs` or `find -exec` would want, with inner quotes surviving the split.
+
+**The exit code is the contract:**
+
+| exit | meaning |
+|---|---|
+| `0` | done — recorded, never repeated |
+| `75` | retry later — straight into the same backoff and 72h give-up budget a failed copy uses (`EX_TEMPFAIL`, the BSD `sysexits.h` convention) |
+| anything else | permanent failure; the command's own stderr is quoted in the `fail` line, because a bare exit code explains nothing |
+
+A command that never returns would stop the watcher silently and forever, so
+there is a default `--exec-timeout` of one hour (`0` disables it). A timed-out
+command is reported, not retried — it was killed mid-flight, so what it did or
+half-did is unknown, and repeating that is worse than saying so.
+
+`--cmd` is part of the done-key, so editing it re-processes files the previous
+command already handled. Notifications are off unless you pass `--notify`:
+unlike a copy, a command can fire on every file in a busy folder.
 
 `service` (LaunchAgent install / uninstall / status), `status`, `prune` and
 `presets` are subcommands rather than actions.

@@ -53,6 +53,14 @@ SRC_WAIT_LOG_INTERVAL = 60.0
 # loop left to retry it, so the caller must be told the work did not land.
 FAILED_RESULTS = ("fail", "error", "retry")
 
+# Results whose action has already logged a line with its own detail in it —
+# emitting a generic one here would say less and say it twice.
+SELF_LOGGED_RESULTS = ("extracted", "converted", "ran")
+
+# Dry-run previews. The action reports them; nothing is persisted as done,
+# because nothing was done.
+PREVIEW_RESULTS = ("would_copy", "would_extract", "would_exec")
+
 # How often the event loop looks for retries that have come due.
 RETRY_SCAN_INTERVAL = 5.0
 
@@ -164,10 +172,10 @@ def apply_action(
         emit("skip", name=name, size=size)
     elif result == "copied":
         emit("copied", name=name, size=size)
-    elif result in ("would_copy", "would_extract"):
+    elif result in PREVIEW_RESULTS:
         # dry-run: already emitted inside action; do not persist done
         return result
-    elif result in ("extracted", "converted"):
+    elif result in SELF_LOGGED_RESULTS:
         pass
     elif result == "fail":
         # The action emits its own fail line, with a reason attached.

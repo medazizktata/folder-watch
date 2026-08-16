@@ -27,6 +27,7 @@ PRESET_KEYS = frozenset(
         "no_clobber", "create_dest", "exclusive", "no_done_store", "retry_hours",
         "format", "convx_preset", "convx_bin", "quality", "width", "fps",
         "max_size", "overwrite", "passthru",
+        "cmd", "exec_timeout",
     }
 )
 
@@ -165,7 +166,7 @@ def preset_status(cfg: dict[str, Any]) -> tuple[str, str]:
     Returns (level, note); level is "ok", "warn" or "error".
     """
     action = cfg.get("action", "copy")
-    if action not in ("copy", "unzip", "convx"):
+    if action not in ("copy", "unzip", "exec", "convx"):
         return "error", f"unknown action {action!r}"
 
     raw_src = cfg.get("src")
@@ -179,6 +180,8 @@ def preset_status(cfg: dict[str, Any]) -> tuple[str, str]:
         return "error", "copy requires 'to'"
     if action == "unzip" and cfg.get("mode") == "to" and not cfg.get("to"):
         return "error", "mode=to requires 'to'"
+    if action == "exec" and not cfg.get("cmd"):
+        return "error", "exec requires 'cmd'"
 
     raw_to = cfg.get("to")
     if raw_to:
