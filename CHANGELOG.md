@@ -26,6 +26,20 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A partial extraction read as a finished one.** `output_exists` answered
+  "is there anything in the target directory at all", so one member of two
+  hundred landing counted as complete — and `--pending` and `baseline_pending`
+  are built on that answer. The run that most needs reporting, an interrupted
+  or failed extract, was the one getting a false all-clear. It now asks the
+  archive what it should have produced and requires every member, which is
+  what `--mode same` already did.
+- **A failed extraction left its target directory behind.** Vetting guarantees
+  a *rejected* archive creates nothing, but an archive whose central directory
+  is intact and whose local file headers are damaged passes vetting and dies
+  inside `extractall`. Found in production: an empty directory had been sitting
+  beside a corrupt 75 MB archive since July. The directory is now removed —
+  only ever the one that run created, never a pre-existing one and never the
+  watched folder itself under `--mode same`.
 - Preset keys were checked for classification but never for wiring. A key
   could sit in `PRESET_KEYS`, pass the guard, and still be ignored when a
   preset was loaded — the same shape as the original `--no-clobber` bug the

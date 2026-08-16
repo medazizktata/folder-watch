@@ -169,6 +169,109 @@ class TestUnzipAction(unittest.TestCase):
         self.assertEqual(result, "would_extract")
         self.assertEqual(seen, [])
 
+    def _corrupt_zip(self, name="broken.zip", members=2) -> Path:
+        """A zip with an intact central directory and damaged local headers.
+
+        The shape that actually turned up in production: is_zipfile() passes,
+        the manifest lists every member with its size, and extraction dies on
+        the first byte with "Bad magic number for file header". Vetting cannot
+        catch it, because there is nothing wrong with what vetting reads.
+        """
+        z = self.inbox / name
+        with zipfile.ZipFile(z, "w") as zf:
+            for i in range(members):
+                zf.writestr(f"member{i}.bin", b"payload" * 100)
+        raw = bytearray(z.read_bytes())
+        # Blank the local-header signatures; the central directory is untouched.
+        for i in range(len(raw) - 4):
+            if raw[i : i + 4] == b"PK\x03\x04":
+                raw[i : i + 4] = b"XXXX"
+        z.write_bytes(bytes(raw))
+        return z
+
+    def test_a_corrupt_archive_looks_valid_until_it_is_read(self):
+        """Establishes the fixture matches production before relying on it."""
+        z = self._corrupt_zip()
+
+        self.assertTrue(zipfile.is_zipfile(z))
+        with zipfile.ZipFile(z) as zf:
+            self.assertEqual(len(zf.namelist()), 2)
+            with self.assertRaises(zipfile.BadZipFile):
+                zf.read("member0.bin")
+
+    def test_a_failed_extract_leaves_no_directory_behind(self):
+        """Production ran for weeks with an empty directory beside the archive.
+
+        Vetting guarantees a *rejected* zip creates nothing; this one passes
+        vetting and dies inside extractall, which the guarantee never covered.
+        """
+        z = self._corrupt_zip()
+        target = self.inbox / "broken"
+        action = UnzipAction(mode="named", notify_on_done=False)
+
+        self.assertEqual(action.run(z), "fail")
+
+        self.assertFalse(target.exists(), "stray directory left behind")
+        self.assertTrue(z.is_file(), "the archive should be kept")
+
+    def test_an_existing_directory_is_never_removed(self):
+        """Only ever the directory this run created — anything already there
+        belongs to someone else."""
+        z = self._corrupt_zip()
+        target = self.inbox / "broken"
+        target.mkdir()
+        (target / "someone-elses.txt").write_bytes(b"keep me")
+        action = UnzipAction(mode="named", notify_on_done=False)
+
+        self.assertEqual(action.run(z), "fail")
+
+        self.assertTrue((target / "someone-elses.txt").is_file())
+
+    def test_mode_same_never_removes_the_watched_folder(self):
+        """The target there is the archive's own folder. Removing it would
+        take the inbox, the archive and everything else with it."""
+        z = self._corrupt_zip()
+        action = UnzipAction(mode="same", notify_on_done=False)
+
+        self.assertEqual(action.run(z), "fail")
+
+        self.assertTrue(self.inbox.is_dir(), "the watched folder was removed")
+        self.assertTrue(z.is_file())
+
+    def test_a_partial_extraction_does_not_read_as_finished(self):
+        """--pending and baseline_pending are built on this answer, and it
+        used to be "is there anything in the directory at all". One member of
+        two hundred landing counted as a finished extract — so the run that
+        most needs reporting was the one that got a false all-clear."""
+        z = self._make_zip("pack.zip")
+        with zipfile.ZipFile(z, "a") as zf:
+            zf.writestr("second.txt", b"more")
+        target = self.inbox / "pack"
+        target.mkdir()
+        (target / "payload.txt").write_bytes(b"hi")  # one of the two members
+
+        action = UnzipAction(mode="named", notify_on_done=False)
+
+        self.assertIs(action.output_exists(z), False)
+
+    def test_a_complete_extraction_reads_as_finished(self):
+        z = self._make_zip("pack.zip")
+        target = self.inbox / "pack"
+        target.mkdir()
+        (target / "payload.txt").write_bytes(b"hi")
+
+        action = UnzipAction(mode="named", notify_on_done=False)
+
+        self.assertIs(action.output_exists(z), True)
+
+    def test_a_corrupt_archive_admits_it_cannot_tell(self):
+        """None, not False — a damaged manifest is not evidence of anything,
+        and False would have --pending assert work was missed."""
+        z = self.inbox / "garbage.zip"
+        z.write_bytes(b"not a zip")
+
+        self.assertIsNone(UnzipAction(mode="named").output_exists(z))
+
     def test_mode_named_default(self):
         z = self._make_zip("demo.zip")
         action = UnzipAction(mode="named")

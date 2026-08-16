@@ -1,6 +1,7 @@
 """Unzip action."""
 from __future__ import annotations
 
+import shutil
 import unicodedata
 import zipfile
 from pathlib import Path
@@ -95,25 +96,49 @@ class UnzipAction(Action):
         return self._target_dir(src)
 
     def output_exists(self, src: Path) -> bool | None:
+        """Has this archive already been extracted — all of it?
+
+        Ask the archive what it should have produced rather than looking for
+        signs of life in the target. Reading the central directory is cheap and
+        decompresses nothing.
+
+        `any(target.iterdir())` used to answer this for named/to, so one
+        member landing out of two hundred read as a finished extraction. A
+        partial extract is exactly what a failed or interrupted run leaves
+        behind, so the one case that most needs reporting was the one this
+        returned a false all-clear for — and --pending and baseline_pending
+        are built on this answer.
+        """
         target = self._target_dir(src)
-        if self.mode == "same":
-            # The target directory is the zip's own folder, so its existence
-            # proves nothing. Ask the archive what it should have produced —
-            # reading the central directory is cheap, no decompression. Without
-            # this, --pending and baseline_pending are structurally blind for
-            # mode=same and give a false all-clear.
-            try:
-                with zipfile.ZipFile(src) as zf:
-                    members = [n for n in zf.namelist() if not n.endswith("/")]
-            except (zipfile.BadZipFile, OSError):
-                return None
-            if not members:
-                return None
-            return all((target / n).exists() for n in members)
         try:
-            return target.is_dir() and any(target.iterdir())
+            with zipfile.ZipFile(src) as zf:
+                members = [n for n in zf.namelist() if not n.endswith("/")]
+        except (zipfile.BadZipFile, OSError):
+            # Can't tell — a corrupt archive has no trustworthy manifest.
+            return None
+        if not members:
+            return None
+        try:
+            return all((target / n).exists() for n in members)
         except OSError:
             return None
+
+    @staticmethod
+    def _undo_target(target: Path, src: Path, created: bool) -> None:
+        """Take back the directory this run made, when the extract failed.
+
+        Only ever the one we created ourselves — `created` is False whenever
+        the directory was already there, which for --mode same is always, since
+        the target is the archive's own folder. A half-extracted directory is
+        worse than none: it is what makes an incomplete extract look finished
+        to the next scan.
+        """
+        if not created or target == src.parent:
+            return
+        try:
+            shutil.rmtree(target)
+        except OSError as e:
+            emit("warn", reason="cleanup_failed", dest=target, err=str(e))
 
     def _target_dir(self, zip_path: Path) -> Path:
         stem = zip_path.stem
@@ -181,6 +206,12 @@ class UnzipAction(Action):
             return "would_extract"
 
         clobbered: list[str] = []
+        # Vetting below covers a *rejected* archive. It cannot cover one that
+        # passes vetting and then dies inside extractall — a zip whose central
+        # directory is intact but whose local file headers are damaged reads as
+        # perfectly valid right up until the bytes are pulled. That left an
+        # empty directory sitting next to the archive in production for weeks.
+        created_target = False
         try:
             with zipfile.ZipFile(path, "r") as zf:
                 # Vet every member before creating anything, so a rejected zip
@@ -271,14 +302,17 @@ class UnzipAction(Action):
                         first=clobbered[0],
                     )
                     return "fail"
+                created_target = not target.exists()
                 target.mkdir(parents=True, exist_ok=True)
                 zf.extractall(target)
         except zipfile.BadZipFile as e:
             # Corrupt archives never become valid. Retrying forever is a bug.
+            self._undo_target(target, path, created_target)
             emit("fail", name=path.name, reason="extract_error", err=str(e))
             return "fail"
         except OSError as e:
             # Disk full, volume vanished mid-extract — worth another go later.
+            self._undo_target(target, path, created_target)
             emit("fail", name=path.name, reason="extract_error", err=str(e))
             return "retry"
 
