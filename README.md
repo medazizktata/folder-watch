@@ -330,6 +330,32 @@ folder-watch service status --preset nightly-render
 folder-watch service uninstall --preset nightly-render
 ```
 
+### Do not run services out of a checkout
+
+`service install` points the plist at whichever interpreter is running it, so
+installing from a clone leaves the LaunchAgent executing your working tree.
+Every edit is then one restart away from production, including the broken
+intermediate ones — a half-finished change that nobody meant to ship goes live
+the moment launchd restarts the job.
+
+Install a released copy into its own venv and run `service install` from there:
+
+```bash
+python3 -m venv ~/.local/share/folder-watch/venv
+~/.local/share/folder-watch/venv/bin/pip install folder_watch-X.Y.Z-py3-none-any.whl
+~/.local/share/folder-watch/venv/bin/folder-watch service install --preset NAME
+```
+
+The plist then names that venv's interpreter and carries **no `PYTHONPATH`**,
+which matters more than it looks: a `PYTHONPATH` naming a checkout puts the
+checkout ahead of site-packages, and the service quietly goes back to running
+the working tree. `--version` on a running service is the check — if it does
+not match the tag you installed, it is reading a checkout from somewhere.
+
+Upgrading is `pip install` the new wheel and `launchctl kickstart -k` the
+service. Rolling back is the same with an older wheel, which is the practical
+reason to tag releases at all.
+
 Keeps the preset running at login (`KeepAlive`). Logs default to `~/.local/state/folder-watch/<preset>.log`.
 
 ## Usage
