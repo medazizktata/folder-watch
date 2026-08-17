@@ -179,7 +179,7 @@ class CopyAction(Action):
                 if self.notify_on_done:
                     notify(
                         "folder-watch copy corrupt",
-                        f"{path.name} — removed, will retry",
+                        f"{path.name} — bad copy removed",
                         sound=self.sound,
                     )
                 return "retry"

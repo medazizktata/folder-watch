@@ -29,7 +29,7 @@ from folder_watch.support.launchd import (
     service_status,
     uninstall_service,
 )
-from folder_watch.support.log import set_json_mode, set_verbose, setup_logging
+from folder_watch.support.log import emit, set_json_mode, set_verbose, setup_logging
 from folder_watch.support.notify import DEFAULT_SOUND, available_sounds
 from folder_watch.support.paths import PRESETS_PATH, STATE_DIR
 from folder_watch.support.pidfile import (
@@ -41,7 +41,12 @@ from folder_watch.support.pidfile import (
 )
 from folder_watch.support.retry import GIVE_UP_AFTER, RetryQueue, retry_path_for
 from folder_watch.support.state import DoneStore
+from folder_watch.support.webhook import InvalidEndpoint
 from folder_watch.support.webhook import configure as configure_webhook
+from folder_watch.support.webhook import current_host as webhook_endpoint_host
+from folder_watch.support.webhook import endpoint_host as webhook_endpoint_host_of
+from folder_watch.support.webhook import flush as webhook_flush
+from folder_watch.support.webhook import stats as webhook_stats
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
             "75 retry later, other fail"
         ),
     )
-    p.add_argument(
+    g_exec.add_argument(
         "--exec-timeout",
         type=float,
         default=3600.0,
@@ -191,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="play a sound with the notification (default: on; --no-sound off)",
     )
-    p.add_argument(
+    g_tell.add_argument(
         "--sound-name",
         default=DEFAULT_SOUND,
         dest="sound_name",
@@ -234,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable persistent done-state (scheme B)",
     )
-    p.add_argument(
+    g_tell.add_argument(
         "--webhook",
         default=None,
         metavar="URL",
@@ -266,7 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
             "exit. Read-only — safe against a folder being watched right now"
         ),
     )
-    p.add_argument(
+    g_state.add_argument(
         "--retry-hours",
         type=float,
         default=GIVE_UP_AFTER / 3600,
@@ -303,9 +308,24 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"folder-watch {__version__}",
     )
     g_pre.add_argument("--preset", help="folder-watch JSON preset")
-    g_pre.add_argument("--list-presets", action="store_true")
-    g_pre.add_argument("--list-actions", action="store_true")
-    g_pre.add_argument("--save-preset", metavar="NAME")
+    g_pre.add_argument(
+        "--list-presets",
+        action="store_true",
+        help="print every preset with its health, then exit",
+    )
+    g_pre.add_argument(
+        "--list-actions",
+        action="store_true",
+        help="print the available actions, then exit",
+    )
+    g_pre.add_argument(
+        "--save-preset",
+        metavar="NAME",
+        help=(
+            "save this invocation as a preset called NAME and exit; merges "
+            "into an existing preset rather than replacing it"
+        ),
+    )
     return p
 
 
@@ -385,7 +405,7 @@ def run_presets_show(name: str) -> int:
     level, note = preset_status(cfg)
     print(f"{name}:" + (f"    [{note}]" if note else ""))
     for key in sorted(cfg):
-        print(f"  {key}: {cfg[key]}")
+        print(f"  {key}: {render_preset_value(key, cfg[key])}")
 
     sources = preset_sources(name)
     for path in sources:
@@ -449,6 +469,20 @@ def run_presets_cli(argv: list[str]) -> int:
         return 0
     print(f"\nnothing stored to remove for {name!r}", file=sys.stderr)
     return 1
+
+
+# Keys whose value is a credential in disguise. Endpoint URLs carry the token
+# in the path — Slack and Discord both do — so printing a preset verbatim hands
+# out the ability to post as you, to anyone reading over your shoulder or the
+# terminal capture in a bug report.
+SECRET_KEYS = frozenset({"webhook"})
+
+
+def render_preset_value(key: str, value: object) -> str:
+    """A preset value as it is safe to show."""
+    if key in SECRET_KEYS and value:
+        return f"{webhook_endpoint_host_of(str(value))} (URL hidden)"
+    return str(value)
 
 
 def chosen_sound(args: argparse.Namespace) -> str | None:
@@ -625,6 +659,35 @@ def run_service_cli(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Dispatch, then always settle the webhook queue before returning.
+
+    Posts are queued and delivered by a daemon thread, which is what keeps a
+    slow endpoint from holding up a copy — but a daemon thread dies with the
+    process, so anything still queued at exit was simply lost. For --once,
+    the documented cron mode, that meant the run's own result never arrived.
+    """
+    try:
+        return _dispatch(argv)
+    finally:
+        _settle_webhook()
+
+
+def _settle_webhook() -> None:
+    webhook_flush()
+    lost = webhook_stats()
+    if lost.get("dropped") or lost.get("failures"):
+        # Said out loud, because a webhook that quietly delivers nothing is
+        # indistinguishable from one that was never configured.
+        emit(
+            "warn",
+            reason="webhook_undelivered",
+            dropped=lost.get("dropped", 0),
+            failures=lost.get("failures", 0),
+            endpoint=webhook_endpoint_host(),
+        )
+
+
+def _dispatch(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "service":
         return run_service_cli(argv[1:])
@@ -643,7 +706,11 @@ def main(argv: list[str] | None = None) -> int:
     set_json_mode(args.json)
     set_verbose(args.verbose)
     if getattr(args, "webhook", None):
-        configure_webhook(args.webhook)
+        try:
+            configure_webhook(args.webhook)
+        except InvalidEndpoint as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
 
     presets = load_presets()
     passed = {a.split("=")[0] for a in argv}
@@ -689,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
                 broken += 1
             print(f"{name}:" + (f"    [{note}]" if note else ""))
             for k, v in cfg.items():
-                print(f"  {k}: {v}")
+                print(f"  {k}: {render_preset_value(k, v)}")
         if broken:
             print(
                 f"\n{broken} of {len(presets)} preset(s) need attention. "
@@ -795,7 +862,12 @@ def main(argv: list[str] | None = None) -> int:
             args.sound_name = str(cfg["sound_name"])
         if "--webhook" not in passed and cfg.get("webhook"):
             args.webhook = str(cfg["webhook"])
-            configure_webhook(args.webhook)
+            try:
+                configure_webhook(args.webhook)
+            except InvalidEndpoint as e:
+                # A preset can hold anything someone typed into a JSON file.
+                print(f"error: preset {args.preset!r}: {e}", file=sys.stderr)
+                return 2
         if "--cmd" not in passed and cfg.get("cmd"):
             args.cmd = cfg["cmd"]
         if "--exec-timeout" not in passed and cfg.get("exec_timeout") is not None:
@@ -823,6 +895,30 @@ def main(argv: list[str] | None = None) -> int:
     if action_name not in ACTION_NAMES:
         print(f"error: unknown action {action_name!r}", file=sys.stderr)
         return 2
+
+    # A destination inside the folder being watched recursively feeds itself:
+    # every copy lands under the watch root, raises an event, and is copied one
+    # level deeper. It does not converge and it does not look wrong — every
+    # line in the log says "copied" while the disk fills. Refused rather than
+    # worked around, because there is no safe version of this arrangement; put
+    # the destination outside the watched tree, or drop --recursive.
+    if recursive and to and src is not None:
+        try:
+            dest_resolved = Path(to).expanduser().resolve()
+            src_resolved = src.expanduser().resolve()
+            inside = (dest_resolved == src_resolved
+                      or src_resolved in dest_resolved.parents)
+        except OSError:
+            inside = False
+        if inside and dest_resolved != src_resolved:
+            print(
+                f"error: --to {dest_resolved} is inside the watched folder "
+                f"{src_resolved} and --recursive is on. Each copy would land "
+                "back under the watch and be copied again, without limit. "
+                "Move the destination outside, or drop --recursive.",
+                file=sys.stderr,
+            )
+            return 2
 
     # convx watch has no output dir; ignore legacy preset "to" unless user passed --to
     if action_name == "convx" and "--to" not in passed:
@@ -967,6 +1063,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg["sound_name"] = getattr(args, "sound_name", None) or DEFAULT_SOUND
         if getattr(args, "retry_hours", None) is not None:
             cfg["retry_hours"] = args.retry_hours
+        if getattr(args, "webhook", None):
+            cfg["webhook"] = args.webhook
         persist_preset(args.save_preset, cfg, argv=argv, loaded_preset=args.preset)
         return 0
 

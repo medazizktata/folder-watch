@@ -233,7 +233,10 @@ nothing else. `--verify` re-reads both files and compares sha256, which is the
 only check that catches the right number of *wrong* bytes — rare on local disk,
 less rare across a network mount or a syncing client, and silent when it
 happens. A copy that fails verification is **deleted** rather than left looking
-finished, and goes back on the retry queue.
+finished — a file that is confidently wrong is worse than one that is obviously
+missing. In watch mode it then goes back on the retry queue. Under `--once`
+there is no loop left to service a queue, so it is reported in the log and in a
+non-zero exit status instead, which is what a cron wrapper needs.
 
 It costs a full read of both files, which is why it is off by default. sha256
 rather than something faster so you can reproduce it with `shasum -a 256`.

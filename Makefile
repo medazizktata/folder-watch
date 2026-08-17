@@ -4,10 +4,12 @@ VENV := .venv/bin
 .DEFAULT_GOAL := check
 .PHONY: check all lint types test smoke cover install-hooks dev clean-cover release version
 
-# The gate: fast, deterministic, safe to run on every commit (~7s).
+# The gate: deterministic and safe to run on every commit (~30s). Most of it
+# is the crash-recovery suite, which starts real watchers and kills them
+# mid-write; it earns its seconds — it has caught two bugs nothing else did.
 check: lint types test
 
-# Everything, including the suites that spawn real watchers (~15s).
+# Everything, including the FSEvents smoke suite (~45s).
 all: lint types test smoke cover
 
 lint:

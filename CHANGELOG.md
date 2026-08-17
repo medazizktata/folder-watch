@@ -15,6 +15,42 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A destination inside a recursively watched folder copied itself forever.**
+  `copy SRC --to SRC/done --recursive` copied each file into `done/`, which
+  raised an event, which copied it into `done/done/` — one level per second,
+  unbounded. 29 copies and 28 levels deep in 12 seconds, with every log line
+  reading `copied` while the disk filled. Now refused at startup with an
+  explanation; there is no safe version of that arrangement.
+- **A copy killed mid-flight leaked a full-size hidden file that nothing ever
+  removed.** The stale sweep only looked for temps named after *the file being
+  copied*, so debris from a render nobody copies twice was never found — at
+  full size, invisible in Finder, untouched by `prune`. Temps now carry a fixed
+  marker, so the sweep finds all of the tool's own debris in a destination
+  regardless of which file it came from, and can never match a file it did not
+  write. Leftovers under the previous naming are swept too.
+- **The webhook lost whatever was still queued at exit.** Delivery happens on
+  a daemon thread — which is what stops a slow endpoint holding up a copy — and
+  a daemon thread dies with the process. Under `--once`, the documented cron
+  mode, the run's own result was the thing most likely to be dropped. The queue
+  is now drained on the way out.
+- **No webhook failure was ever reported.** A dead endpoint, an HTTP 500 and a
+  connection reset were indistinguishable from success. Undelivered events are
+  now counted and reported, and a URL that is not `http(s)://` is refused at
+  startup rather than failing silently once per event.
+- **`--save-preset` silently dropped `--webhook`**, even though the loader
+  reads that key back.
+- **`--list-presets` and `presets show` printed webhook URLs in full**,
+  including the token — against the guarantee made for the log. Only the host
+  is shown now.
+- `--help`: four flags were attached to the top-level parser instead of their
+  groups, so they printed above the groups and left "actions: exec" showing
+  only `--cmd`. `--list-presets` and `--list-actions` had no help text.
+- The corrupt-copy notification and the README both said a failed `--verify`
+  "will retry", which is untrue under `--once` — there is deliberately no queue
+  there, and the failure surfaces as a non-zero exit instead.
+
 ### Added
 
 - **`--verify`** re-reads both files after a copy and compares sha256. The

@@ -456,3 +456,167 @@ class TestArgumentErrors(CliCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSelfFeedingDestination(CliCase):
+    """A destination inside a recursively watched folder feeds itself.
+
+    Each copy lands under the watch root, raises an event, and is copied one
+    level deeper — 29 copies and 28 levels in 12 seconds when measured, with
+    every log line reading `copied` while the disk filled. Refused rather than
+    worked around, because there is no arrangement of it that terminates.
+    """
+
+    def test_a_destination_under_the_watch_root_is_refused_when_recursive(self):
+        inside = self.src / "done"
+        inside.mkdir()
+
+        rc, _out, err = self.run_cli(
+            "copy", str(self.src), "--to", str(inside), "--recursive", "--once"
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIn("inside the watched folder", err)
+        self.assertIn("--recursive", err)
+
+    def test_a_deeply_nested_destination_is_refused_too(self):
+        deep = self.src / "a" / "b" / "out"
+        deep.mkdir(parents=True)
+
+        rc, _out, err = self.run_cli(
+            "copy", str(self.src), "--to", str(deep), "--recursive", "--once"
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIn("inside the watched folder", err)
+
+    def test_the_same_destination_is_allowed_without_recursive(self):
+        """A flat watch never sees the subdirectory, so it cannot feed itself
+        and the arrangement is a normal one to want."""
+        inside = self.src / "done"
+        inside.mkdir()
+
+        rc, _out, err = self.run_cli(
+            "copy", str(self.src), "--to", str(inside), "--once", "--no-notify"
+        )
+
+        self.assertEqual(rc, 0, err)
+
+    def test_a_destination_outside_is_allowed_with_recursive(self):
+        rc, _out, err = self.run_cli(
+            "copy", str(self.src), "--to", str(self.dest), "--recursive",
+            "--once", "--no-notify",
+        )
+
+        self.assertEqual(rc, 0, err)
+
+    def test_a_destination_equal_to_the_source_is_not_the_same_trap(self):
+        """Copying a folder onto itself resolves to the same path per file and
+        is skipped as already-present; it does not recurse."""
+        rc, _out, err = self.run_cli(
+            "copy", str(self.src), "--to", str(self.src), "--recursive",
+            "--once", "--no-notify",
+        )
+
+        self.assertEqual(rc, 0, err)
+
+
+class TestWebhookSecretsAndPresets(CliCase):
+    ENDPOINT = "https://hooks.slack.com/services/T00/B11/xoxb-DO-NOT-LEAK"
+
+    def test_saving_a_preset_keeps_the_webhook(self):
+        rc, _out, _err = self.run_cli(
+            "copy", str(self.src), "--to", str(self.dest),
+            "--webhook", self.ENDPOINT, "--save-preset", "hooked",
+        )
+
+        self.assertEqual(rc, 0)
+        cfg = json.loads(self.presets_path.read_text())["hooked"]
+        self.assertEqual(cfg.get("webhook"), self.ENDPOINT)
+
+    def test_listing_presets_never_prints_the_token(self):
+        """Endpoint URLs carry the secret in the path, and this output goes
+        into terminal captures and bug reports."""
+        self.write_presets(
+            hooked={"action": "copy", "src": str(self.src), "to": str(self.dest),
+                    "webhook": self.ENDPOINT}
+        )
+
+        _rc, out, _err = self.run_cli("--list-presets")
+
+        self.assertNotIn("xoxb-DO-NOT-LEAK", out)
+        self.assertIn("hooks.slack.com", out, "the host is still worth showing")
+
+    def test_showing_one_preset_never_prints_the_token(self):
+        self.write_presets(
+            hooked={"action": "copy", "src": str(self.src), "to": str(self.dest),
+                    "webhook": self.ENDPOINT}
+        )
+
+        _rc, out, _err = self.run_cli("presets", "show", "hooked")
+
+        self.assertNotIn("xoxb-DO-NOT-LEAK", out)
+
+    def test_a_url_that_cannot_be_posted_to_is_refused_at_startup(self):
+        """Left to urllib it fails once per event, inside a worker thread,
+        where the only symptom is that nothing ever arrives."""
+        for bad in ("not-a-url", "ftp://example.com/x", "https://"):
+            with self.subTest(url=bad):
+                rc, _out, err = self.run_cli(
+                    "copy", str(self.src), "--to", str(self.dest),
+                    "--once", "--webhook", bad,
+                )
+                self.assertEqual(rc, 2)
+                self.assertIn("--webhook", err)
+
+    def test_a_bad_url_in_a_preset_names_the_preset(self):
+        self.write_presets(
+            broken={"action": "copy", "src": str(self.src), "to": str(self.dest),
+                    "webhook": "not-a-url"}
+        )
+
+        rc, _out, err = self.run_cli("--preset", "broken", "--once")
+
+        self.assertEqual(rc, 2)
+        self.assertIn("broken", err)
+
+
+class TestHelpIsGrouped(CliCase):
+    def test_no_action_flag_is_left_in_the_ungrouped_block(self):
+        """Flags added to the parser rather than a group print above every
+        group, which left "actions: exec" showing only --cmd."""
+        import io as _io
+
+        from folder_watch.cli import build_parser
+
+        text = _io.StringIO()
+        build_parser().print_help(text)
+        body = text.getvalue()
+
+        ungrouped: list[str] = []
+        inside = False
+        for line in body.splitlines():
+            if line.startswith("options:"):
+                inside = True
+                continue
+            if inside and line and not line.startswith(" "):
+                break
+            if inside and line.startswith("  -"):
+                ungrouped.append(line.split()[0].rstrip(","))
+
+        self.assertEqual(
+            sorted(ungrouped),
+            sorted(["-h", "--version"]),
+            f"flags outside their group: {ungrouped}",
+        )
+
+    def test_every_flag_has_help_text(self):
+        from folder_watch.cli import build_parser
+
+        missing = [
+            a.option_strings[0]
+            for a in build_parser()._actions
+            if a.option_strings and not a.help
+        ]
+
+        self.assertEqual(missing, [], f"no help text: {missing}")

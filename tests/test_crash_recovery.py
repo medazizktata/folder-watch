@@ -38,6 +38,10 @@ import _isolate  # noqa: F401  (must precede folder_watch — redirects state)
 PAYLOAD_MB = 8
 DEADLINE = 30.0
 
+# Fine enough to land inside the window being targeted, coarse enough not to
+# spend a core doing it.
+POLL_INTERVAL = 0.002
+
 
 class CrashCase(unittest.TestCase):
     """Every test gets its own throwaway directory tree.
@@ -108,6 +112,10 @@ class CrashCase(unittest.TestCase):
                 return True
             if self.proc.poll() is not None:
                 return False
+            # A poll interval, not a guess: 2 ms is finer than the window this
+            # is aiming at by an order of magnitude, and spinning without it
+            # burns a whole core per test and slows the run it is timing.
+            time.sleep(POLL_INTERVAL)
         return False
 
     def make_payload(self, name="big.mp4") -> Path:
@@ -664,6 +672,7 @@ class TestSignalsComparedToCrashes(CrashCase):
         while time.time() < deadline:
             if condition():
                 return True
+            time.sleep(POLL_INTERVAL)
         return False
 
     def test_sigterm_lets_the_watcher_clear_its_pidfile(self):

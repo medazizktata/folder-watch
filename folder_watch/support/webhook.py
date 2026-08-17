@@ -66,9 +66,29 @@ def endpoint_host(url: str) -> str:
         return "?"
 
 
+def current_host() -> str:
+    """Host of the configured endpoint, or "-". Never the full URL."""
+    return endpoint_host(_url) if _url else "-"
+
+
+class InvalidEndpoint(ValueError):
+    """The URL could not be posted to, said at startup rather than in silence."""
+
+
 def configure(url: str | None, *, events: tuple[str, ...] = DEFAULT_EVENTS) -> None:
-    """Point the webhook at `url`, or switch it off with None."""
+    """Point the webhook at `url`, or switch it off with None.
+
+    A URL that cannot be posted to is refused here. Left to urllib it fails
+    once per event, inside the worker thread, where the only visible effect is
+    that nothing ever arrives.
+    """
     global _url, _events, _queue, _worker, _dropped, _failures
+    if url:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise InvalidEndpoint(
+                f"--webhook needs an http:// or https:// URL, got {url!r}"
+            )
     _url = url or None
     _events = frozenset(events)
     _dropped = 0

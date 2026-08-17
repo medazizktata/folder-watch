@@ -319,3 +319,85 @@ class TestStaleTempSweep(CopyCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheSweepFindsDebrisFromOtherFiles(CopyCase):
+    """The sweep used to be scoped to the filename being copied.
+
+    So a copy of render-042.mp4 killed mid-flight left a full-size hidden temp
+    that only a *second copy of render-042.mp4* would ever clean up. Render
+    names are unique per export, so in practice nothing ever cleaned it: the
+    destination accumulated hidden files at full size, invisible in Finder,
+    untouched by prune. Reported at 6.0 G of debris for 3.0 G of source.
+    """
+
+    def stale(self, name: str) -> Path:
+        leftover = self.dest_dir / name
+        leftover.write_bytes(b"abandoned" * 1000)
+        old = self._real_time.time() - 7200
+        os.utime(leftover, (old, old))
+        return leftover
+
+    def test_debris_from_a_different_file_is_swept(self):
+        orphan = self.stale(f"{copy_io.TMP_MARKER}xyz.tmp")
+
+        with captured() as log:
+            atomic_copy(self.src, self.dest)
+
+        self.assertFalse(orphan.exists(), "debris from another copy was left behind")
+        self.assertEqual(fields(log, "cleanup")[0]["reason"], "stale_temp")
+
+    def test_debris_named_the_old_way_is_still_swept(self):
+        """Anyone upgrading has leftovers under the previous naming."""
+        legacy = self.stale(f".{self.dest.name}.abc.tmp")
+
+        with captured():
+            atomic_copy(self.src, self.dest)
+
+        self.assertFalse(legacy.exists())
+
+    def test_a_sibling_copy_still_in_flight_is_spared(self):
+        """Age is the only signal that separates abandoned debris from a temp
+        another watcher is actively writing, so it has to stay decisive."""
+        fresh = self.dest_dir / f"{copy_io.TMP_MARKER}live.tmp"
+        fresh.write_bytes(b"being written right now")
+
+        with captured():
+            atomic_copy(self.src, self.dest)
+
+        self.assertTrue(fresh.is_file(), "a live copy's temp was deleted")
+
+    def test_it_never_removes_a_file_it_did_not_write(self):
+        """The marker is what makes the sweep safe to widen. A hidden .tmp that
+        belongs to somebody else must survive, however old it is."""
+        theirs = self.dest_dir / ".editor-autosave.tmp"
+        theirs.write_bytes(b"someone else's file")
+        old = self._real_time.time() - 999999
+        os.utime(theirs, (old, old))
+
+        with captured():
+            atomic_copy(self.src, self.dest)
+
+        self.assertTrue(theirs.is_file(), "swept a file the tool never wrote")
+        self.assertEqual(theirs.read_bytes(), b"someone else's file")
+
+    def test_the_temp_no_longer_carries_the_filename(self):
+        """Which also fixes a long-name problem: prefixing a 200-character
+        export name onto the temp could exceed the filesystem limit."""
+        long_name = "x" * 200 + ".mp4"
+        src = self.tmp / long_name
+        src.write_bytes(b"payload")
+        seen: list[str] = []
+
+        real = shutil.copy2
+
+        def watching(s, d, *a, **kw):
+            seen.append(Path(d).name)
+            return real(s, d, *a, **kw)
+
+        copy_io.shutil = ShutilShim(watching)
+        with captured():
+            atomic_copy(src, self.dest_dir / long_name)
+
+        self.assertTrue(seen and seen[0].startswith(copy_io.TMP_MARKER))
+        self.assertNotIn("x" * 200, seen[0])

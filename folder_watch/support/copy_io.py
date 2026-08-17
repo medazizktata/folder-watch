@@ -11,18 +11,31 @@ from pathlib import Path
 
 from folder_watch.support.log import emit
 
-# A copy killed mid-flight leaves its temp behind. Nothing swept them up, so a
-# destination accumulated full-size hidden files that neither a restart nor
-# `prune` touched. Old enough that a copy genuinely in flight is never hit.
+# A copy killed mid-flight leaves its temp behind. Old enough that a copy
+# genuinely in flight is never hit — age is the only thing that distinguishes
+# abandoned debris from a sibling copy still running.
 STALE_TMP_AGE = 3600.0
+
+# A fixed marker rather than the destination's own name. Naming the temp after
+# the file meant the sweep could only ever find debris from *that* file, so a
+# crashed copy of a render nobody copies twice was never cleaned up by anything
+# — and at full size, hidden, in someone's Drive folder. The marker also makes
+# these unmistakably ours, so the sweep can never remove a file it did not
+# write.
+TMP_MARKER = ".folder-watch-tmp."
+TMP_GLOB = f"{TMP_MARKER}*.tmp"
 
 
 def sweep_stale_temps(dest: Path, *, max_age: float = STALE_TMP_AGE) -> int:
-    """Remove leftovers from earlier interrupted copies of this destination."""
+    """Remove abandoned temps in this destination, whatever file they were for."""
     removed = 0
     now = time.time()
     try:
-        candidates = list(dest.parent.glob(f".{dest.name}.*.tmp"))
+        candidates = [
+            *dest.parent.glob(TMP_GLOB),
+            # Debris written before the marker existed, still full size.
+            *dest.parent.glob(f".{dest.name}.*.tmp"),
+        ]
     except OSError:
         return 0
     for leftover in candidates:
@@ -91,7 +104,7 @@ def atomic_copy(
         tmp: Path | None = None
         try:
             fd, tmp_name = tempfile.mkstemp(
-                prefix=f".{dest.name}.",
+                prefix=TMP_MARKER,
                 suffix=".tmp",
                 dir=str(dest.parent),
             )
