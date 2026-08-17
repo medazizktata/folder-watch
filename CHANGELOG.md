@@ -50,6 +50,18 @@ which is why the first entry covers so much ground.
 - The corrupt-copy notification and the README both said a failed `--verify`
   "will retry", which is untrue under `--once` — there is deliberately no queue
   there, and the failure surfaces as a non-zero exit instead.
+- **SIGTERM could orphan the pidfile it exists to manage.** `run_watch`
+  installs a handler turning SIGTERM into `SystemExit` precisely so the
+  `finally` clears the pidfile — but the write happened *before* that `try`,
+  so a signal arriving during it raised out of an uncovered frame and the file
+  survived the process. launchd stopping a service moments after starting it
+  lands exactly there, and `launchctl kickstart -k` does it by construction.
+  Reproduced 10/10, now 0/10.
+- **Crash debris was mistaken for a done-store.** The unpublished temp from a
+  save was named `done-XXXXXX.json` and `prune` globs `done-*.json`, so a
+  process killed mid-write left a file the next tidy-up read as somebody's
+  store. Temps are now `.json.tmp`, skipped by that glob, and `prune` removes
+  them as the debris they are. Same for the retry queue.
 
 ### Added
 
@@ -67,21 +79,6 @@ which is why the first entry covers so much ground.
 - **`presets show NAME`** — one preset in full, including which file each
   value came from. A preset defined in two files is merged and nothing said so.
 - `--help` is grouped by action instead of listing 45 flags in one block.
-
-### Fixed
-
-- **SIGTERM could orphan the pidfile it exists to manage.** `run_watch`
-  installs a handler turning SIGTERM into `SystemExit` precisely so the
-  `finally` clears the pidfile — but the write happened *before* that `try`,
-  so a signal arriving during it raised out of an uncovered frame and the file
-  survived the process. launchd stopping a service moments after starting it
-  lands exactly there, and `launchctl kickstart -k` does it by construction.
-  Reproduced 10/10, now 0/10.
-- **Crash debris was mistaken for a done-store.** The unpublished temp from a
-  save was named `done-XXXXXX.json` and `prune` globs `done-*.json`, so a
-  process killed mid-write left a file the next tidy-up read as somebody's
-  store. Temps are now `.json.tmp`, skipped by that glob, and `prune` removes
-  them as the debris they are. Same for the retry queue.
 
 ### Testing
 
