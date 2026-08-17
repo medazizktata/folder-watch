@@ -38,8 +38,8 @@ import _isolate  # noqa: F401  (must precede folder_watch — redirects state)
 PAYLOAD_MB = 8
 DEADLINE = 30.0
 
-# Fine enough to land inside the window being targeted, coarse enough not to
-# spend a core doing it.
+# Only for waits measured in whole seconds — a pidfile appearing, a process
+# exiting. The kill loop below polls without one; see the note there.
 POLL_INTERVAL = 0.002
 
 
@@ -112,10 +112,11 @@ class CrashCase(unittest.TestCase):
                 return True
             if self.proc.poll() is not None:
                 return False
-            # A poll interval, not a guess: 2 ms is finer than the window this
-            # is aiming at by an order of magnitude, and spinning without it
-            # burns a whole core per test and slows the run it is timing.
-            time.sleep(POLL_INTERVAL)
+            # No sleep here, deliberately. This is aiming at the interval
+            # between two syscalls, and a 2 ms poll was coarse enough that a
+            # fast runner finished the whole copy between checks — the kill
+            # never landed mid-flight and four tests failed on CI while passing
+            # locally. Spinning is the cost of aiming at a window this narrow.
         return False
 
     def make_payload(self, name="big.mp4") -> Path:
