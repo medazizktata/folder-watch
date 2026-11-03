@@ -2565,6 +2565,94 @@ class TestLaunchAgentPlist(unittest.TestCase):
         self.assertIn("/s/demo.out.log", strings, "stdio path missing")
         self.assertEqual(strings.count(str(log)), 1, "log file has two writers")
 
+    def test_a_known_source_keeps_the_job_alive_only_while_it_exists(self):
+        """A bare KeepAlive restarted a watcher whose source had been moved
+        every ten seconds, for months, and both logs grew by the same error
+        each time. Tied to the source, a missing folder means one start."""
+        import plistlib
+
+        from folder_watch.support.launchd import build_plist, stdio_log_path
+
+        log = Path("/s/demo.log")
+        src = Path("/s/Acme & Co/in")
+        body = build_plist(
+            label="com.folder-watch.demo",
+            preset="demo",
+            python=Path("/x/.venv/bin/python"),
+            root=Path("/x"),
+            log_path=log,
+            stdio_path=stdio_log_path(log),
+            path_env="/usr/bin:/bin",
+            src=src,
+        )
+
+        keep_alive = plistlib.loads(body.encode())["KeepAlive"]
+        self.assertEqual(keep_alive, {"PathState": {str(src): True}})
+
+    def test_install_ties_keep_alive_to_the_presets_source(self):
+        """build_plist only helps if install_service hands it the source."""
+        import plistlib
+        from unittest import mock
+
+        from folder_watch.support import launchd
+
+        presets = {"demo": {"action": "copy", "src": "~/Inbox"}}
+        with (
+            mock.patch.object(launchd, "load_presets", return_value=presets),
+            mock.patch.object(
+                launchd, "_resolve_python_and_root",
+                return_value=(Path("/x/.venv/bin/python"), Path("/x")),
+            ),
+            mock.patch.object(launchd.subprocess, "run") as run,
+        ):
+            run.return_value.returncode = 0
+            plist = launchd.install_service(
+                preset="demo", program=Path("/x/bin/folder-watch")
+            )
+
+        keep_alive = plistlib.loads(plist.read_bytes())["KeepAlive"]
+        self.assertEqual(keep_alive, {"PathState": {str(Path.home() / "Inbox"): True}})
+
+    def test_status_warns_when_the_preset_src_has_moved_on(self):
+        """The plist copies src at install time. Edit the preset afterwards
+        and launchd keeps alive a folder the watcher no longer watches."""
+        from unittest import mock
+
+        from folder_watch.support import launchd
+
+        def status_for(src: str) -> dict:
+            presets = {"demo": {"action": "copy", "src": src}}
+            with (
+                mock.patch.object(launchd, "load_presets", return_value=presets),
+                mock.patch.object(launchd.subprocess, "run") as run,
+            ):
+                run.return_value.returncode = 0
+                run.return_value.stdout = ""
+                return launchd.service_status(preset="demo")
+
+        presets = {"demo": {"action": "copy", "src": "/s/old"}}
+        with (
+            mock.patch.object(launchd, "load_presets", return_value=presets),
+            mock.patch.object(
+                launchd, "_resolve_python_and_root",
+                return_value=(Path("/x/.venv/bin/python"), Path("/x")),
+            ),
+            mock.patch.object(launchd.subprocess, "run") as run,
+        ):
+            run.return_value.returncode = 0
+            launchd.install_service(preset="demo", program=Path("/x/bin/folder-watch"))
+
+        self.assertNotIn("warning", status_for("/s/old"))
+        self.assertIn("/s/new", status_for("/s/new").get("warning", ""))
+
+    def test_without_a_source_keep_alive_stays_unconditional(self):
+        import plistlib
+
+        self.assertIs(
+            plistlib.loads(self._plist(Path("/s/demo.log")).encode())["KeepAlive"],
+            True,
+        )
+
     def test_plist_escapes_xml(self):
         """A path with & or < produced a plist launchctl refuses to load."""
         import xml.etree.ElementTree as ET

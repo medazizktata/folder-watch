@@ -1,11 +1,13 @@
 """macOS LaunchAgent install/uninstall."""
 from __future__ import annotations
 
+import plistlib
 import subprocess
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
+from folder_watch.presets import load_presets
 from folder_watch.support.paths import LABEL_PREFIX, LAUNCH_AGENTS, STATE_DIR
 
 
@@ -118,6 +120,7 @@ def build_plist(
     log_path: Path,
     stdio_path: Path,
     path_env: str,
+    src: Path | None = None,
 ) -> str:
     """The plist body. Separate from install_service so it can be checked
     without registering anything with launchd.
@@ -126,8 +129,27 @@ def build_plist(
     already on the interpreter's path and naming a checkout would let that
     checkout win. The working directory becomes home, since there is no repo
     to sit in and launchd's default of / is not somewhere to write.
+
+    `src` keeps the job alive only while that folder exists. With a bare
+    KeepAlive, a moved or deleted source made the watcher exit with
+    src_missing and launchd restart it every ten seconds, for months, each
+    run appending the same error to both logs. With PathState a missing
+    source costs one start and one error line, and launchd starts the
+    watcher again by itself when the folder comes back — a remounted volume
+    included.
     """
     x = xml_escape  # paths and preset names are user data going into XML
+    keep_alive = (
+        f"""<dict>
+    <key>PathState</key>
+    <dict>
+      <key>{x(str(src))}</key>
+      <true/>
+    </dict>
+  </dict>"""
+        if src is not None
+        else "<true/>"
+    )
     workdir = root if root is not None else Path.home()
     pythonpath = (
         f"""
@@ -165,7 +187,7 @@ def build_plist(
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  {keep_alive}
   <key>StandardOutPath</key>
   <string>{x(str(stdio_path))}</string>
   <key>StandardErrorPath</key>
@@ -173,6 +195,14 @@ def build_plist(
 </dict>
 </plist>
 """
+
+
+def _preset_src(preset: str) -> Path | None:
+    """The folder a service's KeepAlive is tied to. A relative src has no
+    meaning to launchd, so it gets the unconditional KeepAlive instead."""
+    src = load_presets().get(preset, {}).get("src")
+    path = Path(src).expanduser() if src else None
+    return path if path is not None and path.is_absolute() else None
 
 
 def install_service(
@@ -189,6 +219,7 @@ def install_service(
 
     python, root = _resolve_python_and_root(program)
     body = build_plist(
+        src=_preset_src(preset),
         label=label,
         preset=preset,
         python=python,
@@ -232,10 +263,28 @@ def service_status(*, preset: str) -> dict[str, Any]:
         text=True,
         check=False,
     )
-    return {
+    status: dict[str, Any] = {
         "label": label,
         "plist": str(plist),
         "plist_exists": plist.is_file(),
         "loaded": r.returncode == 0,
         "launchctl": (r.stdout or r.stderr or "").strip(),
     }
+    if not plist.is_file():
+        return status
+    # The plist copies the preset's src at install time, so editing the
+    # preset afterwards leaves launchd keeping alive a folder nobody watches.
+    try:
+        keep_alive = plistlib.loads(plist.read_bytes()).get("KeepAlive")
+    except (OSError, plistlib.InvalidFileException):
+        keep_alive = None
+    path_state = keep_alive.get("PathState", {}) if isinstance(keep_alive, dict) else {}
+    tied_to = next(iter(path_state), None)
+    src = _preset_src(preset)
+    if tied_to != (str(src) if src is not None else None):
+        status["warning"] = (
+            f"the plist keeps the job alive for {tied_to or 'any source state'}, "
+            f"but the preset's src is {src}; run `folder-watch service install "
+            f"--preset {preset}` again"
+        )
+    return status

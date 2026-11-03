@@ -430,7 +430,11 @@ Upgrading is `pip install` the new wheel and `launchctl kickstart -k` the
 service. Rolling back is the same with an older wheel, which is the practical
 reason to tag releases at all.
 
-Keeps the preset running at login (`KeepAlive`). Logs default to `~/.local/state/folder-watch/<preset>.log`.
+Keeps the preset running at login (`KeepAlive`), but only while the preset's
+`src` folder exists (`PathState`). A missing source logs one
+`error reason=src_missing` and then stays quiet. launchd starts the watcher
+again when the folder reappears. After changing a preset's `src`, run
+`service install` again. Logs default to `~/.local/state/folder-watch/<preset>.log`.
 
 ## Usage
 

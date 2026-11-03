@@ -17,6 +17,19 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A service whose source folder was gone restarted every ten seconds,
+  forever.** The plist set a bare `KeepAlive`, so a preset whose `src` had been
+  moved or deleted exited with `src_missing`, and launchd started it again
+  every ten seconds. Each run appended the same error to the `--log` file and
+  the `.out` file. Two services ran like this for months. Their logs reached
+  1.1 million lines (114 MB), almost all of them the same error repeated. One
+  of the two was a `convx` preset, which loops the same way. `service install`
+  now ties `KeepAlive` to the preset's source folder (`PathState`). A missing
+  folder costs one start and one error line, and launchd starts the watcher
+  again by itself when the folder comes back, including a remounted volume. If
+  you change a preset's `src`, run `service install` again so the plist follows
+  it. Services installed before this fix keep the old plist until you
+  reinstall them.
 - **A destination inside a recursively watched folder copied itself forever.**
   `copy SRC --to SRC/done --recursive` copied each file into `done/`, which
   raised an event, which copied it into `done/done/` — one level per second,
@@ -64,6 +77,9 @@ which is why the first entry covers so much ground.
   them as the debris they are. Same for the retry queue.
 
 ### Added
+
+- **`service status` warns when the plist and the preset disagree** about the
+  source folder, which happens when `src` is edited after `service install`.
 
 - **`--verify`** re-reads both files after a copy and compares sha256. The
   size check catches a truncated write and nothing else; this catches the
