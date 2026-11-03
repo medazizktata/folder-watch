@@ -82,6 +82,16 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **Retention for dead presets.** `prune` now also removes a preset whose
+  source has been deleted or renamed for 30 days, along with its LaunchAgent
+  and default logs. It never counts a source on an unmounted volume, and never
+  removes a preset a watcher is running. The clock starts at the first check
+  that sees the folder gone (`dead-presets.json`) and resets if the folder
+  returns. `prune --schedule` installs a weekly job that clears the tool's own
+  dead state and asks with a **Clean up** button before removing any preset.
+  Without this, a preset whose project ended stayed forever, and a LaunchAgent
+  left installed for it looped.
+
 - **A moved source is detected, not waited for.** A watcher used to treat a
   renamed folder like a deleted one and wait for the old name to return,
   logging `src_waiting` every minute, indefinitely. On macOS it now holds the

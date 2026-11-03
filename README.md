@@ -281,9 +281,15 @@ folder-watch copy ./Out --to ./Drive --retries 8
 folder-watch status
 folder-watch status --preset nightly-render
 
-# drop done-state whose source is gone, and stale pidfiles (dry by default)
+# drop done-state whose source is gone, stale pidfiles, and presets whose
+# folder has been deleted or renamed for 30+ days (dry by default)
 folder-watch prune
 folder-watch prune --yes
+
+# weekly (Sundays 10:00): clear dead state, and offer a "Clean up" button for
+# presets that are due; nothing is removed without the click
+folder-watch prune --schedule
+folder-watch prune --unschedule
 
 # one preset in full: values, which file each came from, is it running
 folder-watch presets show nightly-render
@@ -508,7 +514,20 @@ client-assets:
 It reports and stops there. The tool cannot tell "this project is finished"
 from "the drive is unplugged" — and its own runtime already assumes a missing
 folder is temporary, which is what `src_lost` / `src_restored` are for. So it
-never removes a preset for you.
+never removes a preset on one look.
+
+**Retention.** `prune` does remove a preset once three things hold:
+- its source was deleted or renamed in place (a missing folder on an unmounted
+  volume never counts);
+- it has stayed that way for 30 days, counted from the first check that saw
+  it, recorded in `~/.local/state/folder-watch/dead-presets.json`;
+- no watcher is running it.
+
+It removes the LaunchAgent first, then the preset and its default logs. The
+LaunchAgent goes first because one left naming a removed preset fails on every
+login. `prune` is a dry run until `--yes`. The weekly job (`prune --schedule`)
+asks with a notification instead, and does nothing without the click. If the
+folder comes back, its clock starts over.
 
 It does distinguish the two cases where it honestly can, because they call for
 opposite responses: a path whose nearest existing folder is an ordinary

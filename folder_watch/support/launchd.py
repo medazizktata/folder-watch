@@ -243,6 +243,46 @@ def install_service(
     return plist
 
 
+# The weekly `prune --ask` job, under the service naming so uninstall_service
+# and service_status work on it. The leading underscore keeps it out of the
+# way of preset names people actually choose.
+PRUNE_JOB = "_weekly-prune"
+
+
+def install_prune_schedule(*, program: Path) -> Path:
+    """A LaunchAgent that runs `prune --ask` on Sundays at 10:00."""
+    python, root = _resolve_python_and_root(program)
+    env = {"PATH": launchagent_path_env(), "HOME": str(Path.home())}
+    if root is not None:
+        env["PYTHONPATH"] = str(root)
+    out = STATE_DIR / f"{PRUNE_JOB}.out.log"
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
+    plist = service_plist_path(PRUNE_JOB)
+    plist.write_bytes(
+        plistlib.dumps(
+            {
+                "Label": service_label(PRUNE_JOB),
+                "ProgramArguments": [str(python), "-m", "folder_watch", "prune", "--ask"],
+                "WorkingDirectory": str(root if root is not None else Path.home()),
+                "EnvironmentVariables": env,
+                "StartCalendarInterval": {"Weekday": 0, "Hour": 10, "Minute": 0},
+                "StandardOutPath": str(out),
+                "StandardErrorPath": str(out),
+            }
+        )
+    )
+    subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, check=False)
+    r = subprocess.run(
+        ["launchctl", "load", str(plist)], capture_output=True, text=True, check=False
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            r.stderr.strip() or r.stdout.strip() or "launchctl load failed"
+        )
+    return plist
+
+
 def uninstall_service(*, preset: str) -> Path | None:
     plist = service_plist_path(preset)
     if plist.is_file():

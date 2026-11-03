@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +25,16 @@ from folder_watch.presets import (
     save_preset,
 )
 from folder_watch.support.launchd import (
+    PRUNE_JOB,
+    install_prune_schedule,
     install_service,
     service_plist_path,
     service_status,
+    stdio_log_path,
     uninstall_service,
 )
 from folder_watch.support.log import emit, set_json_mode, set_verbose, setup_logging
-from folder_watch.support.notify import DEFAULT_SOUND, available_sounds
+from folder_watch.support.notify import DEFAULT_SOUND, ask, available_sounds
 from folder_watch.support.paths import PRESETS_PATH, STATE_DIR
 from folder_watch.support.pidfile import (
     clear_pidfile,
@@ -39,6 +43,7 @@ from folder_watch.support.pidfile import (
     prune_pidfiles,
     write_pidfile,
 )
+from folder_watch.support.retention import RETENTION_DAYS, forget, is_due, review
 from folder_watch.support.retry import GIVE_UP_AFTER, RetryQueue, retry_path_for
 from folder_watch.support.state import DoneStore
 from folder_watch.support.webhook import InvalidEndpoint
@@ -572,13 +577,94 @@ def run_status_cli(argv: list[str]) -> int:
     return 0 if alive_any else 1
 
 
+def _program() -> Path:
+    """What a LaunchAgent should run: this checkout's launcher, else Python."""
+    bin_path = Path(__file__).resolve().parents[1] / "bin" / "folder-watch"
+    return bin_path if bin_path.is_file() else Path(sys.executable)
+
+
+def _prune_presets(*, dry: bool) -> list[str]:
+    """Remove presets whose source has been deleted or renamed for
+    RETENTION_DAYS, with their LaunchAgent and default logs. Returns the names
+    removed (or due, on a dry run). Checking also records new deaths, which is
+    how the clock for each one starts."""
+    now = time.time()
+    dead = review(now)
+    verb = "would remove" if dry else "removed"
+    due: list[str] = []
+    print(f"presets: {len(dead)} with a missing source")
+    for name, since in dead:
+        day = time.strftime("%Y-%m-%d", time.localtime(since))
+        if not is_due(since, now):
+            print(
+                f"    {name}: missing since {day}, "
+                f"kept until {RETENTION_DAYS} days pass"
+            )
+            continue
+        # Pulling config out from under a running watcher is not a tidy-up.
+        if live_watchers(name):
+            print(f"    {name}: missing since {day}, but a watcher is running; kept")
+            continue
+        print(f"    {verb} {name}: missing since {day}")
+        due.append(name)
+        if dry:
+            continue
+        # Before the preset: a LaunchAgent left naming a preset that no longer
+        # exists fails on every login.
+        uninstall_service(preset=name)
+        remove_preset(name)
+        log = STATE_DIR / f"{name}.log"
+        for path in (log, stdio_log_path(log)):
+            path.unlink(missing_ok=True)
+        forget(name)
+    return due
+
+
 def run_prune_cli(argv: list[str]) -> int:
-    """Clear out state that no longer refers to anything real."""
+    """Clear out state and presets that no longer refer to anything real."""
     ap = argparse.ArgumentParser(prog="folder-watch prune")
     ap.add_argument("--yes", action="store_true", help="actually delete (default: dry)")
+    ap.add_argument(
+        "--ask", action="store_true",
+        help="for the weekly job: clear dead state, and offer a Clean up "
+        "button for presets that are due",
+    )
+    ap.add_argument(
+        "--schedule", action="store_true", help="install the weekly `prune --ask` job"
+    )
+    ap.add_argument("--unschedule", action="store_true", help="remove the weekly job")
     args = ap.parse_args(argv)
+    if args.schedule:
+        print(f"installed {install_prune_schedule(program=_program())}")
+        return 0
+    if args.unschedule:
+        removed = uninstall_service(preset=PRUNE_JOB)
+        print(f"removed {removed}" if removed else "no weekly job installed")
+        return 0
+    if args.ask:
+        # Done-state, pidfiles and crash debris are the tool's own bookkeeping,
+        # and turn over in normal use, so asking about them would nag every
+        # week. Presets are your configuration, so those wait for a click.
+        _prune_state(dry=False)
+        due = _prune_presets(dry=True)
+        if due and ask(
+            "folder-watch cleanup",
+            f"{len(due)} preset(s) whose folder has been gone "
+            f"{RETENTION_DAYS}+ days: {', '.join(due)}",
+            "Clean up",
+        ):
+            _prune_presets(dry=False)
+        return 0
     dry = not args.yes
+    _prune_state(dry=dry)
+    _prune_presets(dry=dry)
+    if dry:
+        print("\ndry run — re-run with --yes to apply")
+    return 0
 
+
+def _prune_state(*, dry: bool) -> None:
+    """Clear out state that no longer refers to anything real."""
     # ".json" not ".json.tmp": a crash during a save leaves an unpublished
     # temp beside the real file, and it used to match this glob — so prune
     # read somebody's half-written debris as a store and tidied it as one.
@@ -624,9 +710,6 @@ def run_prune_cli(argv: list[str]) -> int:
     print(f"pidfiles: {verb} {len(pidfiles)} stale")
     for p in pidfiles:
         print(f"    {p.name}")
-    if dry:
-        print("\ndry run — re-run with --yes to apply")
-    return 0
 
 
 def run_service_cli(argv: list[str]) -> int:
@@ -635,13 +718,10 @@ def run_service_cli(argv: list[str]) -> int:
     ap.add_argument("--preset", required=True, help="preset name to run under launchd")
     ap.add_argument("--log", type=Path, default=None, help="LaunchAgent stdout/err log")
     args = ap.parse_args(argv)
-    bin_path = Path(__file__).resolve().parents[1] / "bin" / "folder-watch"
-    if not bin_path.is_file():
-        bin_path = Path(sys.executable)
     try:
         if args.cmd == "install":
             plist = install_service(
-                preset=args.preset, program=bin_path, log_path=args.log
+                preset=args.preset, program=_program(), log_path=args.log
             )
             print(f"installed {plist}")
             return 0
