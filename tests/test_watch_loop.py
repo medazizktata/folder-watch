@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -760,6 +761,90 @@ class TestPollBackend(LoopCase):
             kinds(log).index("src_lost"), kinds(log).index("src_restored")
         )
 
+    def test_a_moved_source_stops_the_watcher_and_says_where_it_went(self):
+        """Waiting for a folder that was only renamed waits forever. Under
+        launchd that was a log line a minute, for months, about a folder that
+        was sitting one directory over."""
+        moved = self.tmp / "renamed"
+        fd = watch_mod.open_src(self.src)
+        assert fd is not None
+        self.addCleanup(os.close, fd)
+
+        def on_tick(clock):
+            if clock.ticks == 1:
+                self.src.rename(moved)
+
+        clock = Clock(stop_after=5, on_tick=on_tick)
+        with (
+            captured() as log,
+            patched(clock, OpenScript(0)),
+            mock.patch.object(watch_mod, "notify") as note,
+        ):
+            rc = watch_mod.run_watch_poll(
+                self.src, ScriptedAction(), exts=None, poll=1.0,
+                stable_needed=1, min_bytes=1, src_fd=fd,
+            )
+
+        self.assertEqual(rc, 2)
+        moved_errors = [e for e in fields(log, "error") if e.get("reason") == "src_moved"]
+        self.assertEqual([e["now"] for e in moved_errors], [moved])
+        self.assertEqual(count(log, "src_lost"), 0)
+        note.assert_not_called()  # run_watch tells the user, not the loop
+
+    def test_a_deleted_source_is_waited_for_not_reported_as_moved(self):
+        """The descriptor of a deleted folder still answers F_GETPATH on
+        some systems; that must not read as a move."""
+        fd = watch_mod.open_src(self.src)
+        assert fd is not None
+        self.addCleanup(os.close, fd)
+
+        def on_tick(clock):
+            if clock.ticks == 1:
+                shutil.rmtree(self.src)
+            elif clock.ticks == 3:
+                self.src.mkdir()
+
+        log = self.run_poll(
+            ScriptedAction(), clock=Clock(stop_after=5, on_tick=on_tick), src_fd=fd
+        )
+
+        self.assertEqual(count(log, "src_lost"), 1)
+        self.assertEqual(count(log, "src_restored"), 1)
+        self.assertEqual(count(log, "error"), 0)
+
+    def test_a_recreated_source_is_tracked_when_it_later_moves(self):
+        """After a restore the folder at the path can be a new one. Keeping
+        the old descriptor would follow the deleted folder instead."""
+        moved = self.tmp / "renamed"
+        fd = watch_mod.open_src(self.src)
+        assert fd is not None
+        self.addCleanup(os.close, fd)
+
+        def on_tick(clock):
+            if clock.ticks == 1:
+                shutil.rmtree(self.src)
+            elif clock.ticks == 3:
+                self.src.mkdir()
+            elif clock.ticks == 5:
+                self.src.rename(moved)
+
+        clock = Clock(stop_after=9, on_tick=on_tick)
+        with (
+            captured() as log,
+            patched(clock, OpenScript(0)),
+            mock.patch.object(watch_mod, "notify"),
+        ):
+            rc = watch_mod.run_watch_poll(
+                self.src, ScriptedAction(), exts=None, poll=1.0,
+                stable_needed=1, min_bytes=1, src_fd=fd,
+            )
+
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            [e["now"] for e in fields(log, "error") if e.get("reason") == "src_moved"],
+            [moved],
+        )
+
     def test_catch_up_processes_what_is_already_sitting_there(self):
         f = self.make_file()
         action = ScriptedAction("copied")
@@ -1113,10 +1198,142 @@ class TestEventStallPaths(LoopCase):
         self.assertEqual(count(log, "stalled"), 0)
 
 
+class TestFollowMovedSource(LoopCase):
+    """The notification's "Watch new path" button."""
+
+    def setUp(self):
+        super().setUp()
+        from folder_watch.presets import save_preset
+
+        self.preset = f"follow-{self.tmp.name}"
+        self.moved = self.tmp / "renamed"
+        save_preset(self.preset, {"action": "copy", "src": str(self.src), "to": "/d"})
+        self.addCleanup(self._forget_preset)
+
+    def _forget_preset(self):
+        from folder_watch.presets import remove_preset
+
+        remove_preset(self.preset)
+
+    def _offer(self, *, clicked: bool, under_launchd: bool):
+        label = watch_mod.service_label(self.preset)
+        env = {"XPC_SERVICE_NAME": label} if under_launchd else {}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(watch_mod, "ask", return_value=clicked) as ask,
+            mock.patch.object(watch_mod, "notify") as note,
+            mock.patch.object(watch_mod.os, "execv") as execv,
+            mock.patch.object(watch_mod.subprocess, "Popen") as popen,
+            captured() as log,
+        ):
+            if not under_launchd:
+                os.environ.pop("XPC_SERVICE_NAME", None)
+            watch_mod.offer_to_follow(self.preset, self.src, self.moved)
+        return log, ask, note, execv, popen
+
+    def _stored_src(self):
+        from folder_watch.presets import load_raw_preset
+
+        return load_raw_preset(self.preset)["src"]
+
+    def test_yes_from_a_terminal_saves_the_path_and_restarts_in_place(self):
+        log, _ask, _note, execv, popen = self._offer(clicked=True, under_launchd=False)
+
+        self.assertEqual(self._stored_src(), str(self.moved))
+        self.assertEqual(count(log, "src_followed"), 1)
+        execv.assert_called_once_with(
+            sys.executable, [sys.executable, "-m", "folder_watch", *sys.argv[1:]]
+        )
+        popen.assert_not_called()
+
+    def test_yes_under_launchd_reinstalls_from_outside_the_job(self):
+        """Reinstalling unloads the job doing the reinstalling. Run inside
+        it, the install dies before it loads the new plist."""
+        _log, _ask, _note, execv, popen = self._offer(clicked=True, under_launchd=True)
+
+        self.assertEqual(self._stored_src(), str(self.moved))
+        args, kwargs = popen.call_args
+        self.assertEqual(
+            args[0][-4:], ["service", "install", "--preset", self.preset]
+        )
+        self.assertTrue(kwargs.get("start_new_session"))
+        execv.assert_not_called()
+
+    def test_no_answer_changes_nothing(self):
+        log, _ask, _note, execv, popen = self._offer(clicked=False, under_launchd=False)
+
+        self.assertEqual(self._stored_src(), str(self.src))
+        self.assertEqual(count(log, "src_not_followed"), 1)
+        execv.assert_not_called()
+        popen.assert_not_called()
+
+    def test_a_watcher_without_a_stored_preset_is_only_told(self):
+        with (
+            mock.patch.object(watch_mod, "ask") as ask,
+            mock.patch.object(watch_mod, "notify") as note,
+        ):
+            watch_mod.offer_to_follow(None, self.src, self.moved)
+
+        ask.assert_not_called()
+        note.assert_called_once()
+
+
 class TestEventSourceLoss(LoopCase):
     """FSEvents goes quiet when the directory is deleted or its volume
     unmounts. Without a check the process stays alive and healthy forever,
     watching nothing and logging nothing."""
+
+    def _run(self, on_tick, *, stop_after, src_fd=None):
+        clock = Clock(stop_after=stop_after, on_tick=on_tick, stop_exc=KeyboardInterrupt)
+        with (
+            captured() as log,
+            patched(clock, OpenScript(0), fake_observer=True),
+            mock.patch.object(watch_mod, "notify") as note,
+        ):
+            rc = watch_mod.run_watch_event(
+                self.src, ScriptedAction(), exts=None, debounce_ms=50,
+                stable_needed=1, min_bytes=1, settle_interval=0.5,
+                recursive=False, src_fd=src_fd,
+            )
+        return rc, log, note
+
+    def test_a_moved_source_stops_the_event_watcher(self):
+        moved = self.tmp / "renamed"
+        fd = watch_mod.open_src(self.src)
+        assert fd is not None
+        self.addCleanup(os.close, fd)
+
+        def on_tick(clock):
+            if clock.ticks == 1:
+                self.src.rename(moved)
+                clock.jump(watch_mod.SRC_CHECK_INTERVAL + 1)
+
+        rc, log, note = self._run(on_tick, stop_after=30, src_fd=fd)
+
+        self.assertEqual(rc, 2)
+        moved_errors = [e for e in fields(log, "error") if e.get("reason") == "src_moved"]
+        self.assertEqual([e["now"] for e in moved_errors], [moved])
+        self.assertEqual(count(log, "src_waiting"), 0)
+        note.assert_not_called()  # run_watch tells the user, not the loop
+
+    def test_a_source_that_never_returns_logs_less_and_less(self):
+        """At a fixed minute a vanished source added 1,440 lines a day for
+        as long as the process lived. Doubling gaps make six hours of waiting
+        nine lines instead of 360."""
+
+        def on_tick(clock):
+            if clock.ticks == 1:
+                shutil.rmtree(self.src)
+                clock.jump(watch_mod.SRC_CHECK_INTERVAL + 1)
+
+        six_hours = int(6 * 3600 / watch_mod.SRC_WAIT_INTERVAL)
+        _rc, log, _note = self._run(on_tick, stop_after=six_hours + 5)
+
+        waited = [int(f["waited_s"]) for f in fields(log, "src_waiting")]
+        self.assertEqual(count(log, "src_lost"), 1)
+        self.assertGreater(waited[-1], 4 * 3600, "the run was shorter than meant")
+        self.assertLessEqual(len(waited), 10)
+        self.assertGreaterEqual(len(waited), 8)
 
     def test_the_watcher_waits_for_the_source_and_catches_up_on_return(self):
         gone_at: list[int] = []
@@ -1365,6 +1582,29 @@ class TestRunWatchLifecycle(LoopCase):
 
         self.assertEqual(rc, 2)
         self.assertEqual(fields(log, "error")[0]["reason"], "src_missing")
+
+    def test_a_moved_source_is_offered_to_the_user_after_cleanup(self):
+        """The loops only report a move; run_watch is what asks, once its
+        pidfile is gone, since the answer can take an hour."""
+        moved = self.tmp / "renamed"
+
+        def on_tick(clock):
+            if clock.ticks == 1:
+                self.src.rename(moved)
+
+        offered = []
+
+        def offer(preset, src, now):
+            offered.append((preset, src, now, self.our_pidfiles("demo")))
+
+        with mock.patch.object(watch_mod, "offer_to_follow", side_effect=offer):
+            rc, _log = self.run_watch(
+                ScriptedAction(), clock=Clock(stop_after=5, on_tick=on_tick),
+                preset="demo",
+            )
+
+        self.assertEqual(rc, 2)
+        self.assertEqual(offered, [("demo", self.src, moved, [])])
 
     def test_exclusive_refuses_to_start_beside_another_watcher(self):
         self.plant_foreign_pidfile("scripted-src")

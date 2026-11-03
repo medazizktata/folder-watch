@@ -30,6 +30,10 @@ which is why the first entry covers so much ground.
   you change a preset's `src`, run `service install` again so the plist follows
   it. Services installed before this fix keep the old plist until you
   reinstall them.
+- **A source that never came back logged once a minute for the life of the
+  process.** That is 1,440 lines a day. The gap between `src_waiting` lines now
+  doubles from one minute up to one day.
+
 - **A destination inside a recursively watched folder copied itself forever.**
   `copy SRC --to SRC/done --recursive` copied each file into `done/`, which
   raised an event, which copied it into `done/done/` — one level per second,
@@ -78,6 +82,14 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **A moved source is detected, not waited for.** A watcher used to treat a
+  renamed folder like a deleted one and wait for the old name to return,
+  logging `src_waiting` every minute, indefinitely. On macOS it now holds the
+  folder open, finds where it went (`F_GETPATH`), logs
+  `error reason=src_moved now=…`, exits 2 and notifies. For a stored preset
+  the notification offers **Watch new path**, which saves the new `src` and
+  restarts the watcher on it, reinstalling the LaunchAgent when it runs under
+  one. Nothing follows a move unasked: the new place can be the Trash.
 - **`service status` warns when the plist and the preset disagree** about the
   source folder, which happens when `src` is edited after `service install`.
 

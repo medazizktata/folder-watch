@@ -259,5 +259,40 @@ class TestActionsPassItThrough(SoundCase):
         self.assertIsInstance(parser.parse_args([]), argparse.Namespace)
 
 
+class TestAsk(unittest.TestCase):
+    """A yes from ask() rewrites a preset, so only the button itself counts."""
+
+    def _answer(self, stdout: str, *, alerter: str | None = "/bin/alerter") -> bool:
+        from unittest import mock
+
+        with (
+            mock.patch.object(notify_mod.shutil, "which", return_value=alerter),
+            mock.patch.object(notify_mod.subprocess, "run") as run,
+        ):
+            run.return_value.stdout = stdout
+            return notify_mod.ask("t", "b", "Watch new path")
+
+    def test_only_the_button_is_a_yes(self):
+        clicked = (
+            '{"activationType": "actionClicked", "activationValue": "Watch new path"}'
+        )
+        self.assertTrue(self._answer(clicked))
+        for no in (
+            '{"activationType": "contentsClicked"}',
+            '{"activationType": "closed", "activationValue": "Ignore"}',
+            '{"activationType": "timeout"}',
+            '{"activationType": "actionClicked", "activationValue": "Other"}',
+            "not json",
+            "",
+        ):
+            self.assertFalse(self._answer(no), no)
+
+    def test_no_alerter_is_a_no(self):
+        clicked = (
+            '{"activationType": "actionClicked", "activationValue": "Watch new path"}'
+        )
+        self.assertFalse(self._answer(clicked, alerter=None))
+
+
 if __name__ == "__main__":
     unittest.main()

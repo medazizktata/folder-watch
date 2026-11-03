@@ -1,8 +1,10 @@
 """Watch loops: settle, poll, event."""
 from __future__ import annotations
 
+import fcntl
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -13,7 +15,10 @@ from typing import Any
 
 from folder_watch.actions.base import Action
 from folder_watch.core.util import is_open, should_watch_name
+from folder_watch.presets import load_raw_preset, save_preset
+from folder_watch.support.launchd import service_label
 from folder_watch.support.log import emit, emit_debug, is_verbose
+from folder_watch.support.notify import ask, notify
 from folder_watch.support.pidfile import (
     clear_pidfile,
     live_watchers,
@@ -47,6 +52,104 @@ BASELINE_LSOF_WINDOW = 60.0
 SRC_CHECK_INTERVAL = 5.0
 SRC_WAIT_INTERVAL = 5.0
 SRC_WAIT_LOG_INTERVAL = 60.0
+# The gap between src_waiting lines doubles up to this. At a fixed minute, a
+# source that never came back grew the log by 1,440 lines a day, forever.
+SRC_WAIT_LOG_MAX = 86400.0
+
+# macOS O_EVTONLY: a descriptor for watching only, which does not stop the
+# volume it is on from unmounting.
+_O_EVTONLY = 0x8000 if sys.platform == "darwin" else 0
+
+
+def open_src(src_dir: Path) -> int | None:
+    try:
+        return os.open(src_dir, os.O_RDONLY | _O_EVTONLY)
+    except OSError:
+        return None
+
+
+def reopen_src(fd: int | None, src_dir: Path) -> None:
+    """Point `fd` at the folder now at src_dir, which after a restore can be a
+    different folder from the one that left. dup2 keeps the number, so
+    whoever opened it still closes exactly one descriptor."""
+    fresh = open_src(src_dir)
+    if fresh is None:
+        return
+    if fd is not None:
+        os.dup2(fresh, fd)
+    os.close(fresh)
+
+
+def moved_to(fd: int | None, src_dir: Path) -> Path | None:
+    """Where the watched folder went, if it was moved rather than removed.
+
+    An open descriptor follows the folder, not its name, so F_GETPATH reports
+    the new path after a rename or a move within the volume, the Trash
+    included. A deleted folder or an unmounted volume gives None, and the
+    caller keeps waiting for the folder to return. F_GETPATH is macOS only;
+    elsewhere this always gives None.
+    """
+    getpath = getattr(fcntl, "F_GETPATH", None)
+    if fd is None or getpath is None:
+        return None
+    try:
+        raw = fcntl.fcntl(fd, getpath, bytes(1024))
+    except OSError:
+        return None
+    now = Path(os.fsdecode(raw.split(b"\0", 1)[0]))
+    return now if now != src_dir and now.is_dir() else None
+
+
+def stop_if_moved(fd: int | None, src_dir: Path) -> bool:
+    """Report a moved source and say whether the watcher should stop.
+
+    It stops rather than following on its own: the new place can be the
+    Trash, or a backup copy, and watching either would act on the wrong
+    files. offer_to_follow lets the user say otherwise. Under launchd the
+    job stays down meanwhile, since its PathState names the old path.
+    """
+    moved = moved_to(fd, src_dir)
+    if moved is None:
+        return False
+    emit(
+        "error",
+        reason="src_moved",
+        src=src_dir,
+        now=moved,
+        action="stopped; point the preset's src at the new path",
+    )
+    return True
+
+
+def offer_to_follow(preset: str | None, src_dir: Path, moved: Path) -> None:
+    """Tell the user the source moved, and for a stored preset offer to
+    watch the new path. A yes saves it as the preset's src and restarts the
+    watcher on it."""
+    raw = load_raw_preset(preset) if preset else None
+    if preset is None or raw is None:
+        notify("folder-watch stopped", f"{src_dir.name} moved to {moved}").join(10)
+        return
+    if not ask(
+        "folder-watch stopped",
+        f"{preset}: {src_dir.name} moved to {moved}",
+        "Watch new path",
+    ):
+        emit("src_not_followed", preset=preset, now=moved)
+        return
+    raw["src"] = str(moved)
+    save_preset(preset, raw)
+    emit("src_followed", preset=preset, src=moved)
+    module = [sys.executable, "-m", "folder_watch"]
+    if os.environ.get("XPC_SERVICE_NAME") == service_label(preset):
+        # Reinstalling unloads this very job, which would kill the install
+        # halfway, so it runs in its own session where launchd's stop can't
+        # reach it. The new plist keeps the job alive for the new path.
+        subprocess.Popen(
+            [*module, "service", "install", "--preset", preset],
+            start_new_session=True,
+        )
+        return
+    os.execv(sys.executable, [*module, *sys.argv[1:]])
 
 
 # "retry" counts as a failure for exit-status purposes: in --once there is no
@@ -699,6 +802,7 @@ def run_watch_poll(
     done_store: DoneStore | None = None,
     recursive: bool = False,
     retries: RetryQueue | None = None,
+    src_fd: int | None = None,
 ) -> int:
     state: dict[str, dict] = {}
     if not catch_up:
@@ -719,8 +823,11 @@ def run_watch_poll(
         # so mutely, warning on each scan and never saying it came back.
         alive = src_dir.is_dir()
         if alive and not present:
+            reopen_src(src_fd, src_dir)
             emit("src_restored", src=src_dir)
         elif not alive and present:
+            if stop_if_moved(src_fd, src_dir):
+                return 2
             emit("src_lost", src=src_dir, action="scanning until it returns")
         present = alive
 
@@ -763,6 +870,7 @@ def run_watch_event(
     catch_up: bool = False,
     done_store: DoneStore | None = None,
     retries: RetryQueue | None = None,
+    src_fd: int | None = None,
 ) -> int:
     try:
         from watchdog.events import FileSystemEventHandler
@@ -936,6 +1044,8 @@ def run_watch_event(
             if now - last_src_check >= SRC_CHECK_INTERVAL:
                 last_src_check = now
                 if not src_dir.is_dir():
+                    if stop_if_moved(src_fd, src_dir):
+                        return 2
                     emit("src_lost", src=src_dir, action="waiting for it to return")
                     observer.stop()
                     observer.join(timeout=5)
@@ -944,11 +1054,14 @@ def run_watch_event(
                         watching.clear()
                         state.clear()
                     waited = 0.0
+                    next_log = SRC_WAIT_LOG_INTERVAL
                     while not src_dir.is_dir():
                         time.sleep(SRC_WAIT_INTERVAL)
                         waited += SRC_WAIT_INTERVAL
-                        if waited % SRC_WAIT_LOG_INTERVAL < SRC_WAIT_INTERVAL:
+                        if waited >= next_log:
                             emit("src_waiting", src=src_dir, waited_s=int(waited))
+                            next_log += min(next_log, SRC_WAIT_LOG_MAX)
+                    reopen_src(src_fd, src_dir)
                     emit("src_restored", src=src_dir, waited_s=int(waited))
                     observer = _start_observer()
                     _prime(restoring=True)
@@ -1126,6 +1239,7 @@ def run_watch(
     if not src_dir.is_dir():
         emit("error", reason="src_missing", src=src_dir)
         return 2
+    src_fd: int | None = None
 
     emit(
         "start",
@@ -1190,6 +1304,9 @@ def run_watch(
         # stopping a service moments after starting it — raised out of a frame
         # the cleanup below did not cover, orphaning the very pidfile it was
         # written to manage. The window is small and entirely reproducible.
+        if not once:
+            # Held for the whole run, so a moved source is found, not just missed.
+            src_fd = open_src(src_dir)
         if not once and not dry_run:
             write_pidfile(
                 name,
@@ -1222,7 +1339,7 @@ def run_watch(
             return 1 if failures else 0
 
         if backend == "poll":
-            return run_watch_poll(
+            rc = run_watch_poll(
                 src_dir,
                 action,
                 exts=exts,
@@ -1233,22 +1350,27 @@ def run_watch(
                 done_store=done_store,
                 recursive=recursive,
                 retries=retries,
+                src_fd=src_fd,
             )
-
-        return run_watch_event(
-            src_dir,
-            action,
-            exts=exts,
-            debounce_ms=debounce_ms,
-            stable_needed=stable_needed,
-            min_bytes=min_bytes,
-            settle_interval=settle_interval,
-            recursive=recursive,
-            catch_up=catch_up,
-            done_store=done_store,
-            retries=retries,
-        )
+        else:
+            rc = run_watch_event(
+                src_dir,
+                action,
+                exts=exts,
+                debounce_ms=debounce_ms,
+                stable_needed=stable_needed,
+                min_bytes=min_bytes,
+                settle_interval=settle_interval,
+                recursive=recursive,
+                catch_up=catch_up,
+                done_store=done_store,
+                retries=retries,
+                src_fd=src_fd,
+            )
+        moved = moved_to(src_fd, src_dir) if rc == 2 else None
     finally:
+        if src_fd is not None:
+            os.close(src_fd)
         if not once and not dry_run:
             clear_pidfile(name)
             if prev_term is not None:
@@ -1256,3 +1378,8 @@ def run_watch(
                     signal.signal(signal.SIGTERM, prev_term)
                 except ValueError:
                     pass
+    # After the cleanup above: the offer can wait an hour for an answer, and
+    # a yes replaces this process.
+    if moved is not None:
+        offer_to_follow(preset, src_dir, moved)
+    return rc

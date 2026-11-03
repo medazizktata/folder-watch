@@ -66,6 +66,36 @@ def resolve_sound(name: str | None) -> str | None:
     return None
 
 
+def ask(title: str, body: str, action: str, *, timeout_s: int = 3600) -> bool:
+    """A notification with one button. Blocks, and is True only if that
+    button was clicked: a click on the body, Ignore, a timeout or no alerter
+    all count as no, because a yes here rewrites a preset."""
+    alerter = shutil.which("alerter")
+    if not alerter:
+        return False
+    try:
+        r = subprocess.run(
+            [
+                alerter, "--title", title, "--message", body,
+                "--actions", action, "--close-label", "Ignore",
+                "--timeout", str(timeout_s), "--group", "folder-watch-moved",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s + 30,
+        )
+        payload = json.loads(r.stdout or "{}")
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("activationType") == "actionClicked"
+        and payload.get("activationValue") == action
+    )
+
+
 def human_size(n: int) -> str:
     if n < 1024:
         return f"{n}B"
@@ -108,13 +138,16 @@ def notify(
     *,
     reveal: Path | None = None,
     sound: str | None = None,
-) -> None:
+) -> threading.Thread:
     """macOS notification. If reveal is set, offers 'Show in folder' (alerter).
 
     `sound` names a macOS sound to play with it. Every backend below takes one,
     so it rides along with the notification rather than being a second noise
     fired separately — which would drift out of sync with it and would still
     play when the notification itself was suppressed.
+
+    Returns the sending thread. It is a daemon, so a caller about to exit
+    must join it or the notification dies with the process.
     """
     tone = resolve_sound(sound)
 
@@ -233,5 +266,7 @@ def notify(
         except (OSError, subprocess.TimeoutExpired):
             pass
 
-    threading.Thread(target=_run, daemon=True, name="fw-notify").start()
+    sender = threading.Thread(target=_run, daemon=True, name="fw-notify")
+    sender.start()
+    return sender
 

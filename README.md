@@ -320,7 +320,19 @@ the files it was asked to pick up.
 **Watched folder deleted, renamed, or its volume unmounted** — FSEvents just goes
 quiet, so the watcher polls for the directory every 5s rather than trusting the
 silence. On loss it logs `src_lost`, tears down the observer and waits; when the
-folder returns it logs `src_restored` and re-arms.
+folder returns it logs `src_restored` and re-arms. While it waits, `src_waiting`
+is logged after 1 minute, then 2, 4, 8… capped at once a day, so a folder that
+never returns does not grow the log forever.
+
+**Watched folder moved or renamed** — on macOS the watcher holds the folder
+open, so it can tell where the folder went, the Trash included. It logs
+`error reason=src_moved now=<new path>`, exits 2 and sends a notification
+instead of waiting for a name that will not come back. It never follows a move
+by itself: the new place can be the Trash or a backup copy. For a stored preset
+the notification has a **Watch new path** button (needs `alerter`). Clicking it
+saves the new path as the preset's `src` and restarts the watcher on it. A
+LaunchAgent is reinstalled so its plist follows. Ignoring it, or letting it
+time out after an hour, changes nothing.
 
 A restore always does a **catch-up** scan, even without `--catch-up`: anything
 that landed while the directory was gone is work that hasn't been done. The
