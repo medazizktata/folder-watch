@@ -21,10 +21,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import _isolate  # noqa: F401  (must precede folder_watch — redirects state)
+import _isolate  # must precede folder_watch — redirects state
 from _loopharness import _emit_importers, captured, count, fields
 
 import folder_watch.support.log as log_mod
+
+
+class TestNoRealDesktopOrLaunchd(unittest.TestCase):
+    def test_notifiers_finder_and_launchctl_are_stubs(self):  # holds on BASE
+        """A unit run once posted twelve real notifications."""
+        import shutil
+
+        for tool in ("alerter", "terminal-notifier", "osascript", "open", "launchctl"):
+            found = shutil.which(tool)
+            self.assertIsNotNone(found, tool)
+            self.assertEqual(Path(found).parent, _isolate.STUBS, tool)
 
 
 class TestNoSleepAsSynchronisation(unittest.TestCase):

@@ -30,6 +30,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT))
 
+# The real launchd, notifiers and Finder, unlike the unit suite; and labels
+# outside the real com.folder-watch.* namespace, so a job left behind or a
+# launchd record never looks like one of your services.
+os.environ["FOLDER_WATCH_E2E"] = "1"
+os.environ.setdefault("FOLDER_WATCH_LABEL_PREFIX", "com.folder-watch-e2e")
+
 import _isolate  # noqa: F401  (must precede folder_watch — redirects state)
 
 DEADLINE = 30.0
@@ -189,8 +195,9 @@ class LaunchdCase(IsolatedCase):
         launchd job inherits nothing from this process."""
         label = plist["Label"]
         env = dict(plist.get("EnvironmentVariables", {}))
-        for var in ("FOLDER_WATCH_STATE_DIR", "FOLDER_WATCH_CONFIG_DIR",
-                    "FOLDER_WATCH_LAUNCH_AGENTS"):
+        from folder_watch.support.paths import OVERRIDES
+
+        for var in OVERRIDES:
             env[var] = os.environ[var]
         plist = {**plist, "EnvironmentVariables": env}
         path = self.tmp / f"{label}.plist"
@@ -202,7 +209,9 @@ class LaunchdCase(IsolatedCase):
         return label
 
     def unique_label(self, what: str) -> str:
-        return f"com.folder-watch.e2e-{what}-{os.getpid()}-{time.monotonic_ns()}"
+        from folder_watch.support.paths import LABEL_PREFIX
+
+        return f"{LABEL_PREFIX}.{what}-{os.getpid()}-{time.monotonic_ns()}"
 
     def job(self, label: str) -> dict[str, str]:
         """launchctl's view of a job: state, runs, last exit code."""

@@ -34,8 +34,10 @@ LAUNCH_AGENTS = _dir(
 # environment, so a service installed with these set (a sandbox, a test run)
 # would otherwise watch and write with the real config.
 OVERRIDES = ("FOLDER_WATCH_CONFIG_DIR", "FOLDER_WATCH_STATE_DIR",
-             "FOLDER_WATCH_LAUNCH_AGENTS")
-LABEL_PREFIX = "com.folder-watch"
+             "FOLDER_WATCH_LAUNCH_AGENTS", "FOLDER_WATCH_LABEL_PREFIX")
+# Overridable so the e2e suite's launchd jobs, and the records launchd keeps
+# about them, never sit among the real services.
+LABEL_PREFIX = os.environ.get("FOLDER_WATCH_LABEL_PREFIX") or "com.folder-watch"
 PID_DIR = STATE_DIR / "pids"
 
 

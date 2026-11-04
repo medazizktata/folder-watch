@@ -29,3 +29,24 @@ CONFIG_DIR = Path(os.environ["FOLDER_WATCH_CONFIG_DIR"])
 LAUNCH_AGENTS = Path(os.environ["FOLDER_WATCH_LAUNCH_AGENTS"])
 for _d in (STATE_DIR, CONFIG_DIR, LAUNCH_AGENTS):
     _d.mkdir(parents=True, exist_ok=True)
+
+# The unit suite must not post notifications, drive Finder or talk to the real
+# launchd: a run of it once sent twelve real alerter notifications (an
+# UnzipAction notifies when done unless told not to). Stubs for each go first
+# on PATH, which every watcher a test spawns inherits; `launchctl print`
+# answers as for an unknown job. The e2e suite drives the real ones on purpose
+# and opts out.
+STUBS = SCRATCH / "stub-bin"
+if not os.environ.get("FOLDER_WATCH_E2E"):
+    STUBS.mkdir(parents=True, exist_ok=True)
+    for _tool in ("alerter", "terminal-notifier", "osascript", "open", "launchctl"):
+        _stub = STUBS / _tool
+        _stub.write_text(
+            "#!/bin/sh\n"
+            f'echo "{_tool} $*" >> "{STUBS}/calls.log"\n'
+            + ('[ "$1" = print ] && exit 113\n' if _tool == "launchctl" else "")
+            + "exit 0\n"
+        )
+        _stub.chmod(0o755)
+    if not os.environ.get("PATH", "").startswith(f"{STUBS}:"):
+        os.environ["PATH"] = f"{STUBS}:{os.environ.get('PATH', '')}"

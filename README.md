@@ -804,9 +804,11 @@ themselves where there is no GUI login session, as on CI runners.
 about 2.5 minutes). It runs everything `make all` does with the bytecode cache
 off, reports coverage of the files changed since `BASE`, and then runs every
 test added since `BASE` against `BASE`'s code. Each one must **fail** there,
-because a new test that passes without the change it was written for is not
-testing it. A test in a module that only exists after the change cannot run on
-`BASE` and is listed as unchecked rather than counted. A test that guards
+by assertion, because a new test that passes without the change it was written
+for is not testing it. One that only raises there (usually because what it
+calls is new) never reached its assertion, so it is listed to check by hand,
+as is a test in a module that only exists after the change. Coverage of the
+changed files must be at least 80%, and the e2e suite is not red-checked. A test that guards
 behaviour the change must keep, and so passes before and after by design, is
 marked `# holds on BASE` on its `def` line. Deliberate breaks of the new code
 are still done by hand, per feature.
@@ -816,6 +818,13 @@ and 3.13 — a linux runner would be cheaper and would prove nothing about a
 tool built on FSEvents, `lsof` and launchd. It also asserts `lsof` stays
 reachable, since a watcher that cannot find it once treated every file as
 permanently open and silently processed nothing.
+
+The unit suite never reaches the real desktop or launchd: `tests/_isolate`
+puts stub `alerter`, `terminal-notifier`, `osascript`, `open` and `launchctl`
+first on `PATH` (logging to `$TMPDIR/folder-watch-tests/stub-bin/calls.log`),
+and `test_harness` fails if they are not the ones found. The e2e suite uses
+the real ones, under the label prefix `com.folder-watch-e2e`
+(`FOLDER_WATCH_LABEL_PREFIX`) so its jobs never sit among your services.
 
 Config lives in `pyproject.toml`. `E402` is ignored under `tests/` — every
 suite must put the repo on `sys.path` and import `tests/_isolate` (which

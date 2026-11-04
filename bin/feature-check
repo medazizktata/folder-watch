@@ -69,11 +69,14 @@ git worktree add -q --detach "$old" "$BASE"
 trap 'git -C "$ROOT" worktree remove --force "$old"' EXIT
 # BASE's package, today's tests.
 cp -R tests/. "$old/tests/"
-passed=(); red=(); unrun=()
+passed=(); red=(); errored=(); unrun=()
 for n in "${names[@]}"; do
   # PYTHONPATH pins BASE's package: the venv holds an editable install of
   # this checkout, which would otherwise be what the old tests import.
-  out=$(cd "$old/tests" && PYTHONPATH="$old" "$VENV/python" -B -m unittest -k "${n#*:}" "${n%%:*}" 2>&1) \
+  # "*.name": with a wildcard -k is an exact fnmatch on the full test id;
+  # without one it is a substring, and a longer-named test that failed
+  # would count as red for this one.
+  out=$(cd "$old/tests" && PYTHONPATH="$old" "$VENV/python" -B -m unittest -k "*.${n#*:}" "${n%%:*}" 2>&1) \
     && rc=0 || rc=$?
   ran=$(sed -n 's/^Ran \([0-9]*\) test.*/\1/p' <<<"$out" | tail -1)
   # Nothing ran is not red: a test in a module that only exists after the
@@ -83,11 +86,19 @@ for n in "${names[@]}"; do
     unrun+=("$n")
   elif ((rc == 0)); then
     passed+=("$n")
-  else
+  elif grep -q "^FAIL:" <<<"$out"; then
     red+=("$n")
+  else
+    # Red only because something it calls did not exist yet: that shows the
+    # API changed, not that the test checks the behaviour.
+    errored+=("$n")
   fi
 done
-echo "${#names[@]} new test(s): ${#red[@]} fail on $BASE as they should"
+echo "${#names[@]} new test(s): ${#red[@]} fail on $BASE by assertion, as they should"
+if ((${#errored[@]})); then
+  echo "${#errored[@]} only raise on $BASE, never reaching an assertion (often because what they call is new); check these by hand:"
+  printf '  %s\n' "${errored[@]}"
+fi
 if ((${#unrun[@]})); then
   echo "${#unrun[@]} cannot run on $BASE (their module or import is new), so unchecked here:"
   printf '  %s\n' "${unrun[@]}"

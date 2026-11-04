@@ -17,6 +17,15 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **The unit tests posted real notifications.** A run sent twelve through
+  `alerter`, and some tests asked the real launchd. The unit suite now finds
+  stubs for every notifier, Finder and `launchctl` first on `PATH`, and a
+  harness test fails if it does not. The e2e suite's launchd jobs moved to
+  their own label prefix, `com.folder-watch-e2e`.
+- **`make feature` counted a test as red when it merely could not run.** It
+  now separates tests that fail by assertion on `BASE` from ones that only
+  raise there, and matches each test by its exact name rather than as a
+  substring of others.
 - **A service did not come back when its volume was mounted again.**
   launchd does not re-check PathState on a mount, so a watcher whose source
   sits on a drive stayed stopped after the drive returned. Service plists now
