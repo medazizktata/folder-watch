@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from folder_watch import dashboard, doctor, web
+from folder_watch import dashboard, digest, doctor, web
 from folder_watch._version import __version__
 from folder_watch.actions import ACTION_NAMES, ACTIONS
 from folder_watch.actions.base import Action
@@ -79,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  prune [--yes]            # drop dead done-state and stale pidfiles\n"
             "  doctor [--test-notify]   # notifiers, services, destinations, access\n"
             "  dashboard [--port N]     # live local web page with pause/resume\n"
+            "  digest [--days N]        # what each preset did, from its logs\n"
             "  presets show NAME            # one preset, with its source files\n"
             "  presets forget NAME [--yes]  # remove a preset\n"
         ),
@@ -651,6 +652,20 @@ def _prune_presets(*, dry: bool) -> list[str]:
     return due
 
 
+def run_digest_cli(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="folder-watch digest")
+    ap.add_argument("--days", type=int, default=7, help="how many days back (default 7)")
+    args = ap.parse_args(argv)
+    per_preset = digest.week(days=args.days)
+    for name, counts in per_preset.items():
+        done = ", ".join(f"{k} {counts[k]}" for k in digest.DONE if counts[k])
+        done = done or "nothing"
+        failed = sum(counts[k] for k in digest.FAILED)
+        print(f"{name}: {done}" + (f", {failed} failed" if failed else ""))
+    print(f"\nlast {args.days} days: {digest.summary(per_preset) or 'nothing happened'}")
+    return 0
+
+
 def run_dashboard_cli(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="folder-watch dashboard")
     ap.add_argument("--port", type=int, default=8765,
@@ -741,6 +756,9 @@ def run_prune_cli(argv: list[str]) -> int:
         if problems:
             more = f" (+{len(problems) - 1} more)" if len(problems) > 1 else ""
             notify("folder-watch: run `folder-watch doctor`", problems[0] + more).join(10)
+        week = digest.summary(digest.week())
+        if week:
+            notify("folder-watch this week", week).join(10)
         # One dry pass to see what there is, and nothing removed without the
         # click — the tool's own bookkeeping included.
         state = _prune_state(dry=True)
@@ -944,6 +962,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
         return run_service_cli(argv[1:])
     if argv and argv[0] == "status":
         return run_status_cli(argv[1:])
+    if argv and argv[0] == "digest":
+        return run_digest_cli(argv[1:])
     if argv and argv[0] == "dashboard":
         return run_dashboard_cli(argv[1:])
     if argv and argv[0] == "doctor":

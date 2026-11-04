@@ -435,6 +435,21 @@ Done-state files: `~/.local/state/folder-watch/done-*.json`
 Pidfiles: `~/.local/state/folder-watch/pids/*.json`  
 Key = action + src + dest/mode + size + mtime (scheme **B**).
 
+## Digest
+
+```bash
+folder-watch digest            # what each preset did in the last 7 days
+folder-watch digest --days 30
+```
+
+Counted from each preset's log and its rotated copies: results (`copied`,
+`extracted`, `ran`) and failures (`fail`, `give_up`). Every log line now
+carries its date (`2026-11-04 09:05:00 INFO …`, and a `ts` field with
+`--json`), so a week is counted by date. Lines written before dates were added
+are skipped. The weekly `prune --schedule` job sends the same summary as a
+notification, for example "copied 34, 2 failed (photos, inbox)", when anything
+happened that week.
+
 ## Dashboard
 
 ```bash

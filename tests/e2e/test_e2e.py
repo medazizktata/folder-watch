@@ -52,6 +52,24 @@ class TestWatcher(WatcherCase):
         self.assertEqual((self.src / "pack" / "a.txt").read_bytes(), b"hello")
         self.assertFalse((self.src / "pack.zip").exists())
 
+    def test_the_digest_counts_what_a_real_watcher_did(self):
+        name = f"e2e-digest-{os.getpid()}"
+        save_preset(name, {"action": "copy", "src": str(self.src), "to": str(self.dest)})
+        self.addCleanup(remove_preset, name)
+        # The preset's own log, which is where the digest looks.
+        self.log = STATE_DIR / f"{name}.log"
+        self.addCleanup(self.log.unlink, True)
+        self.start("--preset", name)
+        self.drop("clip.mp4")
+        self.wait_for("copied", name="clip.mp4")
+
+        out = subprocess.run(
+            [sys.executable, "-B", "-m", "folder_watch", "digest"],
+            cwd=ROOT, capture_output=True, text=True, env=dict(os.environ), check=True,
+        ).stdout
+
+        self.assertIn(f"{name}: copied 1", out)
+
     def test_a_renamed_source_stops_the_watcher_with_its_new_path(self):
         """Watching for a name that will not come back used to wait forever."""
         self.start("copy", str(self.src), "--to", str(self.dest))

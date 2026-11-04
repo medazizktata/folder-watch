@@ -95,6 +95,10 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **`folder-watch digest`** and a weekly digest notification: what each preset
+  did in the last 7 days ("copied 34, 2 failed (photos, inbox)"), counted from
+  its logs. Log lines now carry the date (`YYYY-MM-DD HH:MM:SS` in plain
+  logs, a `ts` field with `--json`), which is what makes a week countable.
 - **`folder-watch dashboard`**: `status --all` as a live local web page,
   refreshed every 5 seconds, with Pause / Resume, Open folder and Open log
   buttons. Bound to 127.0.0.1; actions need a per-run token, and other host

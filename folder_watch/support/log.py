@@ -5,6 +5,7 @@ import json
 import logging
 import logging.handlers
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,11 @@ def setup_logging(
     fmt = (
         logging.Formatter("%(message)s")
         if json_mode
-        else logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
+        # The date too: a time alone cannot say which day a line is from, so
+        # nothing could count a week of results from the log.
+        else logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"
+        )
     )
     err = logging.StreamHandler(sys.stderr)
     err.setFormatter(fmt)
@@ -120,7 +125,8 @@ def emit(event: str, **fields: Any) -> None:
     # Fire-and-forget; returns immediately whether or not anything is listening.
     webhook.post(event, payload)
     if _JSON_MODE:
-        line = json.dumps(payload, ensure_ascii=False)
+        stamped = {"ts": datetime.now().isoformat(timespec="seconds"), **payload}
+        line = json.dumps(stamped, ensure_ascii=False)
     else:
         bits = [event] + [f"{k}={_plain(v)}" for k, v in fields.items()]
         line = " ".join(bits)

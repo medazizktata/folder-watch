@@ -40,6 +40,12 @@ class TestLastResult(unittest.TestCase):
             "copied new clip.mp4 at 09:05:00",
         )
 
+    def test_dated_lines_show_their_date(self):
+        self.assertEqual(
+            self.last("2026-11-04 09:05:00 INFO copied name=a.mp4 size=1"),
+            "copied a.mp4 at 2026-11-04 09:05:00",
+        )
+
     def test_a_brace_in_a_file_name_is_not_json(self):
         self.assertEqual(
             self.last("09:00:00 INFO copied name=a{b}.mp4 size=1"),

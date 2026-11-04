@@ -18,7 +18,8 @@ from folder_watch.support.notify import human_size
 from folder_watch.support.paths import STATE_DIR
 
 RESULTS = ("copied", "extracted", "ran")
-_PLAIN = re.compile(r"^(?:(\d\d:\d\d:\d\d) \w+ )?(\w+) (.*)$")
+# Lines written before dates were added start with the time alone.
+_PLAIN = re.compile(r"^(?:((?:\d{4}-\d\d-\d\d )?\d\d:\d\d:\d\d) \w+ )?(\w+) (.*)$")
 _NAME = re.compile(r'name=("(?:[^"\\]|\\.)*"|\S+)')
 
 
