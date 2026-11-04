@@ -17,6 +17,15 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **Any account on the Mac could use the dashboard.** The token that
+  guarded its buttons was written into the page, and the page was served to
+  anyone who asked 127.0.0.1 for it, so another user (or a page on another
+  localhost port) could read the token, then pause services or point a
+  preset at another folder. The dashboard now needs a key from a file only
+  you can read: `folder-watch dashboard` opens a link carrying it once, the
+  page trades it for an HttpOnly, SameSite=Strict cookie, and every page and
+  API request needs that cookie. Actions must also come from the page's own
+  origin, and the page cannot be framed. New: `dashboard --link`.
 - **A webhook's token was written to the audit trail and printed by edits.**
   `presets edit` and `--save-preset` printed the old and new URL in full,
   and the audit trail recorded both, in a file anyone on the Mac could

@@ -13,6 +13,7 @@ import select
 import subprocess
 import sys
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -145,24 +146,31 @@ class TestDashboardCommand(IsolatedCase):
         url = re.search(r"http://127\.0\.0\.1:\d+/", proc.stdout.readline())
         self.assertIsNotNone(url)
 
-        page = urllib.request.urlopen(url.group(0), timeout=10).read().decode()
-        rows = json.loads(
-            urllib.request.urlopen(url.group(0) + "api/rows", timeout=10).read()
-        )
+        base = url.group(0)
+        with self.assertRaises(urllib.error.HTTPError) as locked:
+            urllib.request.urlopen(base, timeout=10)
+        self.assertEqual(locked.exception.code, 403)
+
+        # As a browser: the link with the key, which leaves a cookie behind.
+        from http.cookiejar import CookieJar
+
+        from folder_watch.web import dashboard_key
+        browser = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(CookieJar()))
+        page = browser.open(f"{base}?key={dashboard_key()}", timeout=10).read().decode()
+        rows = json.loads(browser.open(base + "api/rows", timeout=10).read())
 
         self.assertIn("<title>folder-watch</title>", page)
         self.assertIn(name, [r["preset"] for r in rows])
 
-        # The page's own token, as the Run doctor button sends it.
-        token = re.search(r'const TOKEN = "([^"]+)"', page).group(1)
+        # As the Run doctor button sends it.
         request = urllib.request.Request(
-            url.group(0) + "api/doctor", data=b"{}", method="POST",
-            headers={"X-FW-Token": token, "Content-Type": "application/json"},
+            base + "api/doctor", data=b"{}", method="POST",
+            headers={"Content-Type": "application/json", "Origin": base.rstrip("/")},
         )
-        findings = json.loads(urllib.request.urlopen(request, timeout=30).read())
+        findings = json.loads(browser.open(request, timeout=30).read())
         self.assertIn("notifications", {f["section"] for f in findings["findings"]})
-        log = json.loads(urllib.request.urlopen(
-            url.group(0) + f"api/log?preset={name}", timeout=10).read())
+        log = json.loads(browser.open(base + f"api/log?preset={name}", timeout=10).read())
         self.assertEqual(log["lines"], [])
 
 

@@ -762,11 +762,17 @@ def run_dashboard_cli(argv: list[str]) -> int:
     ap.add_argument("--install", action="store_true",
                     help="run the dashboard at login, always on --port")
     ap.add_argument("--uninstall", action="store_true", help="stop running it at login")
+    ap.add_argument("--link", action="store_true",
+                    help="print the address with its key for --port, to open once")
     args = ap.parse_args(argv)
+    if args.link:
+        print(f"http://127.0.0.1:{args.port}/?key={web.dashboard_key()}")
+        return 0
     if args.install:
         plist = install_dashboard_service(program=_program(), port=args.port)
         print(f"installed {plist}: http://127.0.0.1:{args.port}/ from your next login, "
-              "and now")
+              "and now. Open this once in your browser, to let it in:\n"
+              f"  http://127.0.0.1:{args.port}/?key={web.dashboard_key()}")
         return 0
     if args.uninstall:
         removed = uninstall_service(preset=DASHBOARD_JOB)
@@ -779,9 +785,13 @@ def run_dashboard_cli(argv: list[str]) -> int:
             print(f"error: port {args.port} is not available: {e}", file=sys.stderr)
             return 1
         server = web.DashboardServer(0)
+    # The plain address only: under launchd this line goes to a log file.
     print(f"folder-watch dashboard: {server.url}  (Ctrl-C to stop)", flush=True)
-    if not args.no_open:
-        subprocess.run(["open", server.url], check=False)
+    if args.no_open:
+        print("its key: folder-watch dashboard --link "
+              f"--port {server.server_address[1]}", flush=True)
+    else:
+        subprocess.run(["open", server.link], check=False)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

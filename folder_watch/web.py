@@ -1,20 +1,25 @@
 """`folder-watch dashboard`: the status --all table as a live local web page,
 with buttons to pause or resume a service and to open its folder or log.
 
-It listens on 127.0.0.1 only. A page from any other site can still send
-requests to localhost, so every action needs a random token that only this
-dashboard's own page carries (another site cannot read the page to learn it),
-and a request addressed to any host other than this one is refused, which
-stops a rebound domain from posing as localhost.
+It listens on 127.0.0.1 only, which every account on the Mac and every page
+in the browser can reach. So nothing is served without a key kept in a file
+only you can read: the link `folder-watch dashboard` opens carries it once,
+the page swaps it for an HttpOnly, SameSite=Strict cookie, and every request
+after that needs the cookie. An action also needs to come from this page's
+own origin (another port on localhost counts as the same site to a
+browser), and a request addressed to any host other than this one is
+refused, which stops a rebound domain from posing as localhost.
 """
 from __future__ import annotations
 
 import contextlib
-import html
 import io
 import json
+import os
 import secrets
 import subprocess
+import tempfile
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -28,6 +33,30 @@ from folder_watch.support.notify import reveal_in_finder
 from folder_watch.support.paths import STATE_DIR
 
 REFRESH_SECONDS = 5
+KEY_FILE = STATE_DIR / "dashboard.key"
+COOKIE = "fw_key"
+COOKIE_DAYS = 365
+
+
+def dashboard_key() -> str:
+    """The secret that admits a browser, created on first use. Shared by every
+    dashboard you start, including the one at login, so a link opened once
+    keeps working across restarts; another account cannot read the file."""
+    with contextlib.suppress(FileNotFoundError):
+        key = KEY_FILE.read_text().strip()
+        if key:
+            return key
+    KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=KEY_FILE.parent, prefix=".dashboard-key-")
+    try:
+        with os.fdopen(fd, "w") as f:  # mkstemp: 0600
+            f.write(secrets.token_urlsafe(24))
+        # Two dashboards starting at once: the first key written is the key.
+        with contextlib.suppress(FileExistsError):
+            os.link(tmp, KEY_FILE)
+    finally:
+        os.unlink(tmp)
+    return KEY_FILE.read_text().strip()
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -35,11 +64,15 @@ class DashboardServer(ThreadingHTTPServer):
 
     def __init__(self, port: int = 0) -> None:
         super().__init__(("127.0.0.1", port), Handler)
-        self.token = secrets.token_urlsafe(24)
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.server_address[1]}/"
+
+    @property
+    def link(self) -> str:
+        """The address with the key, to open once. Not for a shared log."""
+        return f"{self.url}?key={dashboard_key()}"
 
 
 # What the dashboard's Edit form may change. Anything else stays a job for
@@ -132,30 +165,66 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass  # a request per refresh would bury anything worth reading
 
-    def _send(self, code: int, body: bytes, kind: str) -> None:
+    def _send(
+        self, code: int, body: bytes, kind: str, headers: dict[str, str] | None = None
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # Framed by another localhost page, the buttons could be clicked for you.
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
     def _json(self, code: int, data: Any) -> None:
         self._send(code, json.dumps(data).encode(), "application/json")
 
-    def _host_ok(self) -> bool:
+    def _origins(self) -> tuple[str, str]:
         port = self.server.server_address[1]
-        return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}")
+        return f"127.0.0.1:{port}", f"localhost:{port}"
+
+    def _host_ok(self) -> bool:
+        return self.headers.get("Host", "") in self._origins()
+
+    def _key_ok(self) -> bool:
+        try:
+            jar = SimpleCookie(self.headers.get("Cookie", ""))
+        except CookieError:
+            return False
+        sent = jar[COOKIE].value if COOKIE in jar else ""
+        return secrets.compare_digest(sent, dashboard_key())
+
+    def _origin_ok(self) -> bool:
+        # Browsers always send Origin on a POST; a script that has the key
+        # sends none and needs no protection from itself.
+        origin = self.headers.get("Origin")
+        return origin is None or origin in [f"http://{o}" for o in self._origins()]
 
     def do_GET(self) -> None:
         if not self._host_ok():
             return self._json(403, {"error": "wrong host"})
-        if self.path == "/":
-            body = page(self.server.token).encode()
-            return self._send(200, body, "text/html; charset=utf-8")
-        if self.path == "/api/rows":
-            return self._json(200, dashboard.entries())
         url = urlsplit(self.path)
+        if url.path == "/" and "key" in parse_qs(url.query):
+            given = parse_qs(url.query)["key"][0]
+            if not secrets.compare_digest(given, dashboard_key()):
+                return self._send(403, LOCKED.encode(), "text/html; charset=utf-8")
+            cookie = (f"{COOKIE}={given}; Path=/; HttpOnly; SameSite=Strict; "
+                      f"Max-Age={COOKIE_DAYS * 86400}")
+            # Off the address bar and out of the history, now that it is a cookie.
+            return self._send(303, b"", "text/plain",
+                              {"Location": "/", "Set-Cookie": cookie})
+        if not self._key_ok():
+            if url.path == "/":
+                return self._send(403, LOCKED.encode(), "text/html; charset=utf-8")
+            return self._json(403, {"error": "no key: run folder-watch dashboard --link"})
+        if url.path == "/":
+            return self._send(200, page().encode(), "text/html; charset=utf-8")
+        if url.path == "/api/rows":
+            return self._json(200, dashboard.entries())
         if url.path == "/api/audit":
             try:
                 since = audit.parse_since(parse_qs(url.query).get("since", ["7d"])[0])
@@ -177,9 +246,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._host_ok():
             return self._json(403, {"error": "wrong host"})
-        token = self.headers.get("X-FW-Token", "")
-        if not secrets.compare_digest(token, self.server.token):
-            return self._json(403, {"error": "missing or wrong token"})
+        if not self._key_ok():
+            return self._json(403, {"error": "no key: run folder-watch dashboard --link"})
+        if not self._origin_ok():
+            return self._json(403, {"error": "not from this dashboard's page"})
         action = self.path.removeprefix("/api/")
         # One request per thread, so this attributes just this request.
         audit.set_trigger("dashboard")
@@ -204,10 +274,16 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"ok": message})
 
 
-def page(token: str) -> str:
-    return PAGE.replace("{{TOKEN}}", html.escape(token)).replace(
-        "{{REFRESH}}", str(REFRESH_SECONDS * 1000)
-    )
+def page() -> str:
+    return PAGE.replace("{{REFRESH}}", str(REFRESH_SECONDS * 1000))
+
+
+LOCKED = """<!doctype html>
+<meta charset="utf-8"><title>folder-watch</title>
+<p>This dashboard needs its key. In Terminal, run
+<code>folder-watch dashboard --link</code> and open the link it prints, once;
+after that this browser can use the plain address.</p>
+"""
 
 
 PAGE = """<!doctype html>
@@ -301,7 +377,6 @@ pre { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   <div id="tool-panel" class="panel tool-panel" hidden></div>
 </main>
 <script>
-const TOKEN = "{{TOKEN}}";
 const el = (tag, cls, text) => {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -318,7 +393,7 @@ async function act(action, preset, extra) {
   try {
     const r = await fetch("/api/" + action, {
       method: "POST",
-      headers: {"Content-Type": "application/json", "X-FW-Token": TOKEN},
+      headers: {"Content-Type": "application/json"},
       body: JSON.stringify({preset, ...(extra || {})}),
     });
     const data = await r.json();
@@ -371,7 +446,7 @@ let editing = null;  // a refresh would wipe a half-typed form or an open log
 async function post(path, body) {
   const r = await fetch(path, {
     method: "POST",
-    headers: {"Content-Type": "application/json", "X-FW-Token": TOKEN},
+    headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body || {}),
   });
   return [r.ok, await r.json()];

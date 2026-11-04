@@ -549,6 +549,7 @@ happened that week.
 folder-watch dashboard              # opens http://127.0.0.1:8765/ in your browser
 folder-watch dashboard --no-open --port 9000
 folder-watch dashboard --install    # at every login, always on 127.0.0.1:8765
+folder-watch dashboard --link       # the address with its key, to open once
 folder-watch dashboard --uninstall
 ```
 
@@ -566,10 +567,18 @@ log, and log size, with **Pause** / **Resume**, **Open folder** and **Open log**
 buttons. It runs until you press Ctrl-C. The terminal version is
 `folder-watch status --all`.
 
-It listens on 127.0.0.1 only. Any page in your browser can still send
-requests to localhost, so every button sends a random token that only the
-dashboard's own page carries, and a request addressed to any other host name
-is refused, which stops a domain rebound to 127.0.0.1 from reading or acting.
+It listens on 127.0.0.1 only, which every account on the Mac and every page
+in your browser can still reach. So nothing is shown without a key, kept in
+`~/.local/state/folder-watch/dashboard.key` where only you can read it.
+`folder-watch dashboard` opens the address with the key; the page swaps it
+for a cookie (HttpOnly, SameSite=Strict, a year) and drops it from the
+address bar, so after that the plain address works in that browser. For the
+one started at login, `--install` prints that link once, and `--link` prints
+it again whenever you need it; the dashboard's own log only ever gets the
+plain address. A button press must also come from the dashboard's own page,
+which stops another page on localhost from acting through your cookie; the
+page refuses to be framed; and a request addressed to any other host name is
+refused, which stops a domain rebound to 127.0.0.1 from reading or acting.
 
 ## Doctor
 

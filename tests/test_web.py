@@ -1,9 +1,10 @@
 """The web dashboard: a real server on a free port, real HTTP requests.
 
-What matters most here is who may do what: any page in the browser can send
-requests to localhost, so actions need the page's token, and requests for any
-other host name are refused. launchctl and Finder are faked; tests/e2e drives
-the real command.
+What matters most here is who may do what: every account on the Mac and any
+page in the browser can reach localhost, so nothing is served without the key
+from a file only its owner can read, actions must come from the page's own
+origin, and requests for any other host name are refused. launchctl and
+Finder are faked; tests/e2e drives the real command.
 """
 from __future__ import annotations
 
@@ -30,6 +31,10 @@ class WebCase(unittest.TestCase):
         cfg = {"action": "copy", "src": str(self.tmp), "to": str(self.tmp)}
         save_preset(self.preset, cfg)
         self.addCleanup(remove_preset, self.preset)
+        # Fresh, so creating it is tested too, not only reading one left behind.
+        key_file = mock.patch.object(web, "KEY_FILE", self.tmp / "dashboard.key")
+        key_file.start()
+        self.addCleanup(key_file.stop)
         self.server = web.DashboardServer(0)
         self.port = self.server.server_address[1]
         thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -37,11 +42,15 @@ class WebCase(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
-    def request(self, method, path, *, host=None, token=None, body=None):
+    def request(self, method, path, *, host=None, key="ok", origin=None, body=None):
+        """As the page would send it: with the cookie, unless key is None."""
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         headers = {"Host": host or f"127.0.0.1:{self.port}"}
-        if token is not None:
-            headers["X-FW-Token"] = token
+        if key is not None:
+            key = web.dashboard_key() if key == "ok" else key
+            headers["Cookie"] = f"{web.COOKIE}={key}"
+        if origin is not None:
+            headers["Origin"] = origin
         data = None
         if body is not None:
             data = json.dumps(body)
@@ -49,23 +58,24 @@ class WebCase(unittest.TestCase):
         conn.request(method, path, body=data, headers=headers)
         r = conn.getresponse()
         payload = r.read().decode()
+        self.headers = r.headers
         conn.close()
         return r.status, payload
 
-    def act(self, action, preset=None, token="ok", extra=None):
-        token = self.server.token if token == "ok" else token
+    def act(self, action, preset=None, key="ok", origin=None, extra=None):
         status, payload = self.request(
-            "POST", f"/api/{action}", token=token,
+            "POST", f"/api/{action}", key=key, origin=origin,
             body={"preset": preset or self.preset, **(extra or {})},
         )
         return status, json.loads(payload)
 
 
 class TestReading(WebCase):
-    def test_the_page_carries_the_token_and_the_rows_are_json(self):
+    def test_the_page_and_the_rows_are_served_with_the_key(self):
         status, page = self.request("GET", "/")
         self.assertEqual(status, 200)
-        self.assertIn(self.server.token, page)
+        self.assertIn("<title>folder-watch</title>", page)
+        self.assertNotIn(web.dashboard_key(), page, "the page must not hand it out")
 
         status, rows = self.request("GET", "/api/rows")
         self.assertEqual(status, 200)
@@ -82,19 +92,83 @@ class TestReading(WebCase):
             self.assertEqual(status, 403, path)
 
 
+class TestKey(WebCase):
+    """Another account on this Mac reaches 127.0.0.1 too, and used to read
+    the page that carried the token."""
+
+    def test_nothing_is_served_without_the_key(self):
+        paths = ("/", "/api/rows", f"/api/log?preset={self.preset}", "/api/audit")
+        for key in (None, "guess"):
+            for path in paths:
+                with self.subTest(key=key, path=path):
+                    status, body = self.request("GET", path, key=key)
+                    self.assertEqual(status, 403)
+                    self.assertNotIn(web.dashboard_key(), body)
+                    self.assertNotIn(self.preset, body)
+
+    def test_the_link_trades_the_key_for_a_cookie_once(self):
+        key = web.dashboard_key()
+        status, _ = self.request("GET", f"/?key={key}", key=None)
+        self.assertEqual(status, 303)
+        self.assertEqual(self.headers["Location"], "/")
+        cookie = self.headers["Set-Cookie"]
+        self.assertIn(f"{web.COOKIE}={key}", cookie)
+        for attribute in ("HttpOnly", "SameSite=Strict", "Path=/"):
+            self.assertIn(attribute, cookie)
+
+        status, _ = self.request("GET", "/?key=guess", key=None)
+        self.assertEqual(status, 403)
+        self.assertIsNone(self.headers["Set-Cookie"])
+
+    def test_the_key_is_owner_only_and_the_same_for_every_dashboard(self):
+        self.assertFalse(web.KEY_FILE.exists())
+        key = web.dashboard_key()
+        self.assertEqual(web.KEY_FILE.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(web.dashboard_key(), key)
+        self.assertIn(f"?key={key}", self.server.link)
+
+    def test_two_dashboards_starting_at_once_agree_on_the_key(self):
+        """The one that writes first wins; the other must not replace it, or
+        the link the first one opened stops working."""
+        def another_dashboard_wins(_n):
+            web.KEY_FILE.write_text("first")
+            return "second"
+
+        with mock.patch.object(web.secrets, "token_urlsafe",
+                               side_effect=another_dashboard_wins):
+            self.assertEqual(web.dashboard_key(), "first")
+        self.assertEqual(web.KEY_FILE.read_text(), "first")
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()
+                                if p.name.startswith(".dashboard-key")), [])
+
+    def test_the_page_cannot_be_framed(self):
+        self.request("GET", "/")
+        self.assertEqual(self.headers["X-Frame-Options"], "DENY")
+
+
 class TestActions(WebCase):
-    def test_an_action_needs_the_token(self):
-        """Any site can POST to localhost; only this page knows the token."""
+    def test_an_action_needs_the_key(self):
+        """Any site can POST to localhost; only the owner can read the key."""
         with mock.patch.object(web, "pause_service") as pause:
-            self.assertEqual(self.act("pause", token=None)[0], 403)
-            self.assertEqual(self.act("pause", token="guess")[0], 403)
+            self.assertEqual(self.act("pause", key=None)[0], 403)
+            self.assertEqual(self.act("pause", key="guess")[0], 403)
         pause.assert_not_called()
 
-    def test_another_host_cannot_act_even_with_the_token(self):
+    def test_another_origin_cannot_act_even_with_the_cookie(self):
+        """A page on another localhost port is the same site to a browser,
+        so SameSite sends it the cookie."""
+        with mock.patch.object(web, "pause_service") as pause:
+            for origin in ("http://127.0.0.1:1", "http://evil.example", "null"):
+                self.assertEqual(self.act("pause", origin=origin)[0], 403, origin)
+            pause.assert_not_called()
+            own = f"http://127.0.0.1:{self.port}"
+            self.assertEqual(self.act("pause", origin=own)[0], 200)
+
+    def test_another_host_cannot_act_even_with_the_key(self):
         with mock.patch.object(web, "pause_service") as pause:
             status, _ = self.request(
                 "POST", "/api/pause", host=f"evil.example:{self.port}",
-                token=self.server.token, body={"preset": self.preset},
+                body={"preset": self.preset},
             )
         self.assertEqual(status, 403)
         pause.assert_not_called()
@@ -152,9 +226,9 @@ class TestExtras(WebCase):
             403,
         )
 
-    def test_doctor_and_cleanup_need_the_token(self):  # holds on BASE
+    def test_doctor_and_cleanup_need_the_key(self):  # holds on BASE
         for action in ("doctor", "cleanup"):
-            self.assertEqual(self.act(action, token=None)[0], 403, action)
+            self.assertEqual(self.act(action, key=None)[0], 403, action)
 
     def test_doctor_returns_its_findings(self):
         with mock.patch.object(web.doctor, "check_services",
@@ -277,6 +351,29 @@ class TestDashboardService(unittest.TestCase):
                 )
         self.assertEqual(rc, 1)
         self.assertIn("not available", err.getvalue())
+
+    def test_the_key_is_printed_only_when_asked_for(self):
+        """Under launchd the address line goes to a log file."""
+        import contextlib
+        import io
+
+        from folder_watch import cli
+
+        out = io.StringIO()
+        with (
+            contextlib.redirect_stdout(out),
+            mock.patch.object(web.DashboardServer, "serve_forever",
+                              side_effect=KeyboardInterrupt),
+        ):
+            cli.run_dashboard_cli(["--port", "0", "--no-open"])
+        self.assertNotIn(web.dashboard_key(), out.getvalue())
+        self.assertIn("--link", out.getvalue())
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.run_dashboard_cli(["--link", "--port", "9000"])
+        self.assertEqual(out.getvalue().strip(),
+                         f"http://127.0.0.1:9000/?key={web.dashboard_key()}")
 
 
 if __name__ == "__main__":
