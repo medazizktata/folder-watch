@@ -127,6 +127,18 @@ class TestDashboardCommand(IsolatedCase):
         self.assertIn("<title>folder-watch</title>", page)
         self.assertIn(name, [r["preset"] for r in rows])
 
+        # The page's own token, as the Run doctor button sends it.
+        token = re.search(r'const TOKEN = "([^"]+)"', page).group(1)
+        request = urllib.request.Request(
+            url.group(0) + "api/doctor", data=b"{}", method="POST",
+            headers={"X-FW-Token": token, "Content-Type": "application/json"},
+        )
+        findings = json.loads(urllib.request.urlopen(request, timeout=30).read())
+        self.assertIn("notifications", {f["section"] for f in findings["findings"]})
+        log = json.loads(urllib.request.urlopen(
+            url.group(0) + f"api/log?preset={name}", timeout=10).read())
+        self.assertEqual(log["lines"], [])
+
 
 class TestLaunchd(LaunchdCase):
     def test_a_missing_source_costs_one_start_and_returns_with_its_folder(self):

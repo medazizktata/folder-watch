@@ -132,5 +132,115 @@ class TestActions(WebCase):
         self.assertIn("no log", data["error"])
 
 
+class TestExtras(WebCase):
+    def test_the_log_tail_is_the_last_lines_only(self):
+        from folder_watch.support.paths import STATE_DIR
+
+        log = STATE_DIR / f"{self.preset}.log"
+        log.write_text("".join(f"line {i}\n" for i in range(50)))
+        self.addCleanup(log.unlink, True)
+
+        status, payload = self.request("GET", f"/api/log?preset={self.preset}")
+
+        lines = json.loads(payload)["lines"]
+        self.assertEqual(status, 200)
+        self.assertEqual(lines, [f"line {i}" for i in range(30, 50)])
+        self.assertEqual(self.request("GET", "/api/log?preset=nope")[0], 404)
+        self.assertEqual(
+            self.request("GET", f"/api/log?preset={self.preset}",
+                         host=f"evil.example:{self.port}")[0],
+            403,
+        )
+
+    def test_doctor_and_cleanup_need_the_token(self):  # holds on BASE
+        for action in ("doctor", "cleanup"):
+            self.assertEqual(self.act(action, token=None)[0], 403, action)
+
+    def test_doctor_returns_its_findings(self):
+        with mock.patch.object(web.doctor, "check_services",
+                               return_value=[("error", "service x: last exit 1")]):
+            status, data = self.act("doctor")
+        self.assertEqual(status, 200)
+        self.assertIn(
+            {"section": "services", "level": "error",
+             "message": "service x: last exit 1"},
+            data["findings"],
+        )
+
+    def test_cleanup_is_a_dry_run_unless_apply_is_exactly_true(self):
+        """The page shows the dry run first; only the Apply button removes."""
+        from folder_watch import cli
+
+        cases = (({}, True), ({"apply": "yes"}, True), ({"apply": True}, False))
+        for extra, dry in cases:
+            with (
+                mock.patch.object(cli, "_prune_state", return_value=0) as state,
+                mock.patch.object(cli, "_prune_presets", return_value=[]),
+                mock.patch.object(cli, "_prune_logs", return_value=0),
+            ):
+                status, data = self.act("cleanup", extra=extra)
+            self.assertEqual(status, 200)
+            self.assertEqual(state.call_args.kwargs, {"dry": dry}, extra)
+            self.assertEqual(data["applied"], not dry)
+
+    def test_the_page_has_the_tools(self):
+        _status, page = self.request("GET", "/")
+        for label in ("Run doctor", "Clean up", "showLog"):
+            self.assertIn(label, page)
+
+
+class TestDashboardService(unittest.TestCase):
+    def test_the_login_service_keeps_a_fixed_port_without_looping(self):
+        import plistlib
+
+        from folder_watch.support import launchd
+
+        with (
+            mock.patch.object(
+                launchd, "_resolve_python_and_root",
+                return_value=(Path("/x/.venv/bin/python"), Path("/x")),
+            ),
+            mock.patch.object(launchd.subprocess, "run") as run,
+        ):
+            run.return_value.returncode = 0
+            plist = launchd.install_dashboard_service(
+                program=Path("/x/bin/fw"), port=8765
+            )
+        self.addCleanup(plist.unlink, True)
+
+        job = plistlib.loads(plist.read_bytes())
+        self.assertEqual(job["ProgramArguments"][-5:],
+                         ["dashboard", "--no-open", "--strict-port", "--port", "8765"])
+        self.assertEqual(job["KeepAlive"], {"SuccessfulExit": False})
+        self.assertEqual(job["ThrottleInterval"], 300)
+        self.assertTrue(job["RunAtLoad"])
+
+    def test_strict_port_refuses_a_taken_port(self):
+        import contextlib
+        import io
+        import socket
+
+        from folder_watch import cli
+
+        with socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen()
+            port = taken.getsockname()[1]
+            err = io.StringIO()
+            # If it ever fell back to another port it would serve forever and
+            # hang the suite; failing fast here keeps a regression a failure.
+            with (
+                contextlib.redirect_stderr(err),
+                contextlib.redirect_stdout(io.StringIO()),
+                mock.patch.object(web.DashboardServer, "serve_forever",
+                                  side_effect=AssertionError("served on another port")),
+            ):
+                rc = cli.run_dashboard_cli(
+                    ["--strict-port", "--port", str(port), "--no-open"]
+                )
+        self.assertEqual(rc, 1)
+        self.assertIn("not available", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

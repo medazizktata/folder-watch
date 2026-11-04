@@ -519,7 +519,17 @@ happened that week.
 ```bash
 folder-watch dashboard              # opens http://127.0.0.1:8765/ in your browser
 folder-watch dashboard --no-open --port 9000
+folder-watch dashboard --install    # at every login, always on 127.0.0.1:8765
+folder-watch dashboard --uninstall
 ```
+
+Above the table, **Run doctor** shows `doctor`'s findings inline (without its
+launchd folder probe, which takes seconds), and **Clean up…** shows what the
+weekly prune would remove as a dry run, with an **Apply** button that is the
+only thing that removes anything. Each row with a log has a **Log** toggle for
+its last 20 lines. `--install` runs the dashboard at login on a fixed port with
+`--strict-port`: if something else holds the port it fails instead of moving
+to a random one, and launchd retries every five minutes rather than in a loop.
 
 A live local web page of every preset, refreshed every 5 seconds: health,
 service (running, paused, not loaded), last exit code, last result from its

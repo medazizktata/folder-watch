@@ -271,26 +271,30 @@ def install_service(
 # and service_status work on it. The leading underscore keeps it out of the
 # way of preset names people actually choose.
 PRUNE_JOB = "_weekly-prune"
+DASHBOARD_JOB = "_dashboard"
 
 
-def install_prune_schedule(*, program: Path) -> Path:
-    """A LaunchAgent that runs `prune --ask` on Sundays at 10:00."""
+def _install_tool_job(
+    name: str, args: list[str], when: dict[str, Any], program: Path
+) -> Path:
+    """A LaunchAgent for one of the tool's own jobs, running
+    `python -m folder_watch ARGS`; `when` adds its scheduling keys."""
     python, root = _resolve_python_and_root(program)
     env = {"PATH": launchagent_path_env(), "HOME": str(Path.home())}
     if root is not None:
         env["PYTHONPATH"] = str(root)
-    out = STATE_DIR / f"{PRUNE_JOB}.out.log"
+    out = STATE_DIR / f"{name}.out.log"
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
-    plist = service_plist_path(PRUNE_JOB)
+    plist = service_plist_path(name)
     plist.write_bytes(
         plistlib.dumps(
             {
-                "Label": service_label(PRUNE_JOB),
-                "ProgramArguments": [str(python), "-m", "folder_watch", "prune", "--ask"],
+                "Label": service_label(name),
+                "ProgramArguments": [str(python), "-m", "folder_watch", *args],
                 "WorkingDirectory": str(root if root is not None else Path.home()),
                 "EnvironmentVariables": env,
-                "StartCalendarInterval": {"Weekday": 0, "Hour": 10, "Minute": 0},
+                **when,
                 "StandardOutPath": str(out),
                 "StandardErrorPath": str(out),
             }
@@ -305,6 +309,30 @@ def install_prune_schedule(*, program: Path) -> Path:
             r.stderr.strip() or r.stdout.strip() or "launchctl load failed"
         )
     return plist
+
+
+def install_prune_schedule(*, program: Path) -> Path:
+    """A LaunchAgent that runs `prune --ask` on Sundays at 10:00."""
+    return _install_tool_job(
+        PRUNE_JOB, ["prune", "--ask"],
+        {"StartCalendarInterval": {"Weekday": 0, "Hour": 10, "Minute": 0}}, program,
+    )
+
+
+def install_dashboard_service(*, program: Path, port: int) -> Path:
+    """The dashboard at login, on a fixed port. --strict-port makes a taken
+    port an error instead of a random one nobody would find; the restart
+    after such a failure waits five minutes, so a port held by something
+    else costs a line every five minutes, not a loop."""
+    return _install_tool_job(
+        DASHBOARD_JOB, ["dashboard", "--no-open", "--strict-port", "--port", str(port)],
+        {
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},
+            "ThrottleInterval": 300,
+        },
+        program,
+    )
 
 
 def _domain_target(preset: str) -> str:

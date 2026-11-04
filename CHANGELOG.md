@@ -99,6 +99,10 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **Dashboard extras**: Run doctor inline; Clean up as a dry run with an Apply
+  button; a Log toggle with each preset's last 20 lines; and `dashboard
+  --install` to run it at login on a fixed port (`--strict-port`, retried every
+  five minutes if the port is taken).
 - **`presets edit NAME KEY=VALUE … [--unset KEY]`**: change a preset without
   hand-editing JSON. Values are typed like the flags, paths stored absolute,
   and an installed service is reinstalled so its plist follows. The dashboard

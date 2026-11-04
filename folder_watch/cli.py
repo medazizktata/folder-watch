@@ -29,9 +29,11 @@ from folder_watch.presets import (
     save_preset,
 )
 from folder_watch.support.launchd import (
+    DASHBOARD_JOB,
     PRUNE_JOB,
     apply_edit,
     default_program,
+    install_dashboard_service,
     install_prune_schedule,
     install_service,
     pause_service,
@@ -725,10 +727,27 @@ def run_dashboard_cli(argv: list[str]) -> int:
     ap.add_argument("--port", type=int, default=8765,
                     help="port on 127.0.0.1 (default 8765; any free port if taken)")
     ap.add_argument("--no-open", action="store_true", help="do not open the browser")
+    ap.add_argument("--strict-port", action="store_true",
+                    help="fail if --port is taken instead of using another one")
+    ap.add_argument("--install", action="store_true",
+                    help="run the dashboard at login, always on --port")
+    ap.add_argument("--uninstall", action="store_true", help="stop running it at login")
     args = ap.parse_args(argv)
+    if args.install:
+        plist = install_dashboard_service(program=_program(), port=args.port)
+        print(f"installed {plist}: http://127.0.0.1:{args.port}/ from your next login, "
+              "and now")
+        return 0
+    if args.uninstall:
+        removed = uninstall_service(preset=DASHBOARD_JOB)
+        print(f"removed {removed}" if removed else "the dashboard was not installed")
+        return 0
     try:
         server = web.DashboardServer(args.port)
-    except OSError:
+    except OSError as e:
+        if args.strict_port:
+            print(f"error: port {args.port} is not available: {e}", file=sys.stderr)
+            return 1
         server = web.DashboardServer(0)
     print(f"folder-watch dashboard: {server.url}  (Ctrl-C to stop)", flush=True)
     if not args.no_open:

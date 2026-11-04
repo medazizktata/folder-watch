@@ -9,15 +9,18 @@ stops a rebound domain from posing as localhost.
 """
 from __future__ import annotations
 
+import contextlib
 import html
+import io
 import json
 import secrets
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
-from folder_watch import dashboard
+from folder_watch import dashboard, doctor
 from folder_watch.presets import load_presets, parse_setting
 from folder_watch.support.launchd import apply_edit, pause_service, resume_service
 from folder_watch.support.notify import reveal_in_finder
@@ -79,6 +82,48 @@ def perform(action: str, preset: str, body: dict[str, Any] | None = None) -> str
     raise LookupError(f"no action {action!r}")
 
 
+LOG_LINES = 20
+
+
+def log_tail(preset: str) -> list[str]:
+    if preset not in load_presets():
+        raise LookupError(f"no preset {preset!r}")
+    log = STATE_DIR / f"{preset}.log"
+    try:
+        return log.read_text("utf-8", errors="replace").splitlines()[-LOG_LINES:]
+    except OSError:
+        return []
+
+
+def run_doctor() -> list[dict[str, str]]:
+    """The doctor's checks without the launchd probe, which takes seconds
+    per protected folder and belongs to `folder-watch doctor`."""
+    sections = (
+        ("notifications", doctor.check_notifiers),
+        ("services", doctor.check_services),
+        ("destinations", doctor.check_destinations),
+    )
+    return [
+        {"section": title, "level": level, "message": dashboard.home_relative(message)}
+        for title, check in sections
+        for level, message in check()
+    ]
+
+
+def run_cleanup(*, apply: bool) -> str:
+    """The weekly job's prune: a dry run unless `apply`, so the page can show
+    what would go and remove nothing without a second click."""
+    # Imported here: cli imports this module to serve the dashboard.
+    from folder_watch import cli
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli._prune_state(dry=not apply)
+        cli._prune_presets(dry=not apply)
+        cli._prune_logs(dry=not apply)
+    return out.getvalue()
+
+
 class Handler(BaseHTTPRequestHandler):
     server: DashboardServer
 
@@ -108,6 +153,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, body, "text/html; charset=utf-8")
         if self.path == "/api/rows":
             return self._json(200, dashboard.entries())
+        url = urlsplit(self.path)
+        if url.path == "/api/log":
+            preset = parse_qs(url.query).get("preset", [""])[0]
+            try:
+                return self._json(200, {"lines": log_tail(preset)})
+            except LookupError as e:
+                return self._json(404, {"error": str(e)})
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
@@ -122,6 +174,12 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(min(length, 4096)) or b"{}")
             if not isinstance(body, dict):
                 raise ValueError("expected a JSON object")
+            if action == "doctor":
+                return self._json(200, {"findings": run_doctor()})
+            if action == "cleanup":
+                apply = body.get("apply") is True
+                report = run_cleanup(apply=apply)
+                return self._json(200, {"report": report, "applied": apply})
             message = perform(action, str(body.get("preset", "")), body)
         except LookupError as e:
             return self._json(404, {"error": str(e)})
@@ -188,6 +246,15 @@ button:focus-visible { outline: 2px solid var(--ok); outline-offset: 1px; }
 #toast { min-height: 20px; margin-top: 12px; color: var(--muted); }
 .field { display: inline-flex; flex-direction: column; gap: 4px; margin: 0 12px 8px 0;
   color: var(--muted); font-size: 12px; }
+.tools { display: flex; gap: 0; flex-wrap: wrap; }
+.tool-panel { padding: 14px; }
+.panel-title { font-weight: 600; margin-bottom: 8px; }
+.findings { list-style: none; margin: 0 0 10px; padding: 0; }
+.findings li { padding: 3px 0; }
+pre { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 10px;
+  margin: 0 0 10px; max-height: 320px; overflow: auto; }
 .field input { font: inherit; font-size: 13px; color: var(--text); background: var(--bg);
   border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; width: 360px;
   max-width: 100%; }
@@ -203,6 +270,10 @@ button:focus-visible { outline: 2px solid var(--ok); outline-offset: 1px; }
       <div class="sub">Every preset, refreshed every few seconds.
         <span id="updated"></span></div>
     </div>
+    <div class="tools">
+      <button id="run-doctor">Run doctor</button>
+      <button id="clean-up">Clean up…</button>
+    </div>
   </header>
   <div class="panel">
     <table>
@@ -212,6 +283,7 @@ button:focus-visible { outline: 2px solid var(--ok); outline-offset: 1px; }
     </table>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
+  <div id="tool-panel" class="panel tool-panel" hidden></div>
 </main>
 <script>
 const TOKEN = "{{TOKEN}}";
@@ -265,7 +337,12 @@ function row(e) {
   if (e.service === "paused") button("Resume", "resume");
   else if (e.service !== "-") button("Pause", "pause");
   button("Open folder", "folder");
-  if (e.log_bytes) button("Open log", "log");
+  if (e.log_bytes) {
+    button("Open log", "log");
+    const show = el("button", "", "Log");
+    show.addEventListener("click", () => showLog(e, tr));
+    actions.append(show);
+  }
   const edit = el("button", "", "Edit");
   edit.addEventListener("click", () => openEditor(e, tr));
   actions.append(edit);
@@ -274,7 +351,69 @@ function row(e) {
   return tr;
 }
 
-let editing = null;  // a refresh would wipe a half-typed form
+let editing = null;  // a refresh would wipe a half-typed form or an open log
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-FW-Token": TOKEN},
+    body: JSON.stringify(body || {}),
+  });
+  return [r.ok, await r.json()];
+}
+
+function showPanel(title, ...nodes) {
+  const panel = document.getElementById("tool-panel");
+  const close = el("button", "", "Close");
+  close.addEventListener("click", () => { panel.hidden = true; });
+  panel.replaceChildren(el("div", "panel-title", title), ...nodes, close);
+  panel.hidden = false;
+}
+
+async function runDoctor() {
+  showPanel("Doctor", el("div", "note", "Running…"));
+  const [ok, data] = await post("/api/doctor");
+  if (!ok) return showPanel("Doctor", el("div", "note", data.error));
+  const list = el("ul", "findings");
+  for (const f of data.findings) {
+    const item = el("li");
+    item.append(el("span", "dot " + (f.level === "ok" ? "ok" : f.level)),
+      el("span", "", f.section + ": " + f.message));
+    list.append(item);
+  }
+  showPanel("Doctor", list);
+}
+
+async function cleanUp() {
+  const [ok, data] = await post("/api/cleanup", {apply: false});
+  if (!ok) return showPanel("Clean up", el("div", "note", data.error));
+  const apply = el("button", "", "Apply");
+  apply.addEventListener("click", async () => {
+    const [done, result] = await post("/api/cleanup", {apply: true});
+    showPanel("Cleaned up", el("pre", "", done ? result.report : result.error));
+    refresh();
+  });
+  showPanel("Clean up — dry run, nothing removed yet", el("pre", "", data.report), apply);
+}
+
+async function showLog(e, tr) {
+  if (editing) return;
+  const r = await fetch("/api/log?preset=" + encodeURIComponent(e.preset));
+  const data = await r.json();
+  const row = el("tr", "editor");
+  const td = el("td");
+  td.colSpan = 7;
+  td.append(el("pre", "log", (data.lines || []).join("\\n") || "(empty)"));
+  const close = el("button", "", "Close");
+  close.addEventListener("click", () => { row.remove(); editing = null; refresh(); });
+  td.append(close);
+  row.append(td);
+  tr.after(row);
+  editing = row;
+}
+
+document.getElementById("run-doctor").addEventListener("click", runDoctor);
+document.getElementById("clean-up").addEventListener("click", cleanUp);
 
 function openEditor(e, tr) {
   if (editing) return;
