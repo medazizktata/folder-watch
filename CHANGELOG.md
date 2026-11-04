@@ -99,6 +99,11 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **Audit trail** (`audit.jsonl`, `folder-watch audit`, the dashboard's Audit
+  button): every file outcome, folder move, preset save (with what changed)
+  and removal, service change and cleanup, each with what triggered it (cli,
+  service, weekly, dashboard, notification, automatic). Append-only, never
+  rotated, a year kept.
 - **Dashboard extras**: Run doctor inline; Clean up as a dry run with an Apply
   button; a Log toggle with each preset's last 20 lines; and `dashboard
   --install` to run it at login on a fixed port (`--strict-port`, retried every

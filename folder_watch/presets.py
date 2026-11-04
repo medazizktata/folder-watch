@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from folder_watch.support import audit
 from folder_watch.support.log import emit
 from folder_watch.support.paths import LEGACY_PRESETS, PRESETS_PATH
 
@@ -155,6 +156,8 @@ def remove_preset(name: str) -> list[Path]:
         data.pop(name)
         _write_presets(path, data)
         changed.append(path)
+    if changed:
+        audit.record("preset_removed", preset=name, files=[str(p) for p in changed])
     return changed
 
 
@@ -285,8 +288,17 @@ def save_preset(name: str, cfg: dict[str, Any]) -> None:
                 f"{PRESETS_PATH} does not hold a JSON object; nothing was saved."
             )
         presets = loaded
+    before = presets.get(name)
     presets[name] = cfg
     _write_presets(PRESETS_PATH, presets)
+    old = before if isinstance(before, dict) else {}
+    audit.record(
+        "preset_saved", preset=name, created=before is None,
+        changes={
+            k: [old.get(k), cfg.get(k)]
+            for k in sorted(set(old) | set(cfg)) if old.get(k) != cfg.get(k)
+        },
+    )
 
 
 # How `presets edit KEY=VALUE` reads each value, mirroring the CLI flags.

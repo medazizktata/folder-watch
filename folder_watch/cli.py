@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -28,6 +29,7 @@ from folder_watch.presets import (
     remove_preset,
     save_preset,
 )
+from folder_watch.support import audit
 from folder_watch.support.launchd import (
     DASHBOARD_JOB,
     PRUNE_JOB,
@@ -85,6 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  doctor [--test-notify]   # notifiers, services, destinations, access\n"
             "  dashboard [--port N]     # live local web page with pause/resume\n"
             "  digest [--days N]        # what each preset did, from its logs\n"
+            "  audit [--since 7d]       # every action, and who triggered it\n"
             "  presets show NAME            # one preset, with its source files\n"
             "  presets edit NAME KEY=VALUE  # change a preset (and its service)\n"
             "  presets forget NAME [--yes]  # remove a preset\n"
@@ -708,6 +711,34 @@ def _prune_presets(*, dry: bool) -> list[str]:
     return due
 
 
+def run_audit_cli(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="folder-watch audit")
+    ap.add_argument("--since", default="7d",
+                    help="7d, 12h, 30m or a date such as 2026-11-01 (default 7d)")
+    ap.add_argument("--preset", default=None, help="only this preset")
+    ap.add_argument("--kind", action="append", default=[],
+                    help="only this kind, e.g. copied or preset_saved (repeatable)")
+    ap.add_argument("--json", action="store_true", help="one JSON object per line")
+    args = ap.parse_args(argv)
+    try:
+        since = audit.parse_since(args.since)
+    except ValueError:
+        print(f"error: --since {args.since!r} is not 7d, 12h, 30m or a date",
+              file=sys.stderr)
+        return 2
+    entries = audit.read(since=since, preset=args.preset, kinds=set(args.kind) or None)
+    for e in entries:
+        if args.json:
+            print(json.dumps(e, ensure_ascii=False))
+        else:
+            when = e["ts"].replace("T", " ")
+            print(f"{when}  {e.get('trigger', '?'):<12} {e['kind']:<18} "
+                  f"{e.get('preset') or '-':<20} {audit.describe(e)}")
+    if not args.json:
+        print(f"\n{len(entries)} entr(ies) since {since:%Y-%m-%d %H:%M}")
+    return 0
+
+
 def run_digest_cli(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="folder-watch digest")
     ap.add_argument("--days", type=int, default=7, help="how many days back (default 7)")
@@ -905,12 +936,14 @@ def _prune_logs(*, dry: bool) -> int:
             count += 1
             if not dry:
                 path.unlink(missing_ok=True)
+                audit.record("log_removed", file=path.name, bytes=st.st_size)
         elif path.name.endswith(".out.log") and st.st_size > OUT_LOG_MAX:
             trim = "would trim" if dry else "trimmed"
             print(f"    {trim} {path.name} to its last 1 MB")
             count += 1
             if not dry:
                 _trim_to_tail(path, OUT_LOG_KEEP)
+                audit.record("log_trimmed", file=path.name, bytes=st.st_size)
     print(f"logs: {count} {'to remove or trim' if dry else 'removed or trimmed'}")
     return count
 
@@ -963,7 +996,15 @@ def _prune_state(*, dry: bool) -> int:
     print(f"pidfiles: {verb} {len(pidfiles)} stale")
     for p in pidfiles:
         print(f"    {p.name}")
-    return dropped_entries + len(orphan_temps) + len(pidfiles)
+    old_audit = audit.trim(dry=dry)
+    print(f"audit trail: {verb} {old_audit} entr(ies) older than {audit.KEEP_DAYS} days")
+    total = dropped_entries + len(orphan_temps) + len(pidfiles) + old_audit
+    if total and not dry:
+        audit.record(
+            "state_pruned", done_entries=dropped_entries, crash_temps=len(orphan_temps),
+            pidfiles=len(pidfiles), audit_entries=old_audit,
+        )
+    return total
 
 
 def run_service_cli(argv: list[str]) -> int:
@@ -1035,6 +1076,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
         return run_service_cli(argv[1:])
     if argv and argv[0] == "status":
         return run_status_cli(argv[1:])
+    if argv and argv[0] == "audit":
+        return run_audit_cli(argv[1:])
     if argv and argv[0] == "digest":
         return run_digest_cli(argv[1:])
     if argv and argv[0] == "dashboard":

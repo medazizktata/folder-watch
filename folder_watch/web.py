@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from folder_watch import dashboard, doctor
 from folder_watch.presets import load_presets, parse_setting
+from folder_watch.support import audit
 from folder_watch.support.launchd import apply_edit, pause_service, resume_service
 from folder_watch.support.notify import reveal_in_finder
 from folder_watch.support.paths import STATE_DIR
@@ -83,6 +84,7 @@ def perform(action: str, preset: str, body: dict[str, Any] | None = None) -> str
 
 
 LOG_LINES = 20
+AUDIT_ROWS = 100
 
 
 def log_tail(preset: str) -> list[str]:
@@ -154,6 +156,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/rows":
             return self._json(200, dashboard.entries())
         url = urlsplit(self.path)
+        if url.path == "/api/audit":
+            try:
+                since = audit.parse_since(parse_qs(url.query).get("since", ["7d"])[0])
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            entries = audit.read(since=since)[-AUDIT_ROWS:]
+            return self._json(200, [
+                {**e, "details": dashboard.home_relative(audit.describe(e))}
+                for e in reversed(entries)
+            ])
         if url.path == "/api/log":
             preset = parse_qs(url.query).get("preset", [""])[0]
             try:
@@ -169,6 +181,8 @@ class Handler(BaseHTTPRequestHandler):
         if not secrets.compare_digest(token, self.server.token):
             return self._json(403, {"error": "missing or wrong token"})
         action = self.path.removeprefix("/api/")
+        # One request per thread, so this attributes just this request.
+        audit.set_trigger("dashboard")
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(min(length, 4096)) or b"{}")
@@ -273,6 +287,7 @@ pre { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     <div class="tools">
       <button id="run-doctor">Run doctor</button>
       <button id="clean-up">Clean up…</button>
+      <button id="show-audit">Audit</button>
     </div>
   </header>
   <div class="panel">
@@ -412,6 +427,25 @@ async function showLog(e, tr) {
   editing = row;
 }
 
+async function showAudit() {
+  const r = await fetch("/api/audit?since=7d", {cache: "no-store"});
+  const entries = await r.json();
+  if (!r.ok) return showPanel("Audit", el("div", "note", entries.error));
+  if (!entries.length) {
+    return showPanel("Audit — last 7 days", el("div", "note", "Nothing yet."));
+  }
+  const table = el("table", "audit");
+  for (const e of entries) {
+    const tr = el("tr");
+    tr.append(el("td", "nowrap", e.ts.replace("T", " ")), el("td", "nowrap", e.trigger),
+      el("td", "nowrap", e.kind), el("td", "nowrap", e.preset || "-"),
+      el("td", "path", e.details));
+    table.append(tr);
+  }
+  showPanel("Audit — last 7 days, newest first", table);
+}
+
+document.getElementById("show-audit").addEventListener("click", showAudit);
 document.getElementById("run-doctor").addEventListener("click", runDoctor);
 document.getElementById("clean-up").addEventListener("click", cleanUp);
 

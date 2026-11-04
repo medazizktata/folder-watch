@@ -89,6 +89,32 @@ class TestWatcher(WatcherCase):
         self.assertEqual(load_raw_preset(name)["src"], str(moved))
         self.assertTrue((self.dest / "after-the-move.mp4").is_file())
 
+    def test_the_audit_trail_records_a_real_copy_and_an_edit(self):
+        name = f"e2e-audit-{os.getpid()}"
+        save_preset(name, {"action": "copy", "src": str(self.src), "to": str(self.dest)})
+        self.addCleanup(remove_preset, name)
+        self.start("--preset", name)
+        self.drop("audited.mp4")
+        self.wait_for("copied", name="audited.mp4")
+        subprocess.run(
+            [sys.executable, "-B", "-m", "folder_watch", "presets", "edit", name,
+             "stable=4"],
+            cwd=ROOT, capture_output=True, env=dict(os.environ), check=True,
+        )
+
+        out = subprocess.run(
+            [sys.executable, "-B", "-m", "folder_watch", "audit", "--preset", name,
+             "--json"],
+            cwd=ROOT, capture_output=True, text=True, env=dict(os.environ), check=True,
+        ).stdout
+        entries = [json.loads(line) for line in out.splitlines()]
+
+        copied = [e for e in entries if e["kind"] == "copied"]
+        self.assertEqual([e["name"] for e in copied], ["audited.mp4"])
+        self.assertEqual(copied[0]["trigger"], "cli")
+        edits = [e for e in entries if e["kind"] == "preset_saved" and not e["created"]]
+        self.assertEqual(edits[-1]["changes"], {"stable": [None, 4]})
+
     def test_a_renamed_source_stops_the_watcher_with_its_new_path(self):
         """Watching for a name that will not come back used to wait forever."""
         self.start("copy", str(self.src), "--to", str(self.dest))

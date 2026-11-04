@@ -499,6 +499,33 @@ Done-state files: `~/.local/state/folder-watch/done-*.json`
 Pidfiles: `~/.local/state/folder-watch/pids/*.json`  
 Key = action + src + dest/mode + size + mtime (scheme **B**).
 
+## Audit trail
+
+```bash
+folder-watch audit                          # the last 7 days
+folder-watch audit --since 30d --preset photos
+folder-watch audit --kind preset_saved --kind service_paused
+folder-watch audit --since 2026-11-01 --json
+```
+
+Every action, in `~/.local/state/folder-watch/audit.jsonl`, one JSON line
+each, with who or what triggered it: `cli`, `service`, `weekly`, `dashboard`,
+`notification` (a button) or `automatic` (a followed move). Recorded:
+
+| kind | when |
+|---|---|
+| `copied`, `extracted`, `ran`, `fail`, `give_up` | a file's outcome, with its preset |
+| `src_moved`, `src_followed`, `src_not_followed`, `follow_refused` | a watched folder moved |
+| `preset_saved` (with what changed), `preset_removed` | presets |
+| `service_installed`, `service_uninstalled`, `service_paused`, `service_resumed`, `job_installed` | services and the tool's own jobs |
+| `log_removed`, `log_trimmed`, `state_pruned` | what a cleanup removed |
+
+Logs rotate away and the done-store forgets on purpose; this file does
+neither. It is append-only, rotation never touches it, and `prune` keeps one
+year (entries it cannot date are kept). Writing it never stops a copy: a
+failed write is skipped. The dashboard's **Audit** button lists the last 7
+days.
+
 ## Digest
 
 ```bash

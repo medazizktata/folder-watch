@@ -10,6 +10,7 @@ from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
 from folder_watch.presets import edit_preset, load_presets
+from folder_watch.support import audit
 from folder_watch.support.paths import LABEL_PREFIX, LAUNCH_AGENTS, STATE_DIR
 
 
@@ -264,6 +265,7 @@ def install_service(
         raise RuntimeError(
             r.stderr.strip() or r.stdout.strip() or "launchctl load failed"
         )
+    audit.record("service_installed", preset=preset, plist=plist)
     return plist
 
 
@@ -308,6 +310,7 @@ def _install_tool_job(
         raise RuntimeError(
             r.stderr.strip() or r.stdout.strip() or "launchctl load failed"
         )
+    audit.record("job_installed", job=name, plist=plist)
     return plist
 
 
@@ -361,6 +364,7 @@ def pause_service(*, preset: str) -> None:
         raise RuntimeError(f"no service installed for {preset!r}")
     _launchctl("disable", _domain_target(preset))
     _launchctl("bootout", _domain_target(preset))
+    audit.record("service_paused", preset=preset)
 
 
 def resume_service(*, preset: str) -> None:
@@ -372,6 +376,7 @@ def resume_service(*, preset: str) -> None:
     # 37 is "already loaded": resuming a service that was never stopped.
     if r.returncode not in (0, 37):
         raise RuntimeError(r.stderr.strip() or "launchctl bootstrap failed")
+    audit.record("service_resumed", preset=preset)
 
 
 def uninstall_service(*, preset: str) -> Path | None:
@@ -384,6 +389,7 @@ def uninstall_service(*, preset: str) -> Path | None:
         # A pause outlives the plist; left behind, a later install of the same
         # preset would load disabled and never run.
         _launchctl("enable", _domain_target(preset))
+        audit.record("service_uninstalled", preset=preset, plist=plist)
         return plist
     return None
 

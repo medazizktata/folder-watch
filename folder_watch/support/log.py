@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from folder_watch.support import webhook
+from folder_watch.support import audit, webhook
 
 log = logging.getLogger("folder_watch")
 
@@ -120,8 +120,19 @@ def _plain(value: Any) -> str:
     return text
 
 
+# Events that go into the audit trail as well as the log: what happened to
+# a file, and what happened to a watched folder.
+AUDITED = frozenset({"copied", "extracted", "ran", "fail", "give_up",
+                     "src_followed", "src_not_followed"})
+AUDITED_REASONS = frozenset({"src_moved", "follow_refused", "presets_unreadable"})
+
+
 def emit(event: str, **fields: Any) -> None:
     payload = {"event": event, **{k: _jsonable(v) for k, v in fields.items()}}
+    if event in AUDITED:
+        audit.record(event, **fields)
+    elif event in ("error", "warn") and fields.get("reason") in AUDITED_REASONS:
+        audit.record(str(fields["reason"]), **fields)
     # Fire-and-forget; returns immediately whether or not anything is listening.
     webhook.post(event, payload)
     if _JSON_MODE:

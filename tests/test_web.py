@@ -189,6 +189,43 @@ class TestExtras(WebCase):
             self.assertIn(label, page)
 
 
+class TestAuditFromTheDashboard(WebCase):
+    def setUp(self):
+        super().setUp()
+        from folder_watch.support import audit
+
+        self.audit = audit
+        patcher = mock.patch.object(audit, "AUDIT", self.tmp / "audit.jsonl")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_an_action_from_the_page_is_attributed_to_the_dashboard(self):
+        """The server thread, not the person at a terminal, did this."""
+        from folder_watch.support import launchd
+
+        plist = launchd.service_plist_path(self.preset)
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        plist.write_text("<plist/>")
+        self.addCleanup(plist.unlink, True)
+        with mock.patch.object(launchd, "_launchctl"):
+            self.assertEqual(self.act("pause")[0], 200)
+
+        (entry,) = self.audit.read(kinds={"service_paused"})
+        self.assertEqual(entry["trigger"], "dashboard")
+
+    def test_the_audit_panel_lists_newest_first_with_details(self):
+        self.audit.record("copied", preset="a", name="first.jpg")
+        self.audit.record("fail", preset="a", name="second.jpg")
+
+        status, payload = self.request("GET", "/api/audit?since=1d")
+
+        entries = json.loads(payload)
+        self.assertEqual(status, 200)
+        self.assertEqual([e["kind"] for e in entries], ["fail", "copied"])
+        self.assertIn("name=second.jpg", entries[0]["details"])
+        self.assertEqual(self.request("GET", "/api/audit?since=soon")[0], 400)
+
+
 class TestDashboardService(unittest.TestCase):
     def test_the_login_service_keeps_a_fixed_port_without_looping(self):
         import plistlib

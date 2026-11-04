@@ -16,6 +16,7 @@ from typing import Any
 from folder_watch.actions.base import Action
 from folder_watch.core.util import is_open, should_watch_name
 from folder_watch.presets import PresetsUnreadable, load_raw_preset, save_preset
+from folder_watch.support import audit
 from folder_watch.support.launchd import service_label
 from folder_watch.support.log import emit, emit_debug, is_verbose
 from folder_watch.support.notify import ask, notify
@@ -167,16 +168,18 @@ def offer_to_follow(
             f"{preset}: {src_dir.name} moved to {moved}",
             "Watch new path",
         ):
-            emit("src_not_followed", preset=preset, now=moved)
+            with audit.triggered_by("notification"):
+                emit("src_not_followed", preset=preset, now=moved)
             return
     raw["src"] = str(moved)
-    try:
-        save_preset(preset, raw)
-    except PresetsUnreadable as e:
-        emit("error", reason="presets_unreadable", preset=preset, detail=str(e))
-        notify("folder-watch: preset not updated", str(e)).join(10)
-        return
-    emit("src_followed", preset=preset, src=moved, automatic=auto)
+    with audit.triggered_by("automatic" if auto else "notification"):
+        try:
+            save_preset(preset, raw)
+        except PresetsUnreadable as e:
+            emit("error", reason="presets_unreadable", preset=preset, detail=str(e))
+            notify("folder-watch: preset not updated", str(e)).join(10)
+            return
+        emit("src_followed", preset=preset, src=moved, automatic=auto)
     if auto and notify_user:
         notify("folder-watch followed a move", f"{preset} now watches {moved}").join(10)
     module = [sys.executable, "-m", "folder_watch"]
@@ -1274,6 +1277,8 @@ def run_watch(
 ) -> int:
     src_dir = src_dir.expanduser().resolve()
     name = watch_name or preset or f"{action.name}-{src_dir.name}"
+    # File outcomes in the audit trail say which preset they belong to.
+    audit.set_preset(preset or name)
 
     # A source that isn't there is a typo or an unmounted volume, not an empty
     # folder. Reporting "done failed=0" made those indistinguishable.
