@@ -458,6 +458,79 @@ class TestServiceCommand(CliCase):
         self.assertEqual(caught.exception.code, 2)
 
 
+class TestReveal(CliCase):
+    """--reveal opens Finder on each result by itself, notification or not."""
+
+    def run_revealing(self, *argv):
+        from unittest import mock
+
+        from folder_watch.actions import base
+
+        with mock.patch.object(base, "reveal_in_finder") as reveal:
+            rc, _out, err = self.run_cli(*argv)
+        return rc, [call.args[0] for call in reveal.call_args_list], err
+
+    def test_a_copy_is_revealed_without_any_notification(self):
+        f = self.make_file()
+
+        rc, revealed, _err = self.run_revealing(
+            "copy", str(self.src), "--to", str(self.dest),
+            "--once", "--catch-up", "--no-notify", "--reveal",
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(revealed, [self.dest / f.name])
+
+    def test_nothing_is_revealed_without_the_flag_or_on_a_dry_run(self):
+        self.make_file()
+
+        for extra in ((), ("--reveal", "--dry-run")):
+            _rc, revealed, _err = self.run_revealing(
+                "copy", str(self.src), "--to", str(self.dest),
+                "--once", "--catch-up", "--no-notify", *extra,
+            )
+            self.assertEqual(revealed, [], extra)
+
+    def test_an_extracted_archive_reveals_its_folder(self):
+        import zipfile
+
+        with zipfile.ZipFile(self.src / "pack.zip", "w") as z:
+            z.writestr("a.txt", "hello")
+
+        rc, revealed, _err = self.run_revealing(
+            "unzip", str(self.src), "--once", "--catch-up", "--no-notify", "--reveal",
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(revealed, [self.src / "pack"])
+
+    def test_a_command_reveals_the_file_it_ran_on(self):
+        f = self.make_file()
+
+        rc, revealed, _err = self.run_revealing(
+            "exec", str(self.src), "--cmd", "/usr/bin/true {path}",
+            "--once", "--catch-up", "--reveal",
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(revealed, [f])
+
+    def test_reveal_round_trips_through_a_preset(self):
+        """Services start from a preset, so a flag only on the command line
+        could never reach them."""
+        self.run_cli(
+            "copy", str(self.src), "--to", str(self.dest), "--reveal",
+            "--save-preset", "shown",
+        )
+        self.assertTrue(json.loads(self.presets_path.read_text())["shown"]["reveal"])
+
+        f = self.make_file()
+        _rc, revealed, _err = self.run_revealing(
+            "--preset", "shown", "--once", "--catch-up", "--no-notify"
+        )
+        self.assertEqual(revealed, [self.dest / f.name])
+
+
 class TestArgumentErrors(CliCase):
     def test_no_arguments_prints_help(self):
         rc, out, _err = self.run_cli()

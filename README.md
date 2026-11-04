@@ -241,6 +241,20 @@ non-zero exit status instead, which is what a cron wrapper needs.
 It costs a full read of both files, which is why it is off by default. sha256
 rather than something faster so you can reproduce it with `shasum -a 256`.
 
+### Opening Finder on each result
+
+```bash
+folder-watch copy ./Out --to ./Drive --reveal
+```
+
+`--reveal` opens Finder with each result selected as it lands, without
+clicking a notification: the copy for `copy`, the extracted folder for
+`unzip`, the file the command ran on for `exec`. It works with notifications
+off too, and does nothing on a dry run. It can be saved in a preset
+(`"reveal": true`), so a LaunchAgent can use it. Each result brings Finder to
+the front, so it suits folders that receive a file now and then rather than a
+busy one. `convx` hands files to another tool, so it has no result to reveal.
+
 ### Telling something else
 
 ```bash

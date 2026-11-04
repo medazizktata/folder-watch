@@ -34,7 +34,7 @@ PRESET_KEYS = frozenset(
         # Preset-settable, unlike notify: the watchers that run unattended are
         # exactly the ones you want to hear, and they are started from a
         # preset with no other flags.
-        "sound", "sound_name", "verify", "webhook",
+        "sound", "sound_name", "verify", "webhook", "reveal",
     }
 )
 

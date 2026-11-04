@@ -177,6 +177,7 @@ class ExecAction(Action):
         took = time.monotonic() - started
         if proc.returncode == 0:
             emit("ran", name=path.name, cmd=argv[0], took_s=round(took, 2))
+            self.reveal(path)
             self._announce(path, "ran")
             return "ran"
 

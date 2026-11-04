@@ -4,11 +4,19 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from folder_watch.support.notify import reveal_in_finder
+
 
 class Action(ABC):
     name: str
     default_ext: str = "*"
     default_min_bytes: int = 1
+    # --reveal: open Finder on each result as it lands, no click needed.
+    reveal_on_done: bool = False
+
+    def reveal(self, path: Path) -> None:
+        if self.reveal_on_done:
+            reveal_in_finder(path)
 
     @abstractmethod
     def run(self, path: Path) -> str:

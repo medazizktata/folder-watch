@@ -186,6 +186,8 @@ class UnzipAction(Action):
         exits below, so a new failure path cannot be silently un-announced.
         """
         result = self._extract(path)
+        if result == "extracted":
+            self.reveal(self._target_dir(path))
         if self.notify_on_done:
             self._announce(path, result)
         return result

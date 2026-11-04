@@ -257,6 +257,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     g_act.add_argument(
+        "--reveal",
+        action="store_true",
+        help=(
+            "open Finder on each result as it lands (the copy, the extracted "
+            "folder, or the file a command ran on), without clicking a "
+            "notification"
+        ),
+    )
+    g_act.add_argument(
         "--verify",
         action="store_true",
         help=(
@@ -1084,6 +1093,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
             ("--exclusive", "exclusive"),
             ("--no-done-store", "no_done_store"),
             ("--verify", "verify"),
+            ("--reveal", "reveal"),
         ):
             if flag not in passed and cfg.get(key):
                 setattr(args, key, True)
@@ -1255,7 +1265,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
         # Round-trip the safety flags too, so a saved preset preserves how the
         # command was actually invoked rather than silently dropping them.
         for key in ("no_clobber", "create_dest", "exclusive", "no_done_store",
-                    "verify"):
+                    "verify", "reveal"):
             if getattr(args, key, False):
                 cfg[key] = True
         # Round-trip the sound settings too, so a saved preset sounds the way
@@ -1272,6 +1282,9 @@ def _dispatch(argv: list[str] | None = None) -> int:
 
     try:
         action = build_action(action_name, args, src_root=src)
+        action.reveal_on_done = getattr(args, "reveal", False) and not getattr(
+            args, "dry_run", False
+        )
     except (SystemExit, ValueError) as e:
         msg = e.args[0] if getattr(e, "args", None) else e
         print(msg, file=sys.stderr)

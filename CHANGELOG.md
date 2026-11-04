@@ -92,6 +92,11 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **`--reveal`** opens Finder on each result as it lands (the copy, the
+  extracted folder, or the file a command ran on) without a click, whether or
+  not notifications are on. It can be saved in a preset, so services can use
+  it, and it does nothing on a dry run.
+
 - **`folder-watch doctor`** checks the things a watcher cannot check for
   itself: notifiers installed, every service loaded and its last exit code,
   destinations writable with space left, and whether launchd can read the

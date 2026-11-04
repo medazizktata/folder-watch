@@ -183,6 +183,7 @@ class CopyAction(Action):
                         sound=self.sound,
                     )
                 return "retry"
+        self.reveal(dest)
         if self.notify_on_done:
             notify(
                 "folder-watch copied",
