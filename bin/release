@@ -41,8 +41,11 @@ grep -q '^## \[Unreleased\]' "$CHANGELOG" \
 
 # An empty Unreleased section means nothing has been recorded, which almost
 # always means the entries were forgotten rather than that nothing changed.
-if ! awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && NF' "$CHANGELOG" \
-     | grep -q .; then
+# Captured, not piped into `grep -q`: grep quits at the first line, awk then
+# dies of SIGPIPE writing the rest, and pipefail reported a long section as
+# empty (exit 141).
+unreleased=$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && NF' "$CHANGELOG")
+if [[ -z "$unreleased" ]]; then
   die "[Unreleased] is empty — write the entries before cutting a release"
 fi
 
