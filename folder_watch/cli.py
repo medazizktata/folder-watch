@@ -49,7 +49,13 @@ from folder_watch.support.launchd import (
     uninstall_service,
 )
 from folder_watch.support.log import emit, set_json_mode, set_verbose, setup_logging
-from folder_watch.support.notify import DEFAULT_SOUND, ask, available_sounds, notify
+from folder_watch.support.notify import (
+    DEFAULT_SOUND,
+    ask,
+    available_sounds,
+    flush_failures,
+    notify,
+)
 from folder_watch.support.paths import PRESETS_PATH, STATE_DIR
 from folder_watch.support.pidfile import (
     clear_pidfile,
@@ -1061,6 +1067,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _dispatch(argv)
     finally:
+        summary = flush_failures()
+        if summary is not None:
+            summary.join(10)
         _settle_webhook()
 
 

@@ -190,12 +190,16 @@ class TestActions(WebCase):
         from folder_watch.presets import load_raw_preset
 
         moved = self.tmp / "moved"
-        status, _ = self.act("edit", extra={"src": str(moved), "verify": "true"})
+        # cmd and action would turn the page into a way to run any command.
+        status, _ = self.act("edit", extra={"src": str(moved), "verify": "true",
+                                            "action": "exec", "cmd": "/usr/bin/true"})
 
         self.assertEqual(status, 200)
         cfg = load_raw_preset(self.preset)
         self.assertEqual(cfg["src"], str(moved.resolve()))
         self.assertNotIn("verify", cfg, "a key the form does not offer was set")
+        self.assertEqual(cfg["action"], "copy")
+        self.assertNotIn("cmd", cfg)
         self.assertEqual(self.act("edit", extra={"src": " "})[0], 400)
 
     def test_unknown_preset_or_action_and_a_missing_log(self):

@@ -313,6 +313,9 @@ class TestFailureGrouping(unittest.TestCase):
             def start(self):
                 pass
 
+            def cancel(self):
+                self.cancelled = True
+
         for target, value in (
             ("_failures", notify_mod._FailureWindow()),
             ("notify", lambda t, b, **_k: self.sent.append((t, b))),
@@ -360,6 +363,25 @@ class TestFailureGrouping(unittest.TestCase):
         self.failure("b.mp4")
 
         self.assertEqual([body for _t, body in self.sent], ["a.mp4", "b.mp4"])
+
+    def test_what_is_held_is_sent_when_the_process_exits(self):
+        """The hour's timer dies with a --once run; main() flushes instead."""
+        from unittest import mock
+
+        from folder_watch import cli
+
+        self.failure("a.mp4")
+        self.failure("b.mp4")
+        self.failure("c.mp4")
+        with mock.patch.object(cli, "_dispatch", return_value=1):
+            cli.main(["copy"])
+
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("2 more", self.sent[1][1])
+        self.assertTrue(self.timers[0].cancelled, "the hour's summary would come twice")
+        with mock.patch.object(cli, "_dispatch", return_value=0):
+            cli.main([])  # nothing held: nothing sent
+        self.assertEqual(len(self.sent), 2)
 
     def test_an_hour_with_one_failure_sends_no_summary(self):
         self.failure("a.mp4")

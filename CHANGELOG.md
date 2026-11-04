@@ -17,6 +17,9 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A `--once` run with many failures showed only the first.** The others
+  were held for the hour's summary, whose timer died with the process. The
+  summary is now sent as the process exits.
 - **A folder deleted from a mounted drive read as "volume not mounted".**
   Anything under `/Volumes` was judged by its path alone; when the drive is
   mounted and only the folder is gone, `status` now says it is missing and

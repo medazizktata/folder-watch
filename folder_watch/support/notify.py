@@ -319,13 +319,23 @@ def notify_failure(
     return notify(title, body, reveal=reveal, sound=sound)
 
 
-def _flush_failures() -> None:
+def flush_failures() -> threading.Thread | None:
+    """Send the held summary now. At the hour's end, and as a process exits:
+    the hour's timer is a daemon thread that dies with it, so a --once run
+    with ten failures used to show one. Returns the sending thread."""
     w = _failures
     with w.lock:
-        held, latest = w.held, w.latest
+        held, latest, timer = w.held, w.latest, w.timer
         w.started, w.held, w.timer = None, 0, None
-    if held:
-        notify(
-            "folder-watch: more failures",
-            f"{held} more in the last hour; latest: {latest}",
-        )
+    if timer is not None:
+        timer.cancel()
+    if not held:
+        return None
+    return notify(
+        "folder-watch: more failures",
+        f"{held} more after the first; latest: {latest}",
+    )
+
+
+def _flush_failures() -> None:
+    flush_failures()

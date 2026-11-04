@@ -597,6 +597,7 @@ class TestPresetsEdit(CliCase):
             (("job", "colour=blue"), 2),
             (("job", "verify=maybe"), 2),
             (("job", "stable"), 2),
+            (("job", "--unset", "bogus"), 2),
             (("job",), 2),
             (("nope", "stable=1"), 1),
         ):
@@ -630,6 +631,20 @@ class TestPresetsEdit(CliCase):
         with mock.patch.object(launchd, "install_service") as install:
             self.run_cli("presets", "edit", "job", "stable=5")
         install.assert_not_called()
+
+
+class TestWebhookDrain(CliCase):
+    def test_every_command_settles_the_webhook_queue(self):  # holds on BASE
+        """Posts go out on a daemon thread, which dies with the process; under
+        --once the run's own result was lost (4 of 6 delivered without it)."""
+        from unittest import mock
+
+        from folder_watch import cli
+
+        with mock.patch.object(cli, "webhook_flush") as flush:
+            rc, _out, _err = self.run_cli("presets", "show", "no-such-preset")
+        self.assertNotEqual(rc, 0)
+        flush.assert_called_once()
 
 
 class TestPresetValidation(CliCase):
