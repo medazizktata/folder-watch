@@ -233,6 +233,52 @@ class TestPresetResolution(CliCase):
         self.assertEqual(cfg["min_bytes"], 77, "an untouched field was reset")
         self.assertIn("modif", out.lower())
 
+    def test_an_unreadable_presets_file_is_never_overwritten(self):
+        """Saving into a presets.json that did not parse used to start from
+        empty, so the file came back holding only the new preset."""
+        self.presets_path.parent.mkdir(parents=True, exist_ok=True)
+        broken = '{"keep-me": {"action": "copy", "src": "/a", "to": "/b"}, "half'
+        self.presets_path.write_text(broken)
+
+        rc, _out, err = self.run_cli(
+            "copy", str(self.src), "--to", str(self.dest), "--save-preset", "new",
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIn("nothing was saved", err)
+        self.assertEqual(self.presets_path.read_text(), broken)
+
+    def test_a_failed_write_leaves_the_old_file_whole(self):
+        """Writing in place is how a presets.json ends up half-written."""
+        from unittest import mock
+
+        from folder_watch import presets
+
+        self.write_presets(keep={"action": "copy", "src": "/a", "to": "/b"})
+        before = self.presets_path.read_text()
+        temps = set(self.presets_path.parent.glob("presets-*.json.tmp"))
+
+        with (
+            mock.patch.object(presets.os, "replace", side_effect=OSError("disk full")),
+            self.assertRaises(OSError),
+        ):
+            presets.save_preset("new", {"action": "copy", "src": "/c", "to": "/d"})
+
+        self.assertEqual(self.presets_path.read_text(), before)
+        # Compared with before, not with none: the directory is shared scratch.
+        self.assertEqual(set(self.presets_path.parent.glob("presets-*.json.tmp")), temps)
+
+    def test_an_empty_presets_file_still_takes_a_save(self):
+        self.presets_path.parent.mkdir(parents=True, exist_ok=True)
+        self.presets_path.write_text("")
+
+        rc, _out, _err = self.run_cli(
+            "copy", str(self.src), "--to", str(self.dest), "--save-preset", "first",
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("first", json.loads(self.presets_path.read_text()))
+
 
 class TestSubcommands(CliCase):
     def test_status_with_no_watchers_says_so(self):

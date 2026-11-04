@@ -17,6 +17,12 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **Saving a preset into an unreadable `presets.json` deleted every other
+  preset.** When the file did not parse (half-written or corrupted), saving
+  started from an empty set and wrote the file back holding only the new
+  preset. It now refuses with exit 2 and leaves the file untouched. Presets
+  are also written through a temp file and a rename, so a crash mid-save can
+  no longer leave the half-written file that started this.
 - **A service whose source folder was gone restarted every ten seconds,
   forever.** The plist set a bare `KeepAlive`, so a preset whose `src` had been
   moved or deleted exited with `src_missing`, and launchd started it again

@@ -8,12 +8,15 @@ so the built-in only ever supplied a debounce_ms identical to the CLI default.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from folder_watch.support.log import emit
-from folder_watch.support.paths import CONFIG_DIR, LEGACY_PRESETS, PRESETS_PATH
+from folder_watch.support.paths import LEGACY_PRESETS, PRESETS_PATH
 
 # Every key a preset may carry. Nothing derives this automatically from the
 # argument parser, so a flag added without touching cli.py's preset block is
@@ -150,7 +153,7 @@ def remove_preset(name: str) -> list[Path]:
         if not isinstance(data, dict) or name not in data:
             continue
         data.pop(name)
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        _write_presets(path, data)
         changed.append(path)
     return changed
 
@@ -235,13 +238,52 @@ def load_raw_preset(name: str) -> dict[str, Any] | None:
     return dict(stored) if isinstance(stored, dict) else None
 
 
+class PresetsUnreadable(RuntimeError):
+    """presets.json exists but does not read as a JSON object."""
+
+
+def _write_presets(path: Path, presets: dict[str, Any]) -> None:
+    """Write through a temp file and a rename. Writing in place meant a crash
+    mid-save left a half-written presets.json, the very file save_preset
+    used to treat as empty."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix="presets-", suffix=".json.tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(presets, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def save_preset(name: str, cfg: dict[str, Any]) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    """Add or replace one preset, keeping every other one.
+
+    Raises PresetsUnreadable instead of starting from an empty file: when
+    presets.json could not be parsed, saving one preset used to rewrite the
+    file with that preset alone, silently dropping all the others.
+    """
     presets: dict[str, Any] = {}
-    if PRESETS_PATH.is_file():
+    if PRESETS_PATH.exists():
         try:
-            presets = json.loads(PRESETS_PATH.read_text())
-        except (OSError, json.JSONDecodeError):
-            presets = {}
+            text = PRESETS_PATH.read_text()
+            # An empty file holds no presets to lose.
+            loaded = json.loads(text) if text.strip() else {}
+        except (OSError, json.JSONDecodeError) as e:
+            raise PresetsUnreadable(
+                f"{PRESETS_PATH} cannot be read ({e}); nothing was saved, so the "
+                "presets in it are not lost. Fix or move the file, then retry."
+            ) from e
+        if not isinstance(loaded, dict):
+            raise PresetsUnreadable(
+                f"{PRESETS_PATH} does not hold a JSON object; nothing was saved."
+            )
+        presets = loaded
     presets[name] = cfg
-    PRESETS_PATH.write_text(json.dumps(presets, indent=2) + "\n")
+    _write_presets(PRESETS_PATH, presets)

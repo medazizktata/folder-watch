@@ -17,6 +17,7 @@ from folder_watch.actions.unzip import UnzipAction
 from folder_watch.core.util import parse_exts
 from folder_watch.core.watch import list_pending, run_watch
 from folder_watch.presets import (
+    PresetsUnreadable,
     load_presets,
     load_raw_preset,
     preset_sources,
@@ -356,8 +357,10 @@ def persist_preset(
     *,
     argv: list[str],
     loaded_preset: str | None,
-) -> None:
-    """Write a preset, merging rather than replacing, and say what changed."""
+) -> int:
+    """Write a preset, merging rather than replacing, and say what changed.
+    Returns the exit status: 2 when presets.json is unreadable and the save
+    was refused."""
     existing = load_raw_preset(name)
 
     if existing is None:
@@ -381,15 +384,20 @@ def persist_preset(
         removed = [k for k in existing if k not in final]
         if not changes and not removed:
             print(f"  no changes; {name!r} left as it was")
-            return
+            return 0
         for key, before, after in changes:
             print(f"  {key}: {before} -> {after}")
         for key in removed:
             print(f"  {key}: {existing[key]} -> <removed>")
 
-    save_preset(name, final)
+    try:
+        save_preset(name, final)
+    except PresetsUnreadable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     verb = "updated" if existing is not None else "saved"
     print(f"{verb} preset {name!r} -> {PRESETS_PATH}")
+    return 0
 
 
 def run_presets_show(name: str) -> int:
@@ -1063,10 +1071,9 @@ def _dispatch(argv: list[str] | None = None) -> int:
                 convx_cfg["convx_bin"] = convx_bin
             if passthru:
                 convx_cfg["passthru"] = passthru
-            persist_preset(
+            return persist_preset(
                 args.save_preset, convx_cfg, argv=argv, loaded_preset=args.preset
             )
-            return 0
 
         watch_name = args.preset or f"convx-{src.name}"
         try:
@@ -1145,8 +1152,9 @@ def _dispatch(argv: list[str] | None = None) -> int:
             cfg["retry_hours"] = args.retry_hours
         if getattr(args, "webhook", None):
             cfg["webhook"] = args.webhook
-        persist_preset(args.save_preset, cfg, argv=argv, loaded_preset=args.preset)
-        return 0
+        return persist_preset(
+            args.save_preset, cfg, argv=argv, loaded_preset=args.preset
+        )
 
     try:
         action = build_action(action_name, args, src_root=src)
