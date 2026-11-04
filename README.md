@@ -361,6 +361,14 @@ saves the new path as the preset's `src` and restarts the watcher on it. A
 LaunchAgent is reinstalled so its plist follows. Ignoring it, or letting it
 time out after an hour, changes nothing.
 
+**Following without asking.** A preset with `"follow_moves": true` (or saved
+with `--follow-moves`) skips the button and follows the move by itself,
+then tells you with a notification. It never does that for a move into a
+Trash, which is a deletion, or onto another volume, which is a copy and can be
+a backup drive; those are logged as `follow_refused` and fall back to the
+button. With `--no-notify` nothing is shown, but a safe automatic follow still
+happens.
+
 A restore always does a **catch-up** scan, even without `--catch-up`: anything
 that landed while the directory was gone is work that hasn't been done. The
 done-store makes that safe — files already handled are skipped, not redone.

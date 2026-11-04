@@ -24,7 +24,7 @@ from fixtures import (
     wait_until,
 )
 
-from folder_watch.presets import remove_preset, save_preset
+from folder_watch.presets import load_raw_preset, remove_preset, save_preset
 from folder_watch.support.launchd import (
     build_plist,
     service_label,
@@ -69,6 +69,25 @@ class TestWatcher(WatcherCase):
         ).stdout
 
         self.assertIn(f"{name}: copied 1", out)
+
+    def test_follow_moves_carries_on_in_the_folders_new_place(self):
+        name = f"e2e-follow-{os.getpid()}"
+        save_preset(name, {"action": "copy", "src": str(self.src), "to": str(self.dest),
+                           "follow_moves": True})
+        self.addCleanup(remove_preset, name)
+        self.start("--preset", name)
+        moved = self.tmp / "renamed"
+        self.src.rename(moved)
+
+        self.wait_for("src_followed", automatic=True)
+        # The watcher restarts itself, in place, on the new path.
+        self.wait_for("start", src=moved)
+        self.src = moved
+        self.drop("after-the-move.mp4")
+        self.wait_for("copied", name="after-the-move.mp4")
+
+        self.assertEqual(load_raw_preset(name)["src"], str(moved))
+        self.assertTrue((self.dest / "after-the-move.mp4").is_file())
 
     def test_a_renamed_source_stops_the_watcher_with_its_new_path(self):
         """Watching for a name that will not come back used to wait forever."""

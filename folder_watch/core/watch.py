@@ -121,21 +121,54 @@ def stop_if_moved(fd: int | None, src_dir: Path) -> bool:
     return True
 
 
-def offer_to_follow(preset: str | None, src_dir: Path, moved: Path) -> None:
-    """Tell the user the source moved, and for a stored preset offer to
-    watch the new path. A yes saves it as the preset's src and restarts the
-    watcher on it."""
+def follow_refusal(src_dir: Path, moved: Path) -> str | None:
+    """Why a move must not be followed unasked, or None when it may be.
+
+    Into a Trash means the folder was thrown away, not moved. Onto another
+    volume means a copy, which can be a backup drive. Volumes are compared
+    against the nearest folder that still exists where the source was."""
+    if any(part in (".Trash", ".Trashes") for part in moved.parts):
+        return "moved into a Trash"
+    anchor = src_dir
+    while not anchor.exists() and anchor != anchor.parent:
+        anchor = anchor.parent
+    try:
+        if moved.stat().st_dev != anchor.stat().st_dev:
+            return "moved to another volume"
+    except OSError:
+        return "cannot compare volumes"
+    return None
+
+
+def offer_to_follow(
+    preset: str | None, src_dir: Path, moved: Path, *, notify_user: bool = True
+) -> None:
+    """Act on a moved source for a stored preset: follow it by itself when
+    the preset says follow_moves and the move is safe, otherwise offer the
+    "Watch new path" button. Following saves the new path as the preset's src
+    and restarts the watcher on it. With notify_user off (--no-notify) nothing
+    is shown, but a safe automatic follow still happens."""
     raw = load_raw_preset(preset) if preset else None
     if preset is None or raw is None:
-        notify("folder-watch stopped", f"{src_dir.name} moved to {moved}").join(10)
+        if notify_user:
+            notify("folder-watch stopped", f"{src_dir.name} moved to {moved}").join(10)
         return
-    if not ask(
-        "folder-watch stopped",
-        f"{preset}: {src_dir.name} moved to {moved}",
-        "Watch new path",
-    ):
-        emit("src_not_followed", preset=preset, now=moved)
-        return
+    auto = False
+    if raw.get("follow_moves"):
+        refusal = follow_refusal(src_dir, moved)
+        auto = refusal is None
+        if refusal:
+            emit("warn", reason="follow_refused", preset=preset, now=moved, why=refusal)
+    if not auto:
+        if not notify_user:
+            return
+        if not ask(
+            "folder-watch stopped",
+            f"{preset}: {src_dir.name} moved to {moved}",
+            "Watch new path",
+        ):
+            emit("src_not_followed", preset=preset, now=moved)
+            return
     raw["src"] = str(moved)
     try:
         save_preset(preset, raw)
@@ -143,7 +176,9 @@ def offer_to_follow(preset: str | None, src_dir: Path, moved: Path) -> None:
         emit("error", reason="presets_unreadable", preset=preset, detail=str(e))
         notify("folder-watch: preset not updated", str(e)).join(10)
         return
-    emit("src_followed", preset=preset, src=moved)
+    emit("src_followed", preset=preset, src=moved, automatic=auto)
+    if auto and notify_user:
+        notify("folder-watch followed a move", f"{preset} now watches {moved}").join(10)
     module = [sys.executable, "-m", "folder_watch"]
     if os.environ.get("XPC_SERVICE_NAME") == service_label(preset):
         # Reinstalling unloads this very job, which would kill the install
@@ -1387,7 +1422,8 @@ def run_watch(
     # After the cleanup above: the offer can wait an hour for an answer, and
     # a yes replaces this process.
     # --no-notify means no notifications at all: an unattended or test run
-    # must not sit for an hour on a button nobody will see.
-    if moved is not None and notify_moves:
-        offer_to_follow(preset, src_dir, moved)
+    # must not sit for an hour on a button nobody will see. A safe automatic
+    # follow is not a notification, so it still happens.
+    if moved is not None:
+        offer_to_follow(preset, src_dir, moved, notify_user=notify_moves)
     return rc

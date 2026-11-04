@@ -262,6 +262,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     g_act.add_argument(
+        "--follow-moves",
+        action="store_true",
+        help=(
+            "with --save-preset: if the watched folder is moved, follow it to "
+            "its new place without asking, unless it went into a Trash or onto "
+            "another volume"
+        ),
+    )
+    g_act.add_argument(
         "--reveal",
         action="store_true",
         help=(
@@ -1158,6 +1167,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
             ("--no-done-store", "no_done_store"),
             ("--verify", "verify"),
             ("--reveal", "reveal"),
+            ("--follow-moves", "follow_moves"),
         ):
             if flag not in passed and cfg.get(key):
                 setattr(args, key, True)
@@ -1329,7 +1339,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
         # Round-trip the safety flags too, so a saved preset preserves how the
         # command was actually invoked rather than silently dropping them.
         for key in ("no_clobber", "create_dest", "exclusive", "no_done_store",
-                    "verify", "reveal"):
+                    "verify", "reveal", "follow_moves"):
             if getattr(args, key, False):
                 cfg[key] = True
         # Round-trip the sound settings too, so a saved preset sounds the way

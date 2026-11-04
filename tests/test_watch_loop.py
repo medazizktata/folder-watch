@@ -1215,7 +1215,7 @@ class TestFollowMovedSource(LoopCase):
 
         remove_preset(self.preset)
 
-    def _offer(self, *, clicked: bool, under_launchd: bool):
+    def _offer(self, *, clicked: bool, under_launchd: bool, notify_user: bool = True):
         label = watch_mod.service_label(self.preset)
         env = {"XPC_SERVICE_NAME": label} if under_launchd else {}
         with (
@@ -1228,8 +1228,72 @@ class TestFollowMovedSource(LoopCase):
         ):
             if not under_launchd:
                 os.environ.pop("XPC_SERVICE_NAME", None)
-            watch_mod.offer_to_follow(self.preset, self.src, self.moved)
+            watch_mod.offer_to_follow(
+                self.preset, self.src, self.moved, notify_user=notify_user
+            )
         return log, ask, note, execv, popen
+
+    def _follow_moves(self, moved=None):
+        """Turn follow_moves on and really move the source."""
+        from folder_watch.presets import load_raw_preset, save_preset
+
+        cfg = load_raw_preset(self.preset)
+        save_preset(self.preset, {**cfg, "follow_moves": True})
+        if moved is not None:
+            self.moved = moved
+        self.moved.parent.mkdir(parents=True, exist_ok=True)
+        self.src.rename(self.moved)
+
+    def test_follow_moves_follows_a_safe_move_without_asking(self):
+        self._follow_moves()
+
+        log, ask, note, execv, _popen = self._offer(clicked=False, under_launchd=False)
+
+        ask.assert_not_called()
+        self.assertEqual(self._stored_src(), str(self.moved))
+        self.assertEqual(fields(log, "src_followed")[0]["automatic"], True)
+        execv.assert_called_once()
+        note.assert_called_once()  # told that it happened, after the fact
+
+    def test_a_move_into_the_trash_falls_back_to_the_button(self):
+        """Into a Trash is a deletion, not a new home."""
+        self._follow_moves(self.tmp / ".Trash" / "src")
+
+        log, ask, _note, execv, _popen = self._offer(clicked=False, under_launchd=False)
+
+        ask.assert_called_once()
+        execv.assert_not_called()
+        self.assertEqual(self._stored_src(), str(self.src))
+        self.assertEqual(fields(log, "warn")[0]["why"], "moved into a Trash")
+
+    def test_another_volume_is_refused(self):
+        """A move across volumes is a copy, which can be a backup drive.
+        /dev is a different filesystem from the temp dir, for real."""
+        self.assertEqual(
+            watch_mod.follow_refusal(self.src, Path("/dev")), "moved to another volume"
+        )
+        self.assertIsNone(watch_mod.follow_refusal(self.src, self.tmp))
+
+    def test_no_notify_still_follows_a_safe_move_silently(self):
+        self._follow_moves()
+
+        _log, ask, note, execv, _popen = self._offer(
+            clicked=False, under_launchd=False, notify_user=False
+        )
+
+        ask.assert_not_called()
+        note.assert_not_called()
+        execv.assert_called_once()
+
+    def test_no_notify_without_follow_moves_shows_nothing_and_changes_nothing(self):
+        _log, ask, note, execv, _popen = self._offer(
+            clicked=True, under_launchd=False, notify_user=False
+        )
+
+        ask.assert_not_called()
+        note.assert_not_called()
+        execv.assert_not_called()
+        self.assertEqual(self._stored_src(), str(self.src))
 
     def _stored_src(self):
         from folder_watch.presets import load_raw_preset
@@ -1594,7 +1658,7 @@ class TestRunWatchLifecycle(LoopCase):
 
         offered = []
 
-        def offer(preset, src, now):
+        def offer(preset, src, now, **_kw):
             offered.append((preset, src, now, self.our_pidfiles("demo")))
 
         with mock.patch.object(watch_mod, "offer_to_follow", side_effect=offer):
@@ -1621,7 +1685,10 @@ class TestRunWatchLifecycle(LoopCase):
             )
 
         self.assertEqual(rc, 2)
-        offer.assert_not_called()
+        # Still offered, so a safe automatic follow can happen, but with
+        # nothing to show; TestFollowMovedSource checks it shows nothing.
+        offer.assert_called_once()
+        self.assertIs(offer.call_args.kwargs["notify_user"], False)
         self.assertEqual(
             [e["reason"] for e in fields(log, "error")], ["src_moved"]
         )

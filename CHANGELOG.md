@@ -95,6 +95,10 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **`follow_moves`** per preset (`--follow-moves` with `--save-preset`):
+  a moved source is followed without the button, except into a Trash or onto
+  another volume, which fall back to it. It also works with `--no-notify`,
+  silently.
 - **`folder-watch digest`** and a weekly digest notification: what each preset
   did in the last 7 days ("copied 34, 2 failed (photos, inbox)"), counted from
   its logs. Log lines now carry the date (`YYYY-MM-DD HH:MM:SS` in plain
