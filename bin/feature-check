@@ -29,6 +29,8 @@ step "unit tests"
 "$VENV/python" -B -m unittest discover -s tests 2>&1 | tail -3
 step "smoke tests (real watchers, FSEvents)"
 ./bin/test-addons
+step "end-to-end tests (real watchers, real launchd)"
+"$VENV/python" -B -m unittest discover -s tests/e2e 2>&1 | tail -3
 
 step "coverage of files changed since $BASE"
 changed=()

@@ -42,7 +42,12 @@ class TestNoSleepAsSynchronisation(unittest.TestCase):
     wait for the signal that says it did.
     """
 
-    SUITES = ("test_addons_smoke.py", "test_crash_recovery.py")
+    SUITES = (
+        "test_addons_smoke.py",
+        "test_crash_recovery.py",
+        "e2e/fixtures.py",
+        "e2e/test_e2e.py",
+    )
 
     @staticmethod
     def _sleeps(tree):

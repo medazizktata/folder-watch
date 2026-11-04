@@ -2,7 +2,7 @@ PY := .venv/bin/python
 VENV := .venv/bin
 
 .DEFAULT_GOAL := check
-.PHONY: check all feature lint types test smoke cover install-hooks dev clean-cover release version
+.PHONY: check all feature e2e lint types test smoke cover install-hooks dev clean-cover release version
 
 # The gate: deterministic and safe to run on every commit (~30s). Most of it
 # is the crash-recovery suite, which starts real watchers and kills them
@@ -10,7 +10,7 @@ VENV := .venv/bin
 check: lint types test
 
 # Everything, including the FSEvents smoke suite (~45s).
-all: lint types test smoke cover
+all: lint types test smoke e2e cover
 
 # Before committing a feature: `all`, plus coverage of the changed files and
 # proof that every new test fails on BASE (default origin/main).
@@ -31,6 +31,11 @@ test:
 # disabled gate protects nothing.
 smoke:
 	@./bin/test-addons
+
+# Real watchers on FSEvents and real launchd jobs (tests/e2e, ~40s). Outside
+# `check` for the same reason as smoke; launchd tests skip with no GUI session.
+e2e:
+	@$(PY) -B -m unittest discover -s tests/e2e
 
 cover:
 	@$(VENV)/coverage run --source=folder_watch -m unittest discover -s tests >/dev/null

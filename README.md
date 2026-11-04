@@ -609,7 +609,8 @@ one of them.
 
 ```bash
 make check    # lint + types + unit tests (~5s) — what the commit hook runs
-make all      # adds the smoke suite and coverage
+make all      # adds the smoke suite, end-to-end tests and coverage
+make e2e      # real watchers and real launchd jobs (tests/e2e, ~40s)
 make feature  # before committing a feature: see below (BASE=origin/main)
 make dev      # install the dev dependencies
 make install-hooks
@@ -620,6 +621,17 @@ make install-hooks
 The smoke suite is deliberately outside the commit gate: it spawns real
 watchers and does FSEvents timing, and a gate that is slow or flaky gets
 bypassed with `--no-verify`, at which point it protects nothing.
+
+**End-to-end tests** (`tests/e2e`) run real watchers on FSEvents and real
+launchd jobs, in throwaway trees, through the fixtures in
+`tests/e2e/fixtures.py`: `WatcherCase` starts a watcher writing JSON events and
+waits for an event with given fields under a deadline; `LaunchdCase` loads a
+job under a unique label with the scratch config in its environment, and
+always unloads it. They cover what was only ever checked by hand: a dropped
+file copied, an archive extracted, a moved source reported with its new path,
+a missing source starting once under launchd and coming back with its folder,
+and `doctor` reading a crashing service's exit code. The launchd tests skip
+themselves where there is no GUI login session, as on CI runners.
 
 **Before committing a feature, run `make feature`** (`bin/feature-check`,
 about 2.5 minutes). It runs everything `make all` does with the bytecode cache

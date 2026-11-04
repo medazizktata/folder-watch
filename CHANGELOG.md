@@ -148,6 +148,13 @@ which is why the first entry covers so much ground.
 
 ### Testing
 
+- **End-to-end tests** (`tests/e2e`, `make e2e`) with reusable fixtures for
+  real watchers and real launchd jobs. Each test was checked against the
+  break it exists for: a bare `KeepAlive`, move detection switched off, and
+  `doctor` ignoring exit codes.
+- **`make feature`**, a per-feature gate: everything `make all` runs, with the
+  bytecode cache off, coverage of the changed files, and every new test run
+  against the base commit's code, where it must fail.
 - **Crash recovery**, 21 tests. A watcher is killed with SIGKILL mid-copy and
   mid-extract, plus surgical kill points a poll cannot aim at: between
   `extractall` and the archive being deleted, and between the bytes landing and
