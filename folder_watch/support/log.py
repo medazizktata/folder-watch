@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,12 @@ log = logging.getLogger("folder_watch")
 
 _JSON_MODE = False
 _VERBOSE = False
+_TO_STDOUT = True
+
+# --log rotates here. Unrotated, a long-lived watcher's log grew for as long
+# as it ran.
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUPS = 3
 
 
 def setup_logging(
@@ -39,10 +46,17 @@ def setup_logging(
     if log_file is not None:
         log_file = log_file.expanduser()
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file, encoding="utf-8")
+        fh = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8"
+        )
         fh.setFormatter(fmt)
         fh.setLevel(lvl)
         log.addHandler(fh)
+
+    # Under launchd stdout is a file as well (the .out log), so with --log
+    # every event was written twice. A terminal still gets them.
+    global _TO_STDOUT
+    _TO_STDOUT = log_file is None or sys.stdout.isatty()
 
 
 def set_json_mode(on: bool) -> None:
@@ -110,7 +124,8 @@ def emit(event: str, **fields: Any) -> None:
     else:
         bits = [event] + [f"{k}={_plain(v)}" for k, v in fields.items()]
         line = " ".join(bits)
-    print(line, flush=True)
+    if _TO_STDOUT:
+        print(line, flush=True)
     log.info("%s", line)
 
 

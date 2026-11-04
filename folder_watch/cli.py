@@ -650,29 +650,92 @@ def run_prune_cli(argv: list[str]) -> int:
         print(f"removed {removed}" if removed else "no weekly job installed")
         return 0
     if args.ask:
-        # Done-state, pidfiles and crash debris are the tool's own bookkeeping,
-        # and turn over in normal use, so asking about them would nag every
-        # week. Presets are your configuration, so those wait for a click.
-        _prune_state(dry=False)
+        # One dry pass to see what there is, and nothing removed without the
+        # click — the tool's own bookkeeping included.
+        state = _prune_state(dry=True)
         due = _prune_presets(dry=True)
-        if due and ask(
+        logs = _prune_logs(dry=True)
+        if (state or due or logs) and ask(
             "folder-watch cleanup",
-            f"{len(due)} preset(s) whose folder has been gone "
-            f"{RETENTION_DAYS}+ days: {', '.join(due)}",
+            f"{len(due)} dead preset(s){': ' + ', '.join(due) if due else ''}; "
+            f"{logs} log(s) to remove or trim; {state} stale state item(s)",
             "Clean up",
         ):
+            _prune_state(dry=False)
             _prune_presets(dry=False)
+            _prune_logs(dry=False)
         return 0
     dry = not args.yes
     _prune_state(dry=dry)
     _prune_presets(dry=dry)
+    _prune_logs(dry=dry)
     if dry:
         print("\ndry run — re-run with --yes to apply")
     return 0
 
 
-def _prune_state(*, dry: bool) -> None:
-    """Clear out state that no longer refers to anything real."""
+# A launchd .out log is held open by the job in append mode, so it cannot
+# rotate; prune cuts one this big down to its newest OUT_LOG_KEEP bytes.
+OUT_LOG_MAX = 10 * 1024 * 1024
+OUT_LOG_KEEP = 1024 * 1024
+
+
+def _trim_to_tail(path: Path, keep: int) -> None:
+    with path.open("rb") as f:
+        f.seek(-keep, 2)
+        tail = f.read()
+    tail = tail[tail.find(b"\n") + 1 :]  # start on a whole line
+    # In place, not replaced: launchd's append-mode handle keeps writing to
+    # this inode. shortcut: lines appended during the rewrite can be lost.
+    with path.open("r+b") as f:
+        f.write(tail)
+        f.truncate()
+
+
+def _prune_logs(*, dry: bool) -> int:
+    """Logs in the state folder that no longer earn their space. A log no
+    stored preset owns, untouched for RETENTION_DAYS, is removed; an .out log
+    over OUT_LOG_MAX is cut to its tail. Returns how many it acted on."""
+    now = time.time()
+    names = set(load_presets())
+
+    def owned(path: Path) -> bool:
+        # Names starting with "_" are the tool's own jobs, such as the weekly prune.
+        stem = path.name.split(".", 1)[0]
+        return stem.startswith("_") or any(
+            path.name in (f"{n}.log", f"{n}.out.log")
+            or path.name.startswith(f"{n}.log.")
+            for n in names
+        )
+
+    verb = "would remove" if dry else "removed"
+    count = 0
+    for path in sorted(STATE_DIR.glob("*.log*")):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if not owned(path) and now - st.st_mtime >= RETENTION_DAYS * 86400:
+            print(
+                f"    {verb} {path.name}: no preset owns it, "
+                f"untouched {RETENTION_DAYS}+ days"
+            )
+            count += 1
+            if not dry:
+                path.unlink(missing_ok=True)
+        elif path.name.endswith(".out.log") and st.st_size > OUT_LOG_MAX:
+            trim = "would trim" if dry else "trimmed"
+            print(f"    {trim} {path.name} to its last 1 MB")
+            count += 1
+            if not dry:
+                _trim_to_tail(path, OUT_LOG_KEEP)
+    print(f"logs: {count} {'to remove or trim' if dry else 'removed or trimmed'}")
+    return count
+
+
+def _prune_state(*, dry: bool) -> int:
+    """Clear out state that no longer refers to anything real. Returns how
+    many items it removed, or would remove."""
     # ".json" not ".json.tmp": a crash during a save leaves an unpublished
     # temp beside the real file, and it used to match this glob — so prune
     # read somebody's half-written debris as a store and tidied it as one.
@@ -718,6 +781,7 @@ def _prune_state(*, dry: bool) -> None:
     print(f"pidfiles: {verb} {len(pidfiles)} stale")
     for p in pidfiles:
         print(f"    {p.name}")
+    return dropped_entries + len(orphan_temps) + len(pidfiles)
 
 
 def run_service_cli(argv: list[str]) -> int:

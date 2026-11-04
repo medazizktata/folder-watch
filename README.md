@@ -265,7 +265,9 @@ gets pasted into bug reports.
 # dry-run (no writes)
 folder-watch copy ./Out --to ./Drive --once --dry-run
 
-# log file + JSON lines
+# log file + JSON lines (rotates at 10 MB, keeps 3 old copies; without a
+# terminal, events go only to the file, so a LaunchAgent's .out log is not a
+# second copy of them)
 folder-watch --preset nightly-render --log ~/.local/state/folder-watch/nightly-render.log --json
 
 # verbose settle/progress
@@ -281,13 +283,14 @@ folder-watch copy ./Out --to ./Drive --retries 8
 folder-watch status
 folder-watch status --preset nightly-render
 
-# drop done-state whose source is gone, stale pidfiles, and presets whose
-# folder has been deleted or renamed for 30+ days (dry by default)
+# drop done-state whose source is gone, stale pidfiles, presets whose folder
+# has been deleted or renamed for 30+ days, logs no preset owns that are 30+
+# days old, and trim launchd .out logs over 10 MB (dry by default)
 folder-watch prune
 folder-watch prune --yes
 
-# weekly (Sundays 10:00): clear dead state, and offer a "Clean up" button for
-# presets that are due; nothing is removed without the click
+# weekly (Sundays 10:00): one notification listing what prune would do, with
+# a "Clean up" button; nothing is removed without the click
 folder-watch prune --schedule
 folder-watch prune --unschedule
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import plistlib
 import shutil
 import tempfile
@@ -145,10 +146,37 @@ class TestPrunePresets(RetentionCase):
 
 
 class TestWeeklyAsk(RetentionCase):
-    def ask(self, *, clicked: bool):
-        with mock.patch.object(cli, "ask", return_value=clicked) as ask:
+    def ask(self, *, clicked: bool, state: int = 0, logs: int = 0):
+        """Run `prune --ask` with the bookkeeping counts fixed, since the
+        shared test state dir can hold debris from other tests."""
+        calls: list[str] = []
+
+        def fake_state(*, dry):
+            calls.append(f"state dry={dry}")
+            return state if dry else 0
+
+        def fake_logs(*, dry):
+            calls.append(f"logs dry={dry}")
+            return logs if dry else 0
+
+        with (
+            mock.patch.object(cli, "ask", return_value=clicked) as ask,
+            mock.patch.object(cli, "_prune_state", side_effect=fake_state),
+            mock.patch.object(cli, "_prune_logs", side_effect=fake_logs),
+        ):
             self.prune("--ask")
+        ask.calls = calls
         return ask
+
+    def test_bookkeeping_alone_waits_for_the_click(self):
+        """Nothing is removed without the click, the tool's own state included."""
+        ask = self.ask(clicked=False, state=3)
+
+        ask.assert_called_once()
+        self.assertNotIn("state dry=False", ask.calls)
+
+        ask = self.ask(clicked=True, logs=2)
+        self.assertIn("logs dry=False", ask.calls)
 
     def test_a_click_removes_due_presets(self):
         self.gone_for(31)
@@ -192,6 +220,103 @@ class TestWeeklyAsk(RetentionCase):
             job["StartCalendarInterval"], {"Weekday": 0, "Hour": 10, "Minute": 0}
         )
         self.assertEqual(job["EnvironmentVariables"]["PYTHONPATH"], "/x")
+
+
+class TestPruneLogs(unittest.TestCase):
+    """Logs in the state folder: orphans removed after the retention window,
+    oversized launchd .out logs cut to their tail."""
+
+    def setUp(self):
+        self.tag = f"logtest-{time.time_ns()}"
+        self.made: list[Path] = []
+        self.addCleanup(lambda: [p.unlink(missing_ok=True) for p in self.made])
+
+    def log(self, name: str, *, age_days: float = 0, size: int = 10) -> Path:
+        path = STATE_DIR / name
+        path.write_bytes(b"x" * (size - 1) + b"\n")
+        then = time.time() - age_days * DAY
+        os.utime(path, (then, then))
+        self.made.append(path)
+        return path
+
+    def prune_logs(self, *, dry: bool) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli._prune_logs(dry=dry)
+
+    def test_an_old_orphan_goes_and_everything_else_stays(self):
+        save_preset(self.tag, {"action": "copy", "src": "/a", "to": "/b"})
+        self.addCleanup(remove_preset, self.tag)
+        orphan = self.log(f"{self.tag}-gone.log", age_days=40)
+        recent = self.log(f"{self.tag}-recent.log", age_days=3)
+        owned = self.log(f"{self.tag}.log", age_days=40)
+        rotated = self.log(f"{self.tag}.log.1", age_days=40)
+        tool = self.log(f"_{self.tag}.out.log", age_days=40)
+
+        self.prune_logs(dry=True)
+        self.assertTrue(orphan.exists(), "a dry run removed a log")
+
+        self.prune_logs(dry=False)
+        self.assertFalse(orphan.exists())
+        for kept in (recent, owned, rotated, tool):
+            self.assertTrue(kept.exists(), kept.name)
+
+    def test_an_oversized_out_log_keeps_its_newest_whole_lines(self):
+        save_preset(self.tag, {"action": "copy", "src": "/a", "to": "/b"})
+        self.addCleanup(remove_preset, self.tag)
+        path = self.log(f"{self.tag}.out.log")
+        lines = [f"line {i:08d}\n".encode() for i in range(cli.OUT_LOG_MAX // 14 + 10)]
+        path.write_bytes(b"".join(lines))
+        inode = path.stat().st_ino
+
+        self.prune_logs(dry=False)
+
+        data = path.read_bytes()
+        self.assertLessEqual(len(data), cli.OUT_LOG_KEEP)
+        self.assertTrue(data.endswith(lines[-1]), "the newest line was lost")
+        self.assertIn(data.split(b"\n", 1)[0] + b"\n", lines, "it starts mid-line")
+        self.assertEqual(path.stat().st_ino, inode, "replaced: launchd writes elsewhere")
+
+
+class TestLogFile(unittest.TestCase):
+    def setUp(self):
+        from folder_watch.support import log
+
+        self.log_mod = log
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(log.setup_logging)
+
+    def emitted(self, *, log_file, tty: bool) -> str:
+        out = io.StringIO()
+        out.isatty = lambda: tty  # type: ignore[method-assign]
+        with contextlib.redirect_stdout(out):
+            self.log_mod.setup_logging(log_file=log_file)
+            self.log_mod.emit("probe", n=1)
+        return out.getvalue()
+
+    def test_with_a_log_file_and_no_terminal_events_go_to_the_file_once(self):
+        """Under launchd stdout is the .out log, so printing too wrote every
+        event twice."""
+        f = self.tmp / "w.log"
+
+        self.assertEqual(self.emitted(log_file=f, tty=False), "")
+        self.assertIn("probe n=1", f.read_text())
+
+    def test_a_terminal_and_runs_without_a_log_still_print(self):
+        self.assertIn("probe", self.emitted(log_file=self.tmp / "w.log", tty=True))
+        self.assertIn("probe", self.emitted(log_file=None, tty=False))
+
+    def test_the_log_file_rotates(self):
+        import logging.handlers
+
+        self.log_mod.setup_logging(log_file=self.tmp / "w.log")
+        handlers = [
+            h for h in self.log_mod.log.handlers
+            if isinstance(h, logging.handlers.RotatingFileHandler)
+        ]
+        self.assertEqual(len(handlers), 1)
+        self.assertEqual(handlers[0].maxBytes, self.log_mod.LOG_MAX_BYTES)
+        self.assertGreater(handlers[0].backupCount, 0)
 
 
 if __name__ == "__main__":

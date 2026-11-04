@@ -23,6 +23,10 @@ which is why the first entry covers so much ground.
   preset. It now refuses with exit 2 and leaves the file untouched. Presets
   are also written through a temp file and a rename, so a crash mid-save can
   no longer leave the half-written file that started this.
+- **Logs grew without limit, and a LaunchAgent wrote every event twice.**
+  `--log` now rotates at 10 MB and keeps 3 old copies. With a log file and no
+  terminal, which is how a LaunchAgent runs, events go only to the log file:
+  launchd's `.out` file used to receive a full second copy of them.
 - **A service whose source folder was gone restarted every ten seconds,
   forever.** The plist set a bare `KeepAlive`, so a preset whose `src` had been
   moved or deleted exited with `src_missing`, and launchd started it again
@@ -93,10 +97,12 @@ which is why the first entry covers so much ground.
   and default logs. It never counts a source on an unmounted volume, and never
   removes a preset a watcher is running. The clock starts at the first check
   that sees the folder gone (`dead-presets.json`) and resets if the folder
-  returns. `prune --schedule` installs a weekly job that clears the tool's own
-  dead state and asks with a **Clean up** button before removing any preset.
-  Without this, a preset whose project ended stayed forever, and a LaunchAgent
-  left installed for it looped.
+  returns. `prune` also removes logs in the state folder that no preset owns
+  and that have not been written for 30 days, and cuts launchd `.out` logs
+  over 10 MB down to their last 1 MB. `prune --schedule` installs a weekly job
+  that sends one notification listing all of it, with a **Clean up** button;
+  nothing is removed without the click. Without this, a preset whose project
+  ended stayed forever, and a LaunchAgent left installed for it looped.
 
 - **A moved source is detected, not waited for.** A watcher used to treat a
   renamed folder like a deleted one and wait for the old name to return,
