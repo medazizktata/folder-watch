@@ -1235,6 +1235,7 @@ def run_watch(
     to: str | None = None,
     exclusive: bool = False,
     dry_run: bool = False,
+    notify_moves: bool = True,
 ) -> int:
     src_dir = src_dir.expanduser().resolve()
     name = watch_name or preset or f"{action.name}-{src_dir.name}"
@@ -1385,6 +1386,8 @@ def run_watch(
                     pass
     # After the cleanup above: the offer can wait an hour for an answer, and
     # a yes replaces this process.
-    if moved is not None:
+    # --no-notify means no notifications at all: an unattended or test run
+    # must not sit for an hour on a button nobody will see.
+    if moved is not None and notify_moves:
         offer_to_follow(preset, src_dir, moved)
     return rc

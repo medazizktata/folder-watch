@@ -1606,6 +1606,26 @@ class TestRunWatchLifecycle(LoopCase):
         self.assertEqual(rc, 2)
         self.assertEqual(offered, [("demo", self.src, moved, [])])
 
+    def test_no_notify_means_the_move_is_only_logged(self):
+        """--no-notify used to still raise the hour-long Watch new path prompt."""
+        moved = self.tmp / "renamed"
+
+        def on_tick(clock):
+            if clock.ticks == 1:
+                self.src.rename(moved)
+
+        with mock.patch.object(watch_mod, "offer_to_follow") as offer:
+            rc, log = self.run_watch(
+                ScriptedAction(), clock=Clock(stop_after=5, on_tick=on_tick),
+                preset="demo", notify_moves=False,
+            )
+
+        self.assertEqual(rc, 2)
+        offer.assert_not_called()
+        self.assertEqual(
+            [e["reason"] for e in fields(log, "error")], ["src_moved"]
+        )
+
     def test_exclusive_refuses_to_start_beside_another_watcher(self):
         self.plant_foreign_pidfile("scripted-src")
 

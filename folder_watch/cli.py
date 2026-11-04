@@ -1369,6 +1369,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
             to=to,
             exclusive=args.exclusive,
             dry_run=args.dry_run,
+            notify_moves=getattr(args, "notify", True),
         )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)

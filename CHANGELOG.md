@@ -17,6 +17,9 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **`--no-notify` still raised the move prompt.** When a watcher's source
+  moved, it sent a notification, or for a preset the hour-long "Watch new
+  path" prompt, even with `--no-notify`. A move is now only logged then.
 - **Saving a preset into an unreadable `presets.json` deleted every other
   preset.** When the file did not parse (half-written or corrupted), saving
   started from an empty set and wrote the file back holding only the new
