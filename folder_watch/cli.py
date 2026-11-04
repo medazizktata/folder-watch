@@ -21,9 +21,11 @@ from folder_watch.core.util import parse_exts
 from folder_watch.core.watch import list_pending, run_watch
 from folder_watch.presets import (
     PresetsUnreadable,
+    dest_inside_src,
     load_presets,
     load_raw_preset,
     parse_setting,
+    preset_problems,
     preset_sources,
     preset_status,
     remove_preset,
@@ -408,6 +410,11 @@ def persist_preset(
         keep = explicit_dests(argv) | {"action", "src"}
         final = {**existing, **{k: v for k, v in cfg.items() if k in keep}}
 
+    problems = preset_problems(final)
+    if problems:
+        print(f"error: preset {name!r} not saved: " + "; ".join(problems),
+              file=sys.stderr)
+        return 2
     if existing is not None:
         print(f"note: preset {name!r} already exists — modifying it, not creating it")
         changes = [
@@ -1188,6 +1195,13 @@ def _dispatch(argv: list[str] | None = None) -> int:
             print("known:", ", ".join(presets) or "(none)", file=sys.stderr)
             return 2
         cfg = presets[args.preset]
+        problems = preset_problems(cfg)
+        if problems:
+            print(f"error: preset {args.preset!r}: " + "; ".join(problems),
+                  file=sys.stderr)
+            print(f"fix it with: folder-watch presets edit {args.preset} KEY=VALUE",
+                  file=sys.stderr)
+            return 2
         preset_supplied = set(cfg)
         action_name = action_name or cfg.get("action", "copy")
         if src is None and cfg.get("src"):
@@ -1295,23 +1309,15 @@ def _dispatch(argv: list[str] | None = None) -> int:
     # line in the log says "copied" while the disk fills. Refused rather than
     # worked around, because there is no safe version of this arrangement; put
     # the destination outside the watched tree, or drop --recursive.
-    if recursive and to and src is not None:
-        try:
-            dest_resolved = Path(to).expanduser().resolve()
-            src_resolved = src.expanduser().resolve()
-            inside = (dest_resolved == src_resolved
-                      or src_resolved in dest_resolved.parents)
-        except OSError:
-            inside = False
-        if inside and dest_resolved != src_resolved:
-            print(
-                f"error: --to {dest_resolved} is inside the watched folder "
-                f"{src_resolved} and --recursive is on. Each copy would land "
-                "back under the watch and be copied again, without limit. "
-                "Move the destination outside, or drop --recursive.",
-                file=sys.stderr,
-            )
-            return 2
+    if recursive and to and src is not None and dest_inside_src(src, to):
+        print(
+            f"error: --to {to} is inside the watched folder "
+            f"{src} and --recursive is on. Each copy would land "
+            "back under the watch and be copied again, without limit. "
+            "Move the destination outside, or drop --recursive.",
+            file=sys.stderr,
+        )
+        return 2
 
     # convx watch has no output dir; ignore legacy preset "to" unless user passed --to
     if action_name == "convx" and "--to" not in passed:

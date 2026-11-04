@@ -17,6 +17,17 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A preset could hold values no watcher can use.** `presets edit job to=`
+  stored the current folder; `stable=-5`, `poll=nan`, `poll=0` and
+  `action=bogus` were saved as typed, and a destination inside a recursive
+  source was only refused when the watcher started. Saving, editing,
+  `--save-preset` and following a moved folder now check the values first
+  and change nothing when one is wrong. `service install` refuses a preset
+  that does not exist or does not check out, rather than writing a
+  LaunchAgent that fails on every login. A watcher started from a bad
+  hand-written preset exits with what to fix, and `status` shows it as an
+  error. A refused webhook URL is no longer repeated in the error, since
+  Slack and Discord keep the secret in it.
 - **Saves to `presets.json` could undo each other.** Each save read the file,
   changed one preset and wrote the lot back, so two saves at once (two
   presets following a renamed folder, the dashboard and the CLI) dropped one

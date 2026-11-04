@@ -2599,7 +2599,7 @@ class TestLaunchAgentPlist(unittest.TestCase):
 
         from folder_watch.support import launchd
 
-        presets = {"demo": {"action": "copy", "src": "~/Inbox"}}
+        presets = {"demo": {"action": "copy", "src": "~/Inbox", "to": "~/Out"}}
         with (
             mock.patch.object(launchd, "load_presets", return_value=presets),
             mock.patch.object(
@@ -2633,7 +2633,7 @@ class TestLaunchAgentPlist(unittest.TestCase):
                 run.return_value.stdout = ""
                 return launchd.service_status(preset="demo")
 
-        presets = {"demo": {"action": "copy", "src": "/s/old"}}
+        presets = {"demo": {"action": "copy", "src": "/s/old", "to": "/s/out"}}
         with (
             mock.patch.object(launchd, "load_presets", return_value=presets),
             mock.patch.object(

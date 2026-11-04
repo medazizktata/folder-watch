@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
-from folder_watch.presets import edit_preset, load_presets
+from folder_watch.presets import edit_preset, load_presets, preset_problems
 from folder_watch.support import audit
 from folder_watch.support.paths import LABEL_PREFIX, LAUNCH_AGENTS, STATE_DIR
 
@@ -234,6 +234,14 @@ def install_service(
     program: Path,
     log_path: Path | None = None,
 ) -> Path:
+    cfg = load_presets().get(preset)
+    if cfg is None:
+        raise RuntimeError(
+            f"no preset {preset!r}; a service for it would fail on every login"
+        )
+    problems = preset_problems(cfg)
+    if problems:
+        raise RuntimeError(f"preset {preset!r}: " + "; ".join(problems))
     label = service_label(preset)
     plist = service_plist_path(preset)
     log_path = (log_path or (STATE_DIR / f"{preset}.log")).expanduser()

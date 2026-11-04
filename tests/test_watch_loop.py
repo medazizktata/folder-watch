@@ -1274,6 +1274,25 @@ class TestFollowMovedSource(LoopCase):
         )
         self.assertIsNone(watch_mod.follow_refusal(self.src, self.tmp))
 
+    def test_a_follow_that_would_feed_itself_is_not_saved(self):
+        """Moved to where its destination now sits inside it, recursive: the
+        save is refused, and the watcher stops instead of crashing."""
+        from folder_watch.presets import load_raw_preset, save_preset
+
+        outer = self.tmp / "outer"
+        save_preset(self.preset, {**load_raw_preset(self.preset),
+                                  "to": str(outer / "out"), "recursive": True})
+        self._follow_moves(outer)
+
+        log, _ask, note, execv, _popen = self._offer(clicked=False, under_launchd=False)
+
+        execv.assert_not_called()
+        self.assertEqual(self._stored_src(), str(self.src))
+        error = fields(log, "error")[0]
+        self.assertEqual(error["reason"], "preset_invalid")
+        self.assertIn("inside 'src'", error["detail"])
+        note.assert_called_once()
+
     def test_no_notify_still_follows_a_safe_move_silently(self):
         self._follow_moves()
 

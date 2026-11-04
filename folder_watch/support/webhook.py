@@ -75,6 +75,19 @@ class InvalidEndpoint(ValueError):
     """The URL could not be posted to, said at startup rather than in silence."""
 
 
+def check_url(url: object) -> None:
+    """Raise InvalidEndpoint unless `url` is an http(s) URL with a host. The
+    message never repeats the URL: Slack and Discord keep the secret in it."""
+    try:
+        parsed = urlparse(url) if isinstance(url, str) else None
+        ok = parsed is not None and parsed.scheme in ("http", "https") \
+            and bool(parsed.hostname)
+    except ValueError:
+        ok = False
+    if not ok:
+        raise InvalidEndpoint("--webhook needs an http:// or https:// URL")
+
+
 def configure(url: str | None, *, events: tuple[str, ...] = DEFAULT_EVENTS) -> None:
     """Point the webhook at `url`, or switch it off with None.
 
@@ -84,11 +97,7 @@ def configure(url: str | None, *, events: tuple[str, ...] = DEFAULT_EVENTS) -> N
     """
     global _url, _events, _queue, _worker, _dropped, _failures
     if url:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            raise InvalidEndpoint(
-                f"--webhook needs an http:// or https:// URL, got {url!r}"
-            )
+        check_url(url)
     _url = url or None
     _events = frozenset(events)
     _dropped = 0

@@ -175,8 +175,11 @@ def offer_to_follow(
     with audit.triggered_by("automatic" if auto else "notification"):
         try:
             save_preset(preset, raw)
-        except PresetsUnreadable as e:
-            emit("error", reason="presets_unreadable", preset=preset, detail=str(e))
+        # ValueError: InvalidPreset, e.g. the move put 'to' inside a recursive src.
+        except (PresetsUnreadable, ValueError) as e:
+            reason = ("presets_unreadable" if isinstance(e, PresetsUnreadable)
+                      else "preset_invalid")
+            emit("error", reason=reason, preset=preset, detail=str(e))
             notify("folder-watch: preset not updated", str(e)).join(10)
             return
         emit("src_followed", preset=preset, src=moved, automatic=auto)

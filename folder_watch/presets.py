@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import stat
 import tempfile
@@ -22,6 +23,7 @@ from typing import Any
 from folder_watch.support import audit
 from folder_watch.support.log import emit
 from folder_watch.support.paths import LEGACY_PRESETS, PRESETS_PATH
+from folder_watch.support.webhook import InvalidEndpoint, check_url
 
 # Every key a preset may carry. Nothing derives this automatically from the
 # argument parser, so a flag added without touching cli.py's preset block is
@@ -181,23 +183,12 @@ def preset_status(cfg: dict[str, Any]) -> tuple[str, str]:
 
     Returns (level, note); level is "ok", "warn" or "error".
     """
-    action = cfg.get("action", "copy")
-    if action not in ("copy", "unzip", "exec", "convx"):
-        return "error", f"unknown action {action!r}"
-
-    raw_src = cfg.get("src")
-    if not raw_src:
-        return "error", "no src"
-    src = Path(str(raw_src)).expanduser()
+    problems = preset_problems(cfg)
+    if problems:
+        return "error", "; ".join(problems)
+    src = Path(str(cfg["src"])).expanduser()
     if not src.is_dir():
         return _missing_note("source", src)
-
-    if action == "copy" and not cfg.get("to"):
-        return "error", "copy requires 'to'"
-    if action == "unzip" and cfg.get("mode") == "to" and not cfg.get("to"):
-        return "error", "mode=to requires 'to'"
-    if action == "exec" and not cfg.get("cmd"):
-        return "error", "exec requires 'cmd'"
 
     raw_to = cfg.get("to")
     if raw_to:
@@ -248,6 +239,10 @@ def load_raw_preset(name: str) -> dict[str, Any] | None:
 
 class PresetsUnreadable(RuntimeError):
     """presets.json exists but does not read as a JSON object."""
+
+
+class InvalidPreset(ValueError):
+    """A preset a watcher would misread, refused before it is stored."""
 
 
 _lock_state = threading.local()
@@ -316,6 +311,9 @@ def save_preset(name: str, cfg: dict[str, Any]) -> None:
     presets.json could not be parsed, saving one preset used to rewrite the
     file with that preset alone, silently dropping all the others.
     """
+    problems = preset_problems(cfg)
+    if problems:
+        raise InvalidPreset(f"preset {name!r} not saved: " + "; ".join(problems))
     with presets_locked():
         presets: dict[str, Any] = {}
         if PRESETS_PATH.exists():
@@ -358,6 +356,83 @@ _FLOAT_KEYS = frozenset({"poll", "settle", "retry_hours", "exec_timeout", "fps"}
 _PATH_KEYS = frozenset({"src", "to", "convx_bin"})
 
 
+_CHOICES = {
+    "action": ("copy", "unzip", "exec", "convx"),
+    "mode": ("named", "same", "to"),
+    "backend": ("event", "poll"),
+}
+
+
+def dest_inside_src(src: str | Path, to: str | Path) -> bool:
+    """Whether `to` lies strictly under `src`: with recursive on, every copy
+    lands back under the watch and is copied again, without limit."""
+    try:
+        dest = Path(to).expanduser().resolve()
+        root = Path(src).expanduser().resolve()
+    except OSError:
+        return False
+    return root in dest.parents
+
+
+def preset_problems(cfg: dict[str, Any]) -> list[str]:
+    """What is wrong with a preset's values, before anything runs or stores
+    it. Only the config itself: a folder that does not exist yet is fine."""
+    problems = []
+    for key, allowed in _CHOICES.items():
+        if key in cfg and cfg[key] not in allowed:
+            problems.append(
+                f"{key} must be one of {', '.join(allowed)}, not {cfg[key]!r}"
+            )
+    for key in sorted(_INT_KEYS | _FLOAT_KEYS):
+        value = cfg.get(key)
+        if value is None:
+            continue
+        number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        if key in _INT_KEYS:
+            number = number and isinstance(value, int)
+        if not number or not math.isfinite(value) or value < 0:
+            kind = "a whole number" if key in _INT_KEYS else "a number"
+            problems.append(f"{key} must be {kind}, 0 or more, not {value!r}")
+        elif key == "poll" and value == 0:
+            problems.append("poll must be more than 0 seconds")
+        elif key == "quality" and value > 100:
+            problems.append(f"quality must be 0-100, not {value!r}")
+    for key in sorted(_BOOL_KEYS):
+        if key in cfg and not isinstance(cfg[key], bool):
+            problems.append(f"{key} must be true or false, not {cfg[key]!r}")
+    for key in ("src", "to", "cmd", "convx_bin", "sound_name"):
+        if key in cfg and cfg[key] is not None and (
+            not isinstance(cfg[key], str) or not cfg[key].strip()
+        ):
+            problems.append(f"{key} must be a non-empty string")
+    if "ext" in cfg and not (
+        isinstance(cfg["ext"], list) and all(isinstance(e, str) for e in cfg["ext"])
+    ):
+        problems.append("ext must be a list of extensions")
+    if cfg.get("webhook"):
+        try:
+            check_url(cfg["webhook"])
+        except InvalidEndpoint as e:
+            problems.append(str(e))
+    if problems:
+        return problems
+
+    action = cfg.get("action", "copy")
+    if not cfg.get("src"):
+        problems.append("no src")
+    if action == "copy" and not cfg.get("to"):
+        problems.append("copy requires 'to'")
+    if action == "unzip" and cfg.get("mode") == "to" and not cfg.get("to"):
+        problems.append("mode=to requires 'to'")
+    if action == "exec" and not cfg.get("cmd"):
+        problems.append("exec requires 'cmd'")
+    if cfg.get("recursive") and cfg.get("src") and cfg.get("to") \
+            and dest_inside_src(cfg["src"], cfg["to"]):
+        problems.append("'to' is inside 'src' and recursive is on, so every copy "
+                        "would be copied again")
+    return problems
+
+
 def parse_setting(key: str, raw: str) -> Any:
     """The stored form of `KEY=VALUE` as typed on a command line."""
     if key not in PRESET_KEYS:
@@ -377,6 +452,9 @@ def parse_setting(key: str, raw: str) -> Any:
     if key == "ext":
         return [e.strip().lstrip(".").lower() for e in raw.split(",") if e.strip()]
     if key in _PATH_KEYS:
+        if not raw.strip():
+            # Path("").resolve() is the current folder, which is never meant.
+            raise ValueError(f"{key} needs a path; use --unset {key} to remove it")
         # Absolute, as a LaunchAgent's PathState needs.
         return str(Path(raw).expanduser().resolve())
     return raw

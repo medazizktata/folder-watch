@@ -124,7 +124,9 @@ def _plain(value: Any) -> str:
 # a file, and what happened to a watched folder.
 AUDITED = frozenset({"copied", "extracted", "ran", "fail", "give_up",
                      "src_followed", "src_not_followed"})
-AUDITED_REASONS = frozenset({"src_moved", "follow_refused", "presets_unreadable"})
+AUDITED_REASONS = frozenset(
+    {"src_moved", "follow_refused", "presets_unreadable", "preset_invalid"}
+)
 
 
 def emit(event: str, **fields: Any) -> None:

@@ -431,8 +431,20 @@ class TestServiceCommand(CliCase):
         self.assertIn("com.folder-watch.job", body)
         self.assertIn("/usr/sbin", body, "lsof must stay reachable under launchd")
 
+    def test_install_refuses_an_unknown_or_bad_preset(self):
+        """A plist naming a preset that cannot run fails on every login."""
+        self.write_presets(bad={"action": "copy", "src": str(self.src),
+                                "to": str(self.dest), "poll": 0})
+        for name in ("nope", "bad"):
+            with self.subTest(preset=name):
+                rc, _out, err = self.run_cli("service", "install", "--preset", name)
+                self.assertEqual(rc, 1, err)
+                plist = self.agents / f"com.folder-watch.{name}.plist"
+                self.assertFalse(plist.exists())
+
     def test_uninstall_removes_the_plist(self):
-        self.write_presets(job={"action": "copy", "src": str(self.src)})
+        self.write_presets(job={"action": "copy", "src": str(self.src),
+                                "to": str(self.dest)})
         self.run_cli("service", "install", "--preset", "job")
         plist = self.agents / "com.folder-watch.job.plist"
         self.assertTrue(plist.is_file())
@@ -601,6 +613,86 @@ class TestPresetsEdit(CliCase):
         with mock.patch.object(launchd, "install_service") as install:
             self.run_cli("presets", "edit", "job", "stable=5")
         install.assert_not_called()
+
+
+class TestPresetValidation(CliCase):
+    """Values a watcher would misread are refused before they are stored,
+    installed or run, wherever they come from."""
+
+    SECRET = "xoxb-DO-NOT-LEAK"
+
+    def setUp(self):
+        super().setUp()
+        self.write_presets(job={"action": "copy", "src": str(self.src),
+                                "to": str(self.dest)})
+
+    def test_edit_refuses_values_a_watcher_would_misread(self):
+        before = self.presets_path.read_text()
+        for pair in (
+            "to=", "to=  ", "stable=-5", "poll=nan", "poll=inf", "poll=0",
+            "settle=-1", "exec_timeout=-1", "quality=101",
+            "action=bogus", "mode=bogus", "backend=bogus",
+            "webhook=ftp://example.com/x",
+        ):
+            with self.subTest(pair=pair):
+                rc, _out, err = self.run_cli("presets", "edit", "job", pair)
+                self.assertEqual(rc, 2, err)
+                self.assertEqual(self.presets_path.read_text(), before)
+
+    def test_a_refused_webhook_is_not_repeated_back(self):
+        rc, out, err = self.run_cli(
+            "presets", "edit", "job", f"webhook=ftp://hooks.slack.com/T00/{self.SECRET}"
+        )
+        self.assertEqual(rc, 2)
+        self.assertNotIn(self.SECRET, out + err)
+
+    def test_edit_refuses_a_recursive_watch_that_feeds_itself(self):
+        inside = self.src / "done"
+        inside.mkdir()
+        rc, _out, err = self.run_cli(
+            "presets", "edit", "job", f"to={inside}", "recursive=true"
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("inside 'src'", err)
+        self.assertEqual(json.loads(self.presets_path.read_text())["job"]["to"],
+                         str(self.dest))
+
+    def test_save_preset_refuses_a_bad_flag_value(self):
+        rc, _out, err = self.run_cli(
+            "copy", str(self.src), "--to", str(self.dest), "--stable", "-5",
+            "--save-preset", "neg",
+        )
+        self.assertEqual(rc, 2, err)
+        self.assertNotIn("neg", json.loads(self.presets_path.read_text()))
+
+    def test_a_hand_written_bad_preset_does_not_run(self):
+        self.write_presets(job={"action": "copy", "src": str(self.src),
+                                "to": str(self.dest), "stable": -5})
+        self.make_file()
+        rc, _out, err = self.run_cli("--preset", "job", "--once", "--no-notify")
+        self.assertEqual(rc, 2)
+        self.assertIn("stable", err)
+        self.assertEqual(list(self.dest.iterdir()), [])
+
+    def test_status_reports_a_hand_written_bad_preset(self):
+        from folder_watch.presets import preset_status
+
+        level, note = preset_status({"action": "copy", "src": str(self.src),
+                                     "to": str(self.dest), "recursive": "false"})
+        self.assertEqual(level, "error")
+        self.assertIn("recursive", note)
+
+    def test_the_allowed_values_match_the_flags(self):
+        """The choices are written twice, here and in the parser."""
+        from folder_watch.actions import ACTION_NAMES
+        from folder_watch.cli import build_parser
+        from folder_watch.presets import _CHOICES
+
+        parser = {a.dest: tuple(a.choices) for a in build_parser()._actions
+                  if a.choices}
+        self.assertEqual(_CHOICES["action"], ACTION_NAMES)
+        self.assertEqual(_CHOICES["mode"], parser["mode"])
+        self.assertEqual(_CHOICES["backend"], parser["backend"])
 
 
 class TestReveal(CliCase):
