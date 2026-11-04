@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from folder_watch import dashboard
-from folder_watch.presets import load_presets
-from folder_watch.support.launchd import pause_service, resume_service
+from folder_watch.presets import load_presets, parse_setting
+from folder_watch.support.launchd import apply_edit, pause_service, resume_service
 from folder_watch.support.notify import reveal_in_finder
 from folder_watch.support.paths import STATE_DIR
 
@@ -38,12 +38,29 @@ class DashboardServer(ThreadingHTTPServer):
         return f"http://127.0.0.1:{self.server_address[1]}/"
 
 
-def perform(action: str, preset: str) -> str:
+# What the dashboard's Edit form may change. Anything else stays a job for
+# `presets edit`, where every key is available.
+EDITABLE = ("src", "to")
+
+
+def perform(action: str, preset: str, body: dict[str, Any] | None = None) -> str:
     """Run one dashboard action; returns a line to show. Raises LookupError
-    for an unknown preset or action, RuntimeError when the action fails."""
+    for an unknown preset or action, ValueError for a bad value, and
+    RuntimeError when the action fails."""
     cfg = load_presets().get(preset)
     if cfg is None:
         raise LookupError(f"no preset {preset!r}")
+    if action == "edit":
+        settings = {
+            key: parse_setting(key, str(body[key]))
+            for key in EDITABLE
+            if body and str(body.get(key) or "").strip()
+        }
+        if not settings:
+            raise ValueError("nothing to change")
+        _before, _after, reinstalled = apply_edit(preset, settings)
+        suffix = " and reinstalled its service" if reinstalled else ""
+        return f"updated {preset}{suffix}"
     if action == "pause":
         pause_service(preset=preset)
         return f"paused {preset}"
@@ -103,9 +120,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(min(length, 4096)) or b"{}")
-            message = perform(action, str(body.get("preset", "")))
-        except (ValueError, LookupError) as e:
+            if not isinstance(body, dict):
+                raise ValueError("expected a JSON object")
+            message = perform(action, str(body.get("preset", "")), body)
+        except LookupError as e:
             return self._json(404, {"error": str(e)})
+        except ValueError as e:
+            return self._json(400, {"error": str(e)})
         except RuntimeError as e:
             return self._json(409, {"error": str(e)})
         self._json(200, {"ok": message})
@@ -165,6 +186,11 @@ button { font: inherit; font-size: 13px; color: var(--text); background: var(--b
 button:hover { background: var(--button-hover); }
 button:focus-visible { outline: 2px solid var(--ok); outline-offset: 1px; }
 #toast { min-height: 20px; margin-top: 12px; color: var(--muted); }
+.field { display: inline-flex; flex-direction: column; gap: 4px; margin: 0 12px 8px 0;
+  color: var(--muted); font-size: 12px; }
+.field input { font: inherit; font-size: 13px; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; width: 360px;
+  max-width: 100%; }
 #toast.bad { color: var(--bad); }
 .empty { padding: 24px 14px; color: var(--muted); }
 </style>
@@ -200,13 +226,13 @@ const size = (n) => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + 
 const serviceDot = (s) => s === "running" ? "ok" : s === "paused" ? "idle"
   : s === "-" ? "idle" : "error";
 
-async function act(action, preset) {
+async function act(action, preset, extra) {
   const toast = document.getElementById("toast");
   try {
     const r = await fetch("/api/" + action, {
       method: "POST",
       headers: {"Content-Type": "application/json", "X-FW-Token": TOKEN},
-      body: JSON.stringify({preset}),
+      body: JSON.stringify({preset, ...(extra || {})}),
     });
     const data = await r.json();
     toast.className = r.ok ? "" : "bad";
@@ -240,12 +266,48 @@ function row(e) {
   else if (e.service !== "-") button("Pause", "pause");
   button("Open folder", "folder");
   if (e.log_bytes) button("Open log", "log");
+  const edit = el("button", "", "Edit");
+  edit.addEventListener("click", () => openEditor(e, tr));
+  actions.append(edit);
   tr.append(name, health, service, el("td", "", e.exit), el("td", "", e.last),
     el("td", "", e.log_bytes ? size(e.log_bytes) : "-"), actions);
   return tr;
 }
 
+let editing = null;  // a refresh would wipe a half-typed form
+
+function openEditor(e, tr) {
+  if (editing) return;
+  const form = el("tr", "editor");
+  const td = el("td");
+  td.colSpan = 7;
+  const field = (label, value) => {
+    const wrap = el("label", "field");
+    const input = el("input");
+    input.value = value;
+    input.spellcheck = false;
+    wrap.append(el("span", "", label), input);
+    td.append(wrap);
+    return input;
+  };
+  const src = field("Watched folder", e.src);
+  const to = e.action === "copy" ? field("Copy to", e.to) : null;
+  const save = el("button", "", "Save");
+  const cancel = el("button", "", "Cancel");
+  const close = () => { form.remove(); editing = null; refresh(); };
+  save.addEventListener("click", () => {
+    act("edit", e.preset, {src: src.value, to: to ? to.value : ""}).then(close);
+  });
+  cancel.addEventListener("click", close);
+  td.append(save, cancel);
+  form.append(td);
+  tr.after(form);
+  editing = form;
+  src.focus();
+}
+
 async function refresh() {
+  if (editing) return;
   try {
     const r = await fetch("/api/rows", {cache: "no-store"});
     const entries = await r.json();

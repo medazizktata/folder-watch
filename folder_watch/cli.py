@@ -22,6 +22,7 @@ from folder_watch.presets import (
     PresetsUnreadable,
     load_presets,
     load_raw_preset,
+    parse_setting,
     preset_sources,
     preset_status,
     remove_preset,
@@ -29,6 +30,8 @@ from folder_watch.presets import (
 )
 from folder_watch.support.launchd import (
     PRUNE_JOB,
+    apply_edit,
+    default_program,
     install_prune_schedule,
     install_service,
     pause_service,
@@ -81,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  dashboard [--port N]     # live local web page with pause/resume\n"
             "  digest [--days N]        # what each preset did, from its logs\n"
             "  presets show NAME            # one preset, with its source files\n"
+            "  presets edit NAME KEY=VALUE  # change a preset (and its service)\n"
             "  presets forget NAME [--yes]  # remove a preset\n"
         ),
     )
@@ -458,17 +462,60 @@ def run_presets_show(name: str) -> int:
     return 0 if level == "ok" else 1
 
 
+def run_presets_edit(name: str, pairs: list[str], unset: list[str]) -> int:
+    """Change some keys of a preset, then bring its service in line: a
+    LaunchAgent copies src into its plist at install, so an edit that left it
+    alone would keep a moved folder's old path."""
+    if not pairs and not unset:
+        print("error: nothing to change; pass KEY=VALUE or --unset KEY", file=sys.stderr)
+        return 2
+    try:
+        settings = {}
+        for pair in pairs:
+            key, sep, value = pair.partition("=")
+            if not sep:
+                raise ValueError(f"{pair!r} is not KEY=VALUE")
+            settings[key.strip()] = parse_setting(key.strip(), value)
+        before, after, reinstalled = apply_edit(name, settings, unset)
+    except LookupError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (ValueError, PresetsUnreadable) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except RuntimeError as e:
+        print(f"error: preset saved, but its service was not reinstalled: {e}",
+              file=sys.stderr)
+        return 1
+    for key in sorted(set(before) | set(after)):
+        if before.get(key) != after.get(key):
+            print(f"  {key}: {before.get(key, '<unset>')} -> {after.get(key, '<unset>')}")
+    print(f"updated preset {name!r}")
+    if reinstalled:
+        print("reinstalled its service, which now runs with these settings")
+    running = live_watchers(name)
+    if running:
+        print(f"note: watcher(s) {running} keep the old settings until restarted")
+    return 0
+
+
 def run_presets_cli(argv: list[str]) -> int:
-    """Show or remove a preset — never as a side effect of anything else."""
+    """Show, edit or remove a preset — never as a side effect of anything else."""
     ap = argparse.ArgumentParser(prog="folder-watch presets")
-    ap.add_argument("cmd", choices=("show", "forget"))
-    ap.add_argument("name", help="preset to show or forget")
+    ap.add_argument("cmd", choices=("show", "edit", "forget"))
+    ap.add_argument("name", help="preset to show, edit or forget")
+    ap.add_argument("settings", nargs="*", metavar="KEY=VALUE",
+                    help="edit: values to set, e.g. src=~/New to=~/Drive ext=mp4,mov")
+    ap.add_argument("--unset", action="append", default=[], metavar="KEY",
+                    help="edit: remove a key (repeatable)")
     ap.add_argument("--yes", action="store_true", help="actually remove (default: dry)")
     args = ap.parse_args(argv)
 
     name = args.name
     if args.cmd == "show":
         return run_presets_show(name)
+    if args.cmd == "edit":
+        return run_presets_edit(name, args.settings, args.unset)
     sources = preset_sources(name)
     if not sources:
         print(f"error: no preset named {name!r}", file=sys.stderr)
@@ -619,9 +666,7 @@ def run_status_cli(argv: list[str]) -> int:
 
 
 def _program() -> Path:
-    """What a LaunchAgent should run: this checkout's launcher, else Python."""
-    bin_path = Path(__file__).resolve().parents[1] / "bin" / "folder-watch"
-    return bin_path if bin_path.is_file() else Path(sys.executable)
+    return default_program()
 
 
 def _prune_presets(*, dry: bool) -> list[str]:

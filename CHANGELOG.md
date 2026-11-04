@@ -95,6 +95,10 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **`presets edit NAME KEY=VALUE … [--unset KEY]`**: change a preset without
+  hand-editing JSON. Values are typed like the flags, paths stored absolute,
+  and an installed service is reinstalled so its plist follows. The dashboard
+  gains an **Edit** button for the watched folder and copy destination.
 - **`follow_moves`** per preset (`--follow-moves` with `--save-preset`):
   a moved source is followed without the button, except into a Trash or onto
   another volume, which fall back to it. It also works with `--no-notify`,

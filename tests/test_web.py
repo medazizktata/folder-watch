@@ -52,10 +52,11 @@ class WebCase(unittest.TestCase):
         conn.close()
         return r.status, payload
 
-    def act(self, action, preset=None, token="ok"):
+    def act(self, action, preset=None, token="ok", extra=None):
         token = self.server.token if token == "ok" else token
         status, payload = self.request(
-            "POST", f"/api/{action}", token=token, body={"preset": preset or self.preset}
+            "POST", f"/api/{action}", token=token,
+            body={"preset": preset or self.preset, **(extra or {})},
         )
         return status, json.loads(payload)
 
@@ -110,6 +111,18 @@ class TestActions(WebCase):
         with mock.patch.object(web, "reveal_in_finder") as reveal:
             self.assertEqual(self.act("folder")[0], 200)
         reveal.assert_called_once_with(self.tmp)
+
+    def test_edit_changes_the_folders_and_nothing_else(self):
+        from folder_watch.presets import load_raw_preset
+
+        moved = self.tmp / "moved"
+        status, _ = self.act("edit", extra={"src": str(moved), "verify": "true"})
+
+        self.assertEqual(status, 200)
+        cfg = load_raw_preset(self.preset)
+        self.assertEqual(cfg["src"], str(moved.resolve()))
+        self.assertNotIn("verify", cfg, "a key the form does not offer was set")
+        self.assertEqual(self.act("edit", extra={"src": " "})[0], 400)
 
     def test_unknown_preset_or_action_and_a_missing_log(self):
         self.assertEqual(self.act("pause", preset="no-such-preset")[0], 404)

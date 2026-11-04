@@ -287,3 +287,58 @@ def save_preset(name: str, cfg: dict[str, Any]) -> None:
         presets = loaded
     presets[name] = cfg
     _write_presets(PRESETS_PATH, presets)
+
+
+# How `presets edit KEY=VALUE` reads each value, mirroring the CLI flags.
+_BOOL_KEYS = frozenset({
+    "recursive", "no_clobber", "create_dest", "exclusive", "no_done_store",
+    "verify", "reveal", "follow_moves", "overwrite", "sound",
+})
+_INT_KEYS = frozenset({
+    "stable", "min_bytes", "debounce_ms", "quality", "width", "max_size",
+})
+_FLOAT_KEYS = frozenset({"poll", "settle", "retry_hours", "exec_timeout", "fps"})
+_PATH_KEYS = frozenset({"src", "to", "convx_bin"})
+
+
+def parse_setting(key: str, raw: str) -> Any:
+    """The stored form of `KEY=VALUE` as typed on a command line."""
+    if key not in PRESET_KEYS:
+        known = ", ".join(sorted(PRESET_KEYS))
+        raise ValueError(f"unknown key {key!r}; known: {known}")
+    if key in _BOOL_KEYS:
+        lowered = raw.strip().lower()
+        if lowered in ("true", "yes", "on", "1"):
+            return True
+        if lowered in ("false", "no", "off", "0"):
+            return False
+        raise ValueError(f"{key} takes true or false, not {raw!r}")
+    if key in _INT_KEYS:
+        return int(raw)
+    if key in _FLOAT_KEYS:
+        return float(raw)
+    if key == "ext":
+        return [e.strip().lstrip(".").lower() for e in raw.split(",") if e.strip()]
+    if key in _PATH_KEYS:
+        # Absolute, as a LaunchAgent's PathState needs.
+        return str(Path(raw).expanduser().resolve())
+    return raw
+
+
+def edit_preset(
+    name: str, settings: dict[str, Any], unset: list[str] | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Change some keys of a stored preset and keep the rest. Values must
+    already be parsed. Returns (before, after); raises LookupError for an
+    unknown preset and ValueError for an unknown key."""
+    before = load_raw_preset(name)
+    if before is None:
+        raise LookupError(f"no preset {name!r}")
+    for key in [*settings, *(unset or [])]:
+        if key not in PRESET_KEYS:
+            raise ValueError(f"unknown key {key!r}")
+    after = {**before, **settings}
+    for key in unset or []:
+        after.pop(key, None)
+    save_preset(name, after)
+    return before, after

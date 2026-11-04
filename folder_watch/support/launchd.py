@@ -4,11 +4,12 @@ from __future__ import annotations
 import os
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
-from folder_watch.presets import load_presets
+from folder_watch.presets import edit_preset, load_presets
 from folder_watch.support.paths import LABEL_PREFIX, LAUNCH_AGENTS, STATE_DIR
 
 
@@ -196,6 +197,26 @@ def build_plist(
 </dict>
 </plist>
 """
+
+
+def default_program() -> Path:
+    """What a LaunchAgent should run: this checkout's launcher, else Python."""
+    bin_path = Path(__file__).resolve().parents[2] / "bin" / "folder-watch"
+    return bin_path if bin_path.is_file() else Path(sys.executable)
+
+
+def apply_edit(
+    name: str, settings: dict[str, Any], unset: list[str] | None = None
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Edit a preset, then reinstall its service if it has one: the plist
+    copies src at install, so an edit alone would leave the service keeping
+    alive the old path. Returns (before, after, reinstalled). The preset is
+    saved even when the reinstall then fails, which raises RuntimeError."""
+    before, after = edit_preset(name, settings, unset)
+    if not service_plist_path(name).is_file():
+        return before, after, False
+    install_service(preset=name, program=default_program())
+    return before, after, True
 
 
 def _preset_src(preset: str) -> Path | None:

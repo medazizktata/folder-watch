@@ -348,7 +348,19 @@ folder-watch prune --unschedule
 
 # one preset in full: values, which file each came from, is it running
 folder-watch presets show nightly-render
+
+# change some keys and keep the rest; an installed service is reinstalled
+folder-watch presets edit nightly-render src=~/Renders/v2 ext=mp4,mov
+folder-watch presets edit nightly-render follow_moves=true --unset verify
 ```
+
+`presets edit` types each value the way the matching flag does (`true`/`false`,
+numbers, `ext` as a comma list) and stores `src` and `to` as absolute paths. An
+unknown key or a bad value changes nothing. If the preset has a LaunchAgent, it
+is reinstalled, because the plist copies `src` at install time and would
+otherwise keep watching the old path. A watcher you started yourself keeps the
+old settings until restarted, and `edit` says so. The dashboard's **Edit**
+button changes the watched folder and the copy destination the same way.
 
 ## Files already in the folder at startup
 

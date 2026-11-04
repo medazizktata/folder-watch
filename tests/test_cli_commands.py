@@ -458,6 +458,82 @@ class TestServiceCommand(CliCase):
         self.assertEqual(caught.exception.code, 2)
 
 
+class TestPresetsEdit(CliCase):
+    """`presets edit`: change keys by name instead of hand-editing JSON."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_presets(job={
+            "action": "copy", "src": str(self.src), "to": str(self.dest),
+            "stable": 3, "verify": True,
+        })
+
+    def stored(self):
+        return json.loads(self.presets_path.read_text())["job"]
+
+    def test_values_are_typed_and_other_keys_kept(self):
+        moved = self.tmp / "moved"
+        rc, out, _err = self.run_cli(
+            "presets", "edit", "job", f"src={moved}", "ext=MP4,.mov",
+            "follow_moves=yes", "min_bytes=10", "--unset", "verify",
+        )
+
+        self.assertEqual(rc, 0)
+        cfg = self.stored()
+        self.assertEqual(cfg["src"], str(moved.resolve()))
+        self.assertEqual(cfg["ext"], ["mp4", "mov"])
+        self.assertIs(cfg["follow_moves"], True)
+        self.assertEqual(cfg["min_bytes"], 10)
+        self.assertNotIn("verify", cfg)
+        self.assertEqual(cfg["stable"], 3, "an untouched key changed")
+        self.assertIn(f"src: {self.src} -> {moved.resolve()}", out)
+
+    def test_a_home_path_is_stored_absolute(self):
+        """A LaunchAgent's PathState needs an absolute path."""
+        self.run_cli("presets", "edit", "job", "to=~/Somewhere")
+        self.assertEqual(self.stored()["to"], str(Path.home() / "Somewhere"))
+
+    def test_bad_input_changes_nothing(self):
+        before = self.presets_path.read_text()
+        for argv, code in (
+            (("job", "colour=blue"), 2),
+            (("job", "verify=maybe"), 2),
+            (("job", "stable"), 2),
+            (("job",), 2),
+            (("nope", "stable=1"), 1),
+        ):
+            rc, _out, _err = self.run_cli("presets", "edit", *argv)
+            self.assertEqual(rc, code, argv)
+        self.assertEqual(self.presets_path.read_text(), before)
+
+    def test_an_installed_service_is_reinstalled(self):
+        """The plist copies src at install; an edit alone left it behind."""
+        from unittest import mock
+
+        from folder_watch.support import launchd
+
+        plist = launchd.service_plist_path("job")
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        plist.write_text("<plist/>")
+        self.addCleanup(plist.unlink, True)
+        with mock.patch.object(launchd, "install_service") as install:
+            rc, out, _err = self.run_cli("presets", "edit", "job", "stable=5")
+
+        self.assertEqual(rc, 0)
+        install.assert_called_once()
+        self.assertEqual(install.call_args.kwargs["preset"], "job")
+        self.assertIn("reinstalled its service", out)
+
+    def test_without_a_service_nothing_is_reinstalled(self):
+        from unittest import mock
+
+        from folder_watch.support import launchd
+
+        with mock.patch.object(launchd, "install_service") as install:
+            self.run_cli("presets", "edit", "job", "stable=5")
+        install.assert_not_called()
+
+
 class TestReveal(CliCase):
     """--reveal opens Finder on each result by itself, notification or not."""
 
