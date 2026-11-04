@@ -370,6 +370,7 @@ class TestServiceCommand(CliCase):
                 self.stderr = ""
 
         self.loaded: set[str] = set()
+        self.disabled = ""  # what `launchctl print-disabled` lists
 
         def fake_run(cmd, *a, **kw):
             """Stateful, because a stateless one proves nothing.
@@ -388,6 +389,10 @@ class TestServiceCommand(CliCase):
                     self.loaded.discard(Path(arg).stem)
                 elif verb == "list":
                     return _Result(0 if arg in self.loaded else 1)
+                elif verb == "print-disabled":
+                    result = _Result(0)
+                    result.stdout = self.disabled
+                    return result
             return _Result(0)
 
         launchd.subprocess.run = fake_run
@@ -430,6 +435,18 @@ class TestServiceCommand(CliCase):
 
         self.assertIn("com.folder-watch.job", body)
         self.assertIn("/usr/sbin", body, "lsof must stay reachable under launchd")
+
+    def test_install_enables_only_a_paused_service(self):
+        """enable leaves a record in launchd for good; a never-paused label
+        does not need one."""
+        self.write_presets(job={"action": "copy", "src": str(self.src),
+                                "to": str(self.dest)})
+        self.run_cli("service", "install", "--preset", "job")
+        self.assertFalse([c for c in self.calls if c[:2] == ["launchctl", "enable"]])
+
+        self.disabled = '\t"com.folder-watch.job" => disabled'
+        self.run_cli("service", "install", "--preset", "job")
+        self.assertTrue([c for c in self.calls if c[:2] == ["launchctl", "enable"]])
 
     def test_install_refuses_an_unknown_or_bad_preset(self):
         """A plist naming a preset that cannot run fails on every login."""

@@ -1673,6 +1673,26 @@ class TestPresetStatus(unittest.TestCase):
         self.assertEqual(level, "warn")
         self.assertIn("not mounted", note)
 
+    def test_a_folder_gone_from_a_mounted_volume_is_a_deletion(self):
+        """Under /Volumes by shape, but the volume is right there."""
+        from unittest import mock
+
+        import folder_watch.presets as presets_mod
+
+        drive = self.tmp / "Drive"
+        drive.mkdir()
+        (drive / "other").mkdir()
+        with (
+            mock.patch.object(presets_mod, "_mount_containers",
+                              return_value=(self.tmp,)),
+            mock.patch.object(presets_mod.os.path, "ismount",
+                              side_effect=lambda p: Path(p) == drive),
+        ):
+            level, note = presets_mod.preset_status(
+                {"action": "unzip", "src": str(drive / "gone")})
+        self.assertEqual(level, "error")
+        self.assertIn(f"nearest existing folder is {drive}", note)
+
     def test_mount_detection_ignores_whether_the_container_exists(self):
         import folder_watch.presets as presets_mod
 

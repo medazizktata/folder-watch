@@ -139,10 +139,12 @@ class TestPauseResume(unittest.TestCase):
         self.addCleanup(self.plist.unlink, True)
         self.target = f"gui/{launchd.os.getuid()}/{launchd.service_label(self.name)}"
 
-    def calls(self, fn, returncode=0):
+    def calls(self, fn, returncode=0, paused=False):
+        label = launchd.service_label(self.name)
         with mock.patch.object(launchd, "_launchctl") as ctl:
             ctl.return_value.returncode = returncode
             ctl.return_value.stderr = "boom"
+            ctl.return_value.stdout = f'\t"{label}" => disabled' if paused else ""
             fn(preset=self.name)
         return [c.args for c in ctl.call_args_list]
 
@@ -169,11 +171,18 @@ class TestPauseResume(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.calls(fn)
 
-    def test_uninstall_clears_a_pause(self):
-        """A pause outlives the plist; a later install would load disabled."""
+    def test_uninstall_clears_a_pause_and_only_a_pause(self):
+        """A pause outlives the plist; a later install would load disabled.
+        Enabling a label that was never paused adds a record launchd keeps
+        for good, one per preset ever uninstalled."""
         with mock.patch.object(launchd.subprocess, "run"):
-            calls = self.calls(launchd.uninstall_service)
+            calls = self.calls(launchd.uninstall_service, paused=True)
         self.assertIn(("enable", self.target), calls)
+
+        self.plist.write_bytes(plistlib.dumps({"Label": "x"}))
+        with mock.patch.object(launchd.subprocess, "run"):
+            calls = self.calls(launchd.uninstall_service, paused=False)
+        self.assertNotIn(("enable", self.target), calls)
 
     def test_is_paused_reads_both_formats(self):
         label = launchd.service_label(self.name)

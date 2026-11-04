@@ -720,8 +720,10 @@ folder is temporary, which is what `src_lost` / `src_restored` are for. So it
 never removes a preset on one look.
 
 **Retention.** `prune` does remove a preset once three things hold:
-- its source was deleted or renamed in place (a missing folder on an unmounted
-  volume never counts);
+- its source was deleted or renamed in place (a missing folder under
+  `/Volumes` or `~/Library/CloudStorage` whose volume is not mounted never
+  counts; a volume mounted anywhere else looks deleted once ejected, which is
+  why removing still needs `--yes` or a click);
 - it has stayed that way for 30 days, counted from the first check that saw
   it, recorded in `~/.local/state/folder-watch/dead-presets.json`;
 - no watcher is running it.
@@ -736,7 +738,9 @@ It does distinguish the two cases where it honestly can, because they call for
 opposite responses: a path whose nearest existing folder is an ordinary
 directory was **deleted or renamed** and needs your attention, while one under
 `/Volumes` or `~/Library/CloudStorage` is an **unmounted volume** and needs
-nothing. Using a broken preset already fails loudly (`error reason=src_missing`,
+nothing, unless that volume is mounted and only the folder on it is gone,
+which is a deletion. A volume mounted elsewhere cannot be told from a deleted
+folder once it is ejected. Using a broken preset already fails loudly (`error reason=src_missing`,
 exit 2); this only fixes the inventory view.
 
 A preset can carry the safety flags too — `no_clobber`, `create_dest`,

@@ -137,10 +137,14 @@ def _missing_note(label: str, path: Path) -> tuple[str, str]:
     nearest folder that does exist is both accurate and the thing you need in
     order to fix it.
     """
-    container = _under_mount_container(path)
-    if container is not None:
-        return "warn", f"{label} unreachable — volume not mounted under {container}"
     anchor = _nearest_existing(path)
+    # The volume is there and the folder on it is not: that is a deletion.
+    mounted = anchor != Path(anchor.anchor or "/") and os.path.ismount(anchor)
+    container = _under_mount_container(path)
+    if container is not None and not mounted:
+        return "warn", f"{label} unreachable — volume not mounted under {container}"
+    # shortcut: a volume mounted outside /Volumes and CloudStorage reads as
+    # deleted once ejected; nothing left on disk tells the two apart.
     return "error", f"{label} missing — nearest existing folder is {anchor}"
 
 

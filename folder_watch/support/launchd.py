@@ -260,8 +260,10 @@ def install_service(
         path_env=launchagent_path_env(),
     )
     plist.write_text(body)
-    # Installing means running: clear a pause left by an earlier install.
-    _launchctl("enable", _domain_target(preset))
+    # Installing means running: clear a pause left by an earlier install. Only
+    # then: enable writes a record launchd keeps for good, paused or not.
+    if is_paused(preset):
+        _launchctl("enable", _domain_target(preset))
     subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, check=False)
     r = subprocess.run(
         ["launchctl", "load", str(plist)],
@@ -396,7 +398,8 @@ def uninstall_service(*, preset: str) -> Path | None:
         plist.unlink(missing_ok=True)
         # A pause outlives the plist; left behind, a later install of the same
         # preset would load disabled and never run.
-        _launchctl("enable", _domain_target(preset))
+        if is_paused(preset):
+            _launchctl("enable", _domain_target(preset))
         audit.record("service_uninstalled", preset=preset, plist=plist)
         return plist
     return None

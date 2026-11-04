@@ -17,6 +17,15 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A folder deleted from a mounted drive read as "volume not mounted".**
+  Anything under `/Volumes` was judged by its path alone; when the drive is
+  mounted and only the folder is gone, `status` now says it is missing and
+  retention counts it. The docs no longer claim every unmounted volume is
+  recognised: one mounted outside `/Volumes` and CloudStorage looks deleted
+  once ejected.
+- **Every `service install` and `uninstall` left a permanent launchd record.**
+  Both ran `launchctl enable`, whose state outlives reboots, for every label;
+  they now do so only to clear an actual pause.
 - **`audit --since` with a time zone crashed.** `--since
   2026-11-01T00:00:00+01:00` raised TypeError against the trail's local
   times; it is now read as that moment.
@@ -188,7 +197,8 @@ which is why the first entry covers so much ground.
 
 - **Retention for dead presets.** `prune` now also removes a preset whose
   source has been deleted or renamed for 30 days, along with its LaunchAgent
-  and default logs. It never counts a source on an unmounted volume, and never
+  and default logs. It never counts a source on an unmounted volume under
+  `/Volumes` or `~/Library/CloudStorage`, and never
   removes a preset a watcher is running. The clock starts at the first check
   that sees the folder gone (`dead-presets.json`) and resets if the folder
   returns. `prune` also removes logs in the state folder that no preset owns
