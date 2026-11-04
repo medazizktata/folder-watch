@@ -421,9 +421,10 @@ time out after an hour, changes nothing.
 **Following without asking.** A preset with `"follow_moves": true` (or saved
 with `--follow-moves`) skips the button and follows the move by itself,
 then tells you with a notification. It never does that for a move into a
-Trash, which is a deletion, or onto another volume, which is a copy and can be
-a backup drive; those are logged as `follow_refused` and fall back to the
-button. With `--no-notify` nothing is shown, but a safe automatic follow still
+Trash, which is a deletion; that is logged as `follow_refused` and falls back
+to the button. A move onto another volume is a copy and a delete, so the
+watcher sees its folder deleted rather than moved and has nothing to follow;
+should a path on another volume ever be reported, it is refused the same way. With `--no-notify` nothing is shown, but a safe automatic follow still
 happens.
 
 A restore always does a **catch-up** scan, even without `--catch-up`: anything

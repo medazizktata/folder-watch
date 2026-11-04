@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 from folder_watch.presets import edit_preset, load_presets, preset_problems
 from folder_watch.support import audit
-from folder_watch.support.paths import LABEL_PREFIX, LAUNCH_AGENTS, STATE_DIR
+from folder_watch.support.paths import LABEL_PREFIX, LAUNCH_AGENTS, OVERRIDES, STATE_DIR
 
 
 def stdio_log_path(log_path: Path) -> Path:
@@ -160,6 +160,11 @@ def build_plist(
     <string>{x(str(root))}</string>"""
         if root is not None
         else ""
+    ) + "".join(
+        f"""
+    <key>{name}</key>
+    <string>{x(value)}</string>"""
+        for name, value in overrides().items()
     )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -286,13 +291,18 @@ PRUNE_JOB = "_weekly-prune"
 DASHBOARD_JOB = "_dashboard"
 
 
+def overrides() -> dict[str, str]:
+    """The FOLDER_WATCH_* overrides set here, for a job's environment."""
+    return {name: os.environ[name] for name in OVERRIDES if os.environ.get(name)}
+
+
 def _install_tool_job(
     name: str, args: list[str], when: dict[str, Any], program: Path
 ) -> Path:
     """A LaunchAgent for one of the tool's own jobs, running
     `python -m folder_watch ARGS`; `when` adds its scheduling keys."""
     python, root = _resolve_python_and_root(program)
-    env = {"PATH": launchagent_path_env(), "HOME": str(Path.home())}
+    env = {"PATH": launchagent_path_env(), "HOME": str(Path.home()), **overrides()}
     if root is not None:
         env["PYTHONPATH"] = str(root)
     out = STATE_DIR / f"{name}.out.log"

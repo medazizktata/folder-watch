@@ -321,6 +321,27 @@ def _write_presets(path: Path, presets: dict[str, Any]) -> None:
         raise
 
 
+def _read_all() -> dict[str, Any]:
+    """Every stored preset, or PresetsUnreadable: never an empty dict that a
+    write would then put in place of a file it could not read."""
+    if not PRESETS_PATH.exists():
+        return {}
+    try:
+        text = PRESETS_PATH.read_text()
+        # An empty file holds no presets to lose.
+        loaded = json.loads(text) if text.strip() else {}
+    except (OSError, json.JSONDecodeError) as e:
+        raise PresetsUnreadable(
+            f"{PRESETS_PATH} cannot be read ({e}); nothing was saved, so "
+            "the presets in it are not lost. Fix or move the file, then retry."
+        ) from e
+    if not isinstance(loaded, dict):
+        raise PresetsUnreadable(
+            f"{PRESETS_PATH} does not hold a JSON object; nothing was saved."
+        )
+    return loaded
+
+
 def save_preset(name: str, cfg: dict[str, Any]) -> None:
     """Add or replace one preset, keeping every other one.
 
@@ -332,22 +353,7 @@ def save_preset(name: str, cfg: dict[str, Any]) -> None:
     if problems:
         raise InvalidPreset(f"preset {name!r} not saved: " + "; ".join(problems))
     with presets_locked():
-        presets: dict[str, Any] = {}
-        if PRESETS_PATH.exists():
-            try:
-                text = PRESETS_PATH.read_text()
-                # An empty file holds no presets to lose.
-                loaded = json.loads(text) if text.strip() else {}
-            except (OSError, json.JSONDecodeError) as e:
-                raise PresetsUnreadable(
-                    f"{PRESETS_PATH} cannot be read ({e}); nothing was saved, so "
-                    "the presets in it are not lost. Fix or move the file, then retry."
-                ) from e
-            if not isinstance(loaded, dict):
-                raise PresetsUnreadable(
-                    f"{PRESETS_PATH} does not hold a JSON object; nothing was saved."
-                )
-            presets = loaded
+        presets = _read_all()
         before = presets.get(name)
         presets[name] = cfg
         _write_presets(PRESETS_PATH, presets)
@@ -488,9 +494,10 @@ def edit_preset(
             raise ValueError(f"unknown key {key!r}")
     # Held across the read and the save, so the change lands on what is there.
     with presets_locked():
-        before = load_raw_preset(name)
-        if before is None:
+        stored = _read_all().get(name)
+        if not isinstance(stored, dict):
             raise LookupError(f"no preset {name!r}")
+        before = dict(stored)
         after = {**before, **settings}
         for key in unset or []:
             after.pop(key, None)

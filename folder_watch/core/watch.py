@@ -126,8 +126,10 @@ def follow_refusal(src_dir: Path, moved: Path) -> str | None:
     """Why a move must not be followed unasked, or None when it may be.
 
     Into a Trash means the folder was thrown away, not moved. Onto another
-    volume means a copy, which can be a backup drive. Volumes are compared
-    against the nearest folder that still exists where the source was."""
+    volume would mean a copy, which can be a backup drive; in practice such a
+    move is a copy and a delete, so F_GETPATH has no new path to report and
+    this is a guard. Volumes are compared against the nearest folder that
+    still exists where the source was."""
     if any(part in (".Trash", ".Trashes") for part in moved.parts):
         return "moved into a Trash"
     anchor = src_dir

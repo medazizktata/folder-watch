@@ -30,6 +30,11 @@ STATE_DIR = _dir(
 LAUNCH_AGENTS = _dir(
     "FOLDER_WATCH_LAUNCH_AGENTS", Path.home() / "Library" / "LaunchAgents"
 )
+# Every override above. launchd starts a job with none of the shell's
+# environment, so a service installed with these set (a sandbox, a test run)
+# would otherwise watch and write with the real config.
+OVERRIDES = ("FOLDER_WATCH_CONFIG_DIR", "FOLDER_WATCH_STATE_DIR",
+             "FOLDER_WATCH_LAUNCH_AGENTS")
 LABEL_PREFIX = "com.folder-watch"
 PID_DIR = STATE_DIR / "pids"
 

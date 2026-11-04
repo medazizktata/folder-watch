@@ -422,6 +422,13 @@ class TestServiceCommand(CliCase):
         self.assertTrue(
             any("load" in c for c in self.calls), f"never loaded: {self.calls}"
         )
+        # launchd passes on no environment: without these the job installed
+        # from this sandbox would read the real presets.
+        import plistlib
+
+        env = plistlib.loads(plist.read_bytes())["EnvironmentVariables"]
+        for var in ("FOLDER_WATCH_CONFIG_DIR", "FOLDER_WATCH_STATE_DIR"):
+            self.assertEqual(env.get(var), os.environ[var], var)
 
     def test_the_installed_plist_is_valid_and_names_the_preset(self):
         import xml.etree.ElementTree as ET
@@ -604,6 +611,13 @@ class TestPresetsEdit(CliCase):
             rc, _out, _err = self.run_cli("presets", "edit", *argv)
             self.assertEqual(rc, code, argv)
         self.assertEqual(self.presets_path.read_text(), before)
+
+    def test_a_corrupt_file_is_reported_as_unreadable_not_as_no_preset(self):
+        self.presets_path.write_text("{ not json")
+        rc, _out, err = self.run_cli("presets", "edit", "job", "stable=5")
+        self.assertEqual(rc, 2)
+        self.assertIn("cannot be read", err)
+        self.assertEqual(self.presets_path.read_text(), "{ not json")
 
     def test_an_installed_service_is_reinstalled(self):
         """The plist copies src at install; an edit alone left it behind."""

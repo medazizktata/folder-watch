@@ -17,6 +17,12 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **`presets edit` on an unreadable `presets.json` said the preset did not
+  exist** (exit 1). It now says the file cannot be read, exit 2, and leaves it
+  as it was.
+- **A service installed with `FOLDER_WATCH_*` overrides set ran on the real
+  config**, because launchd passes on no environment. The overrides that are
+  set now go into the plist, for watchers and for the tool's own jobs.
 - **A `--once` run with many failures showed only the first.** The others
   were held for the hour's summary, whose timer died with the process. The
   summary is now sent as the process exits.
@@ -167,8 +173,9 @@ which is why the first entry covers so much ground.
   and an installed service is reinstalled so its plist follows. The dashboard
   gains an **Edit** button for the watched folder and copy destination.
 - **`follow_moves`** per preset (`--follow-moves` with `--save-preset`):
-  a moved source is followed without the button, except into a Trash or onto
-  another volume, which fall back to it. It also works with `--no-notify`,
+  a moved source is followed without the button, except into a Trash, which
+  falls back to it. (A move to another volume is a copy and a delete, which
+  reads as a deleted folder, not a move.) It also works with `--no-notify`,
   silently.
 - **`folder-watch digest`** and a weekly digest notification: what each preset
   did in the last 7 days ("copied 34, 2 failed (photos, inbox)"), counted from

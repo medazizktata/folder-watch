@@ -329,6 +329,10 @@ class TestDashboardService(unittest.TestCase):
         self.assertEqual(job["KeepAlive"], {"SuccessfulExit": False})
         self.assertEqual(job["ThrottleInterval"], 300)
         self.assertTrue(job["RunAtLoad"])
+        import os
+
+        self.assertEqual(job["EnvironmentVariables"]["FOLDER_WATCH_STATE_DIR"],
+                         os.environ["FOLDER_WATCH_STATE_DIR"])
 
     def test_strict_port_refuses_a_taken_port(self):
         import contextlib
