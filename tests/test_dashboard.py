@@ -78,12 +78,20 @@ class TestServiceColumn(unittest.TestCase):
         self.assertEqual(self.column(), ("not loaded", "-"))
         self.assertEqual(
             self.column(info={"state": "running", "last exit code": "(never exited)"}),
-            ("running", "(never exited)"),
+            ("running", "-"),
         )
         self.assertEqual(
             self.column(info={"state": "not running", "last exit code": "1"}),
             ("not running", "1"),
         )
+
+    def test_paths_are_shown_from_home(self):
+        home = str(Path.home())
+        self.assertEqual(
+            dashboard.home_relative(f"missing: nearest is {home}/Desktop"),
+            "missing: nearest is ~/Desktop",
+        )
+        self.assertEqual(dashboard.home_relative(home), "~")
 
     def test_no_service_installed(self):
         self.plist.unlink()
@@ -106,7 +114,7 @@ class TestRows(unittest.TestCase):
         by_name = {r["preset"]: r for r in dashboard.rows()}
 
         self.assertEqual(by_name[live]["health"], "ok")
-        self.assertEqual(by_name[live]["log"], "2.0 MB")
+        self.assertEqual(by_name[live]["log"], "2.0MB")
         self.assertEqual(
             by_name[live]["last result"], "copied a.mp4 at 10:00:00",
             "the last result sits 2 MB back in the log",

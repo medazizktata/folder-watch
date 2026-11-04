@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from folder_watch import dashboard, doctor
+from folder_watch import dashboard, doctor, web
 from folder_watch._version import __version__
 from folder_watch.actions import ACTION_NAMES, ACTIONS
 from folder_watch.actions.base import Action
@@ -77,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  status [--preset NAME]   # running watchers\n"
             "  prune [--yes]            # drop dead done-state and stale pidfiles\n"
             "  doctor [--test-notify]   # notifiers, services, destinations, access\n"
+            "  dashboard [--port N]     # live local web page with pause/resume\n"
             "  presets show NAME            # one preset, with its source files\n"
             "  presets forget NAME [--yes]  # remove a preset\n"
         ),
@@ -649,6 +651,28 @@ def _prune_presets(*, dry: bool) -> list[str]:
     return due
 
 
+def run_dashboard_cli(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="folder-watch dashboard")
+    ap.add_argument("--port", type=int, default=8765,
+                    help="port on 127.0.0.1 (default 8765; any free port if taken)")
+    ap.add_argument("--no-open", action="store_true", help="do not open the browser")
+    args = ap.parse_args(argv)
+    try:
+        server = web.DashboardServer(args.port)
+    except OSError:
+        server = web.DashboardServer(0)
+    print(f"folder-watch dashboard: {server.url}  (Ctrl-C to stop)", flush=True)
+    if not args.no_open:
+        subprocess.run(["open", server.url], check=False)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        server.server_close()
+    return 0
+
+
 def run_doctor_cli(argv: list[str]) -> int:
     """Run every check; exit 0 when all pass, 1 on warnings, 2 on errors."""
     ap = argparse.ArgumentParser(prog="folder-watch doctor")
@@ -920,6 +944,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
         return run_service_cli(argv[1:])
     if argv and argv[0] == "status":
         return run_status_cli(argv[1:])
+    if argv and argv[0] == "dashboard":
+        return run_dashboard_cli(argv[1:])
     if argv and argv[0] == "doctor":
         return run_doctor_cli(argv[1:])
     if argv and argv[0] == "prune":

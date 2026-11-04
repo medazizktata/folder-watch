@@ -435,6 +435,24 @@ Done-state files: `~/.local/state/folder-watch/done-*.json`
 Pidfiles: `~/.local/state/folder-watch/pids/*.json`  
 Key = action + src + dest/mode + size + mtime (scheme **B**).
 
+## Dashboard
+
+```bash
+folder-watch dashboard              # opens http://127.0.0.1:8765/ in your browser
+folder-watch dashboard --no-open --port 9000
+```
+
+A live local web page of every preset, refreshed every 5 seconds: health,
+service (running, paused, not loaded), last exit code, last result from its
+log, and log size, with **Pause** / **Resume**, **Open folder** and **Open log**
+buttons. It runs until you press Ctrl-C. The terminal version is
+`folder-watch status --all`.
+
+It listens on 127.0.0.1 only. Any page in your browser can still send
+requests to localhost, so every button sends a random token that only the
+dashboard's own page carries, and a request addressed to any other host name
+is refused, which stops a domain rebound to 127.0.0.1 from reading or acting.
+
 ## Doctor
 
 ```bash

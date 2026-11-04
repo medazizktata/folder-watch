@@ -95,6 +95,11 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **`folder-watch dashboard`**: `status --all` as a live local web page,
+  refreshed every 5 seconds, with Pause / Resume, Open folder and Open log
+  buttons. Bound to 127.0.0.1; actions need a per-run token, and other host
+  names are refused. `status --all` now shows paths from `~`, sizes in
+  B/KB/MB, and "-" for a job that has not exited.
 - **`folder-watch status --all`**: one table of every preset with its health,
   its service (running, paused, not loaded), last exit code, last result read
   from its log, and log size.

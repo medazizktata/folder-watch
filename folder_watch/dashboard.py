@@ -14,6 +14,7 @@ from typing import Any
 from folder_watch.doctor import _launchctl_print
 from folder_watch.presets import load_presets, preset_status
 from folder_watch.support.launchd import is_paused, service_label, service_plist_path
+from folder_watch.support.notify import human_size
 from folder_watch.support.paths import STATE_DIR
 
 RESULTS = ("copied", "extracted", "ran")
@@ -65,24 +66,50 @@ def service_column(name: str) -> tuple[str, str]:
     if not info:
         return "not loaded", "-"
     state = "running" if info.get("state") == "running" else info.get("state", "loaded")
-    return state, info.get("last exit code", "-")
+    code = info.get("last exit code", "-")
+    # launchd's wording for a job that has not exited since it was loaded.
+    return state, "-" if code == "(never exited)" else code
 
 
-def rows() -> list[dict[str, str]]:
+def home_relative(text: str) -> str:
+    home = str(Path.home())
+    return text.replace(home + "/", "~/").replace(home, "~")
+
+
+def entries() -> list[dict[str, Any]]:
+    """Every preset with raw fields: what the web dashboard renders."""
     out = []
     for name, cfg in sorted(load_presets().items()):
         level, note = preset_status(cfg)
         service, code = service_column(name)
-        size = log_bytes(name)
         out.append({
             "preset": name,
-            "health": "ok" if level == "ok" else f"{level}: {note}",
+            "level": level,
+            "note": home_relative(note),
+            "action": cfg.get("action", "copy"),
+            "src": home_relative(str(cfg.get("src", ""))),
+            "to": home_relative(str(cfg.get("to") or "")),
             "service": service,
             "exit": code,
-            "last result": last_result(STATE_DIR / f"{name}.log"),
-            "log": f"{size / 1024**2:.1f} MB" if size else "-",
+            "last": last_result(STATE_DIR / f"{name}.log"),
+            "log_bytes": log_bytes(name),
         })
     return out
+
+
+def rows() -> list[dict[str, str]]:
+    """The same, formatted for the terminal table."""
+    return [
+        {
+            "preset": e["preset"],
+            "health": "ok" if e["level"] == "ok" else f"{e['level']}: {e['note']}",
+            "service": e["service"],
+            "exit": e["exit"],
+            "last result": e["last"],
+            "log": human_size(e["log_bytes"]) if e["log_bytes"] else "-",
+        }
+        for e in entries()
+    ]
 
 
 def render(table: list[dict[str, str]]) -> str:

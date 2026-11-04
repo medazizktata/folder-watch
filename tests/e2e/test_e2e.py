@@ -5,15 +5,20 @@ runs again on every `make e2e`.
 """
 from __future__ import annotations
 
+import json
 import os
 import plistlib
+import re
+import select
 import subprocess
 import sys
 import unittest
+import urllib.request
 from pathlib import Path
 
 from fixtures import (
     ROOT,
+    IsolatedCase,
     LaunchdCase,
     WatcherCase,
     wait_until,
@@ -57,6 +62,33 @@ class TestWatcher(WatcherCase):
 
         self.assertEqual(event["now"], str(moved))
         self.assertEqual(self.exit_code(), 2)
+
+
+class TestDashboardCommand(IsolatedCase):
+    def test_the_dashboard_serves_its_page_and_rows(self):
+        name = f"e2e-web-{os.getpid()}"
+        save_preset(name, {"action": "copy", "src": str(self.src), "to": str(self.dest)})
+        self.addCleanup(remove_preset, name)
+        proc = subprocess.Popen(
+            [sys.executable, "-B", "-m", "folder_watch", "dashboard", "--no-open",
+             "--port", "0"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            env=dict(os.environ),
+        )
+        self.addCleanup(proc.wait, 10)
+        self.addCleanup(proc.terminate)
+        ready, _, _ = select.select([proc.stdout], [], [], 20)
+        self.assertTrue(ready, "the dashboard printed no address")
+        url = re.search(r"http://127\.0\.0\.1:\d+/", proc.stdout.readline())
+        self.assertIsNotNone(url)
+
+        page = urllib.request.urlopen(url.group(0), timeout=10).read().decode()
+        rows = json.loads(
+            urllib.request.urlopen(url.group(0) + "api/rows", timeout=10).read()
+        )
+
+        self.assertIn("<title>folder-watch</title>", page)
+        self.assertIn(name, [r["preset"] for r in rows])
 
 
 class TestLaunchd(LaunchdCase):
