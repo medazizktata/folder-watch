@@ -1,6 +1,7 @@
 """macOS LaunchAgent install/uninstall."""
 from __future__ import annotations
 
+import os
 import plistlib
 import subprocess
 from pathlib import Path
@@ -229,6 +230,8 @@ def install_service(
         path_env=launchagent_path_env(),
     )
     plist.write_text(body)
+    # Installing means running: clear a pause left by an earlier install.
+    _launchctl("enable", _domain_target(preset))
     subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, check=False)
     r = subprocess.run(
         ["launchctl", "load", str(plist)],
@@ -283,6 +286,45 @@ def install_prune_schedule(*, program: Path) -> Path:
     return plist
 
 
+def _domain_target(preset: str) -> str:
+    return f"gui/{os.getuid()}/{service_label(preset)}"
+
+
+def _launchctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["launchctl", *args], capture_output=True, text=True, check=False
+    )
+
+
+def is_paused(preset: str) -> bool:
+    """Disabled in launchd's own records, which outlive logins and plists."""
+    label = f'"{service_label(preset)}"'
+    out = _launchctl("print-disabled", f"gui/{os.getuid()}").stdout
+    return any(
+        label in line and ("=> disabled" in line or "=> true" in line)
+        for line in out.splitlines()
+    )
+
+
+def pause_service(*, preset: str) -> None:
+    """Stop the service and keep it stopped across logins, plist untouched."""
+    if not service_plist_path(preset).is_file():
+        raise RuntimeError(f"no service installed for {preset!r}")
+    _launchctl("disable", _domain_target(preset))
+    _launchctl("bootout", _domain_target(preset))
+
+
+def resume_service(*, preset: str) -> None:
+    plist = service_plist_path(preset)
+    if not plist.is_file():
+        raise RuntimeError(f"no service installed for {preset!r}")
+    _launchctl("enable", _domain_target(preset))
+    r = _launchctl("bootstrap", f"gui/{os.getuid()}", str(plist))
+    # 37 is "already loaded": resuming a service that was never stopped.
+    if r.returncode not in (0, 37):
+        raise RuntimeError(r.stderr.strip() or "launchctl bootstrap failed")
+
+
 def uninstall_service(*, preset: str) -> Path | None:
     plist = service_plist_path(preset)
     if plist.is_file():
@@ -290,6 +332,9 @@ def uninstall_service(*, preset: str) -> Path | None:
             ["launchctl", "unload", str(plist)], capture_output=True, check=False
         )
         plist.unlink(missing_ok=True)
+        # A pause outlives the plist; left behind, a later install of the same
+        # preset would load disabled and never run.
+        _launchctl("enable", _domain_target(preset))
         return plist
     return None
 
@@ -308,6 +353,7 @@ def service_status(*, preset: str) -> dict[str, Any]:
         "plist": str(plist),
         "plist_exists": plist.is_file(),
         "loaded": r.returncode == 0,
+        "paused": is_paused(preset),
         "launchctl": (r.stdout or r.stderr or "").strip(),
     }
     if not plist.is_file():

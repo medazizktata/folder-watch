@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from folder_watch import doctor
+from folder_watch import dashboard, doctor
 from folder_watch._version import __version__
 from folder_watch.actions import ACTION_NAMES, ACTIONS
 from folder_watch.actions.base import Action
@@ -30,6 +30,8 @@ from folder_watch.support.launchd import (
     PRUNE_JOB,
     install_prune_schedule,
     install_service,
+    pause_service,
+    resume_service,
     service_plist_path,
     service_status,
     stdio_log_path,
@@ -573,7 +575,15 @@ def run_status_cli(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="folder-watch status")
     ap.add_argument("--preset", default=None, help="filter to one preset/watch name")
     ap.add_argument("--tail", type=int, default=12, help="log lines to show")
+    ap.add_argument(
+        "--all", action="store_true",
+        help="one table of every preset: health, service, last exit, last "
+        "result and log size",
+    )
     args = ap.parse_args(argv)
+    if args.all:
+        print(dashboard.render(dashboard.rows()))
+        return 0
     rows = collect_watch_status(preset=args.preset, log_tail=args.tail)
     if not rows:
         print("no watchers (no pidfiles)")
@@ -843,7 +853,7 @@ def _prune_state(*, dry: bool) -> int:
 
 def run_service_cli(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="folder-watch service")
-    ap.add_argument("cmd", choices=("install", "uninstall", "status"))
+    ap.add_argument("cmd", choices=("install", "uninstall", "status", "pause", "resume"))
     ap.add_argument("--preset", required=True, help="preset name to run under launchd")
     ap.add_argument("--log", type=Path, default=None, help="LaunchAgent stdout/err log")
     args = ap.parse_args(argv)
@@ -857,6 +867,14 @@ def run_service_cli(argv: list[str]) -> int:
         if args.cmd == "uninstall":
             removed = uninstall_service(preset=args.preset)
             print(f"uninstalled {removed}" if removed else "nothing to uninstall")
+            return 0
+        if args.cmd == "pause":
+            pause_service(preset=args.preset)
+            print(f"paused {args.preset}: stopped, and stays stopped across logins")
+            return 0
+        if args.cmd == "resume":
+            resume_service(preset=args.preset)
+            print(f"resumed {args.preset}")
             return 0
         st = service_status(preset=args.preset)
         for k, v in st.items():

@@ -95,6 +95,12 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **`folder-watch status --all`**: one table of every preset with its health,
+  its service (running, paused, not loaded), last exit code, last result read
+  from its log, and log size.
+- **`service pause` / `service resume`** stop a service and keep it stopped
+  across logins without uninstalling it. `install` and `uninstall` clear a
+  pause, which launchd otherwise remembers after the plist is gone.
 - **`--reveal`** opens Finder on each result as it lands (the copy, the
   extracted folder, or the file a command ran on) without a click, whether or
   not notifications are on. It can be saved in a preset, so services can use

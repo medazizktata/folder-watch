@@ -20,7 +20,12 @@ from fixtures import (
 )
 
 from folder_watch.presets import remove_preset, save_preset
-from folder_watch.support.launchd import build_plist, stdio_log_path
+from folder_watch.support.launchd import (
+    build_plist,
+    service_label,
+    service_plist_path,
+    stdio_log_path,
+)
 from folder_watch.support.paths import LAUNCH_AGENTS, STATE_DIR
 
 
@@ -90,6 +95,56 @@ class TestLaunchd(LaunchdCase):
         runs = self.runs(label)
         self.assertIsNone(wait_until(lambda: self.runs(label) > runs, timeout=13),
                           "restarted after its folder moved away")
+
+    def test_pause_keeps_a_service_stopped_until_resume(self):
+        # A fixed name: launchd keeps an enable/disable record per label for
+        # good, so a per-run name would add one more on every run.
+        name = "e2e-pause"
+        save_preset(name, {"action": "copy", "src": str(self.src), "to": str(self.dest)})
+        self.addCleanup(remove_preset, name)
+        label = service_label(name)
+        log = STATE_DIR / f"{name}.log"
+        plist = plistlib.loads(build_plist(
+            label=label, preset=name, python=Path(sys.executable), root=ROOT,
+            log_path=log, stdio_path=stdio_log_path(log),
+            path_env="/usr/bin:/bin:/usr/sbin", src=self.src,
+        ).encode())
+        plist["ProgramArguments"].append("--no-notify")
+        self.load(plist)
+        # resume loads from the installed location, as it would for real.
+        installed = service_plist_path(name)
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        installed.write_bytes((self.tmp / f"{label}.plist").read_bytes())
+        self.addCleanup(installed.unlink, True)
+        # Never leave a disabled record in launchd, whatever happens below.
+        self.addCleanup(subprocess.run, ["launchctl", "enable", f"{self.domain}/{label}"],
+                        capture_output=True)
+        self.assertTrue(wait_until(lambda: self.job(label).get("state") == "running"))
+
+        self.cli("service", "pause", "--preset", name)
+        self.assertTrue(
+            wait_until(lambda: not self.job(label)), "still loaded after pause"
+        )
+        self.assertIn("paused", self.dashboard_row(name))
+
+        self.cli("service", "resume", "--preset", name)
+        self.assertTrue(wait_until(lambda: self.job(label).get("state") == "running"),
+                        "not running after resume")
+        self.assertIn("running", self.dashboard_row(name))
+
+    def cli(self, *argv: str) -> str:
+        r = subprocess.run(
+            [sys.executable, "-B", "-m", "folder_watch", *argv],
+            cwd=ROOT, capture_output=True, text=True, env=dict(os.environ), check=False,
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def dashboard_row(self, name: str) -> str:
+        return next(
+            line for line in self.cli("status", "--all").splitlines()
+            if line.startswith(name)
+        )
 
     def test_doctor_reports_a_service_that_dies_on_start(self):
         """A crash before folder_watch loads writes no log; doctor reads the

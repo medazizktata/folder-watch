@@ -20,6 +20,7 @@ from folder_watch.presets import load_presets
 from folder_watch.support.launchd import (
     LAUNCH_AGENTS,
     _resolve_python_and_root,
+    is_paused,
     launchagent_path_env,
     service_status,
 )
@@ -75,7 +76,11 @@ def check_services() -> list[Finding]:
         name = label[len(LABEL_PREFIX) + 1 :]
         info = _launchctl_print(label)
         if not info:
-            found.append(("error", f"service {name}: plist installed but not loaded"))
+            found.append(
+                ("ok", f"service {name}: paused")
+                if is_paused(name)
+                else ("error", f"service {name}: plist installed but not loaded")
+            )
             continue
         code = info.get("last exit code", "")
         if code not in ("0", "(never exited)", ""):

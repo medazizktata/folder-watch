@@ -295,6 +295,10 @@ folder-watch copy ./Out --to ./Drive --retries 8
 
 # status of running watchers
 folder-watch status
+
+# every preset in one table: health, service (running / paused / not loaded),
+# last exit code, last result from its log, and log size
+folder-watch status --all
 folder-watch status --preset nightly-render
 
 # drop done-state whose source is gone, stale pidfiles, presets whose folder
@@ -464,8 +468,17 @@ and notifies you when one fails.
 ```bash
 folder-watch service install --preset nightly-render
 folder-watch service status --preset nightly-render
+folder-watch service pause --preset nightly-render    # stop, and stay stopped across logins
+folder-watch service resume --preset nightly-render
 folder-watch service uninstall --preset nightly-render
 ```
+
+`pause` disables the job in launchd and stops it, leaving the plist and the
+preset as they are; `resume` re-enables and loads it. `service status`, `status
+--all` and `doctor` show it as paused rather than as a service that failed to
+load. `install` and `uninstall` clear a pause, since launchd's record of one
+outlives the plist and would otherwise keep a reinstalled service from ever
+running.
 
 ### Do not run services out of a checkout
 
