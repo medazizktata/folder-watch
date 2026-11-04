@@ -129,6 +129,40 @@ half-did is unknown, and repeating that is worse than saying so.
 command already handled. Notifications are off unless you pass `--notify`:
 unlike a copy, a command can fire on every file in a busy folder.
 
+### `exec` recipes
+
+Each of these runs for real in `tests/e2e/test_recipes.py`. Paths in `--cmd`
+must be absolute: there is no shell to expand `~`.
+
+```bash
+# move each finished file somewhere else
+folder-watch exec ~/Inbox --cmd '/bin/mv -n {path} /Users/you/Sorted/'
+
+# rename with today's date, into another folder
+folder-watch exec ~/Scans --cmd \
+  '/bin/sh -c '"'"'mv -n "$1" "$2/$(date +%F)-$(basename "$1")"'"'"' sh {path} /Users/you/Archive'
+
+# upload with rclone; a failed upload is retried later rather than given up on
+folder-watch exec ~/Outbox --cmd \
+  '/bin/sh -c '"'"'/opt/homebrew/bin/rclone copy "$1" drive:Inbox || exit 75'"'"' sh {path}'
+
+# a 540p video proxy beside the original's name
+folder-watch exec ~/Footage --ext mp4,mov --cmd \
+  '/opt/homebrew/bin/ffmpeg -nostdin -v error -y -i {path} -vf scale=-2:540 -c:v libx264 -preset veryfast -crf 28 /Users/you/Proxies/{stem}_proxy.mp4'
+```
+
+- When a recipe needs the shell (`$(date)`, `||`), pass the file as an
+  argument (`sh -c '… "$1" …' sh {path}`), never inside the script text. As an
+  argument it is data; inside the script, a file called `x;touch pwned;.txt`
+  runs `touch pwned`. The tests check both forms.
+- Do not rename a file inside the folder being watched: the renamed file is a
+  new file, and the watcher would rename it again, forever. Rename into
+  another folder, as above.
+- `exit 75` turns a failure into "retry later" (see the table above), which
+  is the right answer for a network upload that may work in a minute.
+- `-nostdin` keeps ffmpeg from waiting on input it will never get under
+  launchd.
+
 `service` (LaunchAgent install / uninstall / status), `status`, `prune` and
 `presets` are subcommands rather than actions.
 

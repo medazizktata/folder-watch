@@ -108,9 +108,15 @@ class WatcherCase(IsolatedCase):
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             env=dict(os.environ),
         )
+        # Ready means baseline taken, not merely started: a file landing
+        # between the two counts as already there, and new-only skips it. That
+        # race failed one run in five. The observer is armed before the
+        # baseline, so after it every new file is seen. --once and --catch-up
+        # take no baseline.
+        ready = "start" if {"--once", "--catch-up"} & set(argv) else "baseline"
         self.assertTrue(
-            wait_until(lambda: self.events("start") or self.proc.poll() is not None),
-            "the watcher neither started nor exited",
+            wait_until(lambda: self.events(ready) or self.proc.poll() is not None),
+            f"the watcher neither got to {ready} nor exited",
         )
         return self.proc
 

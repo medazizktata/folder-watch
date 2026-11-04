@@ -47,6 +47,7 @@ class TestNoSleepAsSynchronisation(unittest.TestCase):
         "test_crash_recovery.py",
         "e2e/fixtures.py",
         "e2e/test_e2e.py",
+        "e2e/test_recipes.py",
     )
 
     @staticmethod

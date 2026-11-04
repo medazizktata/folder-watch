@@ -167,6 +167,12 @@ which is why the first entry covers so much ground.
 
 ### Testing
 
+- **`exec` recipes, run for real** (`tests/e2e/test_recipes.py`): move, rename
+  with the date, rclone upload with retry, and a 540p ffmpeg proxy, plus a
+  check that a file name passed as `$1` is never executed (calibrated against
+  the unsafe form, which does execute it). The e2e fixture now waits for the
+  watcher's baseline, not just its start: a file landing between the two was
+  taken as already there and skipped, which failed one run in five.
 - **End-to-end tests** (`tests/e2e`, `make e2e`) with reusable fixtures for
   real watchers and real launchd jobs. Each test was checked against the
   break it exists for: a bare `KeepAlive`, move detection switched off, and
