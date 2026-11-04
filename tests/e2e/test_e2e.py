@@ -18,6 +18,7 @@ import urllib.request
 from pathlib import Path
 
 from fixtures import (
+    DEADLINE,
     ROOT,
     IsolatedCase,
     LaunchdCase,
@@ -139,10 +140,17 @@ class TestDashboardCommand(IsolatedCase):
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env=dict(os.environ),
         )
+        self.addCleanup(proc.stdout.close)
         self.addCleanup(proc.wait, 10)
         self.addCleanup(proc.terminate)
-        ready, _, _ = select.select([proc.stdout], [], [], 20)
-        self.assertTrue(ready, "the dashboard printed no address")
+        # The suite's own deadline: as the first test on a fresh CI runner this
+        # is the first interpreter start, and 20 s was once not enough there.
+        ready, _, _ = select.select([proc.stdout], [], [], DEADLINE)
+        if not ready:
+            proc.terminate()
+            said = proc.communicate(timeout=10)[0]
+            self.fail(f"the dashboard printed no address in {DEADLINE:.0f} s; "
+                      f"exit {proc.returncode}, output: {said!r}")
         url = re.search(r"http://127\.0\.0\.1:\d+/", proc.stdout.readline())
         self.assertIsNotNone(url)
 
