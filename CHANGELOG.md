@@ -17,6 +17,14 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **Saves to `presets.json` could undo each other.** Each save read the file,
+  changed one preset and wrote the lot back, so two saves at once (two
+  presets following a renamed folder, the dashboard and the CLI) dropped one
+  change, while the audit trail said it was made. Saves now hold a lock for
+  the read, the change and the write.
+- **A symlinked `presets.json` was replaced by a private copy.** Saving
+  renamed the new file over the link. It now writes to the file the link
+  points at and keeps that file's permissions.
 - **A dead drive buried the screen in notifications.** Every failed file
   notified, again on every retry pass. Failure notifications are now grouped
   per hour: the first notifies at once, the rest are summed up in one

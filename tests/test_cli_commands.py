@@ -458,6 +458,75 @@ class TestServiceCommand(CliCase):
         self.assertEqual(caught.exception.code, 2)
 
 
+def _save_many(name: str, count: int) -> None:
+    """Runs in a child process: save one preset `count` times."""
+    from folder_watch.presets import save_preset
+
+    for i in range(count):
+        save_preset(name, {"action": "copy", "src": "/a", "to": "/b", "stable": i})
+
+
+class TestPresetsStore(CliCase):
+    """How presets.json is written: by several processes, and behind links."""
+
+    def test_concurrent_saves_lose_nothing(self):
+        """Each save reads the file, changes one preset and writes it all
+        back; unlocked, overlapping saves dropped each other's change."""
+        import multiprocessing
+
+        from folder_watch.presets import load_raw_preset
+
+        ctx = multiprocessing.get_context("spawn")
+        for trial in range(3):
+            names = [f"race-{trial}-{k}" for k in range(4)]
+            procs = [ctx.Process(target=_save_many, args=(n, 20)) for n in names]
+            for p in procs:
+                p.start()
+            for p in procs:
+                p.join(60)
+            self.assertEqual(
+                [load_raw_preset(n)["stable"] for n in names], [19] * 4,
+                f"trial {trial}: a save was lost",
+            )
+
+    def test_a_symlinked_file_stays_linked_and_keeps_its_mode(self):
+        """A presets.json kept in a dotfiles folder became a private copy."""
+        from folder_watch.presets import save_preset
+
+        target = self.tmp / "dotfiles" / "presets.json"
+        target.parent.mkdir()
+        target.write_text('{"keep": {"action": "copy", "src": "/a", "to": "/b"}}')
+        target.chmod(0o640)
+        self.presets_path.unlink(missing_ok=True)
+        self.presets_path.symlink_to(target)
+        self.addCleanup(self.presets_path.unlink, True)
+
+        save_preset("new", {"action": "copy", "src": "/c", "to": "/d"})
+
+        self.assertTrue(self.presets_path.is_symlink(), "the link was replaced")
+        self.assertEqual(set(json.loads(target.read_text())), {"keep", "new"})
+        self.assertEqual(target.stat().st_mode & 0o777, 0o640)
+
+    def test_edit_holds_the_lock_without_waiting_on_itself(self):  # holds on BASE
+        """edit_preset holds the lock around save_preset. If that lock were
+        not re-entrant, edit would wait on itself forever; in a child process
+        with a deadline, that is a failure here rather than a hung suite."""
+        import subprocess
+
+        self.write_presets(job={"action": "copy", "src": "/a", "to": "/b"})
+        try:
+            r = subprocess.run(
+                [sys.executable, "-B", "-m", "folder_watch", "presets", "edit", "job",
+                 "stable=4"],
+                capture_output=True, text=True, timeout=20, env=dict(os.environ),
+                cwd=Path(__file__).resolve().parents[1],
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("presets edit deadlocked on its own lock")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(self.presets_path.read_text())["job"]["stable"], 4)
+
+
 class TestPresetsEdit(CliCase):
     """`presets edit`: change keys by name instead of hand-editing JSON."""
 

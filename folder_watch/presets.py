@@ -9,9 +9,13 @@ so the built-in only ever supplied a debounce_ms identical to the CLI default.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
+import stat
 import tempfile
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -146,16 +150,17 @@ def remove_preset(name: str) -> list[Path]:
     broken. Returns the files actually changed.
     """
     changed: list[Path] = []
-    for path in preset_sources(name):
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(data, dict) or name not in data:
-            continue
-        data.pop(name)
-        _write_presets(path, data)
-        changed.append(path)
+    with presets_locked():
+        for path in preset_sources(name):
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict) or name not in data:
+                continue
+            data.pop(name)
+            _write_presets(path, data)
+            changed.append(path)
     if changed:
         audit.record("preset_removed", preset=name, files=[str(p) for p in changed])
     return changed
@@ -245,10 +250,47 @@ class PresetsUnreadable(RuntimeError):
     """presets.json exists but does not read as a JSON object."""
 
 
+_lock_state = threading.local()
+
+
+@contextlib.contextmanager
+def presets_locked() -> Iterator[None]:
+    """Hold the presets lock for a whole read, change and write.
+
+    Every save reads the file, changes one preset and writes the lot back.
+    Two processes doing that at once each wrote what they had read, so one
+    change vanished (lost in 10 of 10 trials of four concurrent savers,
+    including a real case: two presets following one renamed folder).
+    Re-entrant within a thread, since edit_preset holds it around
+    save_preset, and a second flock in one process would wait on itself."""
+    depth = getattr(_lock_state, "depth", 0)
+    if depth:
+        _lock_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            _lock_state.depth -= 1
+        return
+    PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(PRESETS_PATH.parent / ".presets.lock", "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        _lock_state.depth = 1
+        try:
+            yield
+        finally:
+            _lock_state.depth = 0
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def _write_presets(path: Path, presets: dict[str, Any]) -> None:
     """Write through a temp file and a rename. Writing in place meant a crash
     mid-save left a half-written presets.json, the very file save_preset
-    used to treat as empty."""
+    used to treat as empty.
+
+    The rename goes to the real file behind a symlink, with its mode kept:
+    renaming over the link itself turned a presets.json kept in a dotfiles
+    folder into a private copy the dotfiles never saw again."""
+    path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
         prefix="presets-", suffix=".json.tmp", dir=str(path.parent)
@@ -258,6 +300,8 @@ def _write_presets(path: Path, presets: dict[str, Any]) -> None:
             f.write(json.dumps(presets, indent=2) + "\n")
             f.flush()
             os.fsync(f.fileno())
+        if path.exists():
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -272,25 +316,26 @@ def save_preset(name: str, cfg: dict[str, Any]) -> None:
     presets.json could not be parsed, saving one preset used to rewrite the
     file with that preset alone, silently dropping all the others.
     """
-    presets: dict[str, Any] = {}
-    if PRESETS_PATH.exists():
-        try:
-            text = PRESETS_PATH.read_text()
-            # An empty file holds no presets to lose.
-            loaded = json.loads(text) if text.strip() else {}
-        except (OSError, json.JSONDecodeError) as e:
-            raise PresetsUnreadable(
-                f"{PRESETS_PATH} cannot be read ({e}); nothing was saved, so the "
-                "presets in it are not lost. Fix or move the file, then retry."
-            ) from e
-        if not isinstance(loaded, dict):
-            raise PresetsUnreadable(
-                f"{PRESETS_PATH} does not hold a JSON object; nothing was saved."
-            )
-        presets = loaded
-    before = presets.get(name)
-    presets[name] = cfg
-    _write_presets(PRESETS_PATH, presets)
+    with presets_locked():
+        presets: dict[str, Any] = {}
+        if PRESETS_PATH.exists():
+            try:
+                text = PRESETS_PATH.read_text()
+                # An empty file holds no presets to lose.
+                loaded = json.loads(text) if text.strip() else {}
+            except (OSError, json.JSONDecodeError) as e:
+                raise PresetsUnreadable(
+                    f"{PRESETS_PATH} cannot be read ({e}); nothing was saved, so "
+                    "the presets in it are not lost. Fix or move the file, then retry."
+                ) from e
+            if not isinstance(loaded, dict):
+                raise PresetsUnreadable(
+                    f"{PRESETS_PATH} does not hold a JSON object; nothing was saved."
+                )
+            presets = loaded
+        before = presets.get(name)
+        presets[name] = cfg
+        _write_presets(PRESETS_PATH, presets)
     old = before if isinstance(before, dict) else {}
     audit.record(
         "preset_saved", preset=name, created=before is None,
@@ -343,14 +388,16 @@ def edit_preset(
     """Change some keys of a stored preset and keep the rest. Values must
     already be parsed. Returns (before, after); raises LookupError for an
     unknown preset and ValueError for an unknown key."""
-    before = load_raw_preset(name)
-    if before is None:
-        raise LookupError(f"no preset {name!r}")
     for key in [*settings, *(unset or [])]:
         if key not in PRESET_KEYS:
             raise ValueError(f"unknown key {key!r}")
-    after = {**before, **settings}
-    for key in unset or []:
-        after.pop(key, None)
-    save_preset(name, after)
+    # Held across the read and the save, so the change lands on what is there.
+    with presets_locked():
+        before = load_raw_preset(name)
+        if before is None:
+            raise LookupError(f"no preset {name!r}")
+        after = {**before, **settings}
+        for key in unset or []:
+            after.pop(key, None)
+        save_preset(name, after)
     return before, after
