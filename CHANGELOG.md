@@ -92,6 +92,14 @@ which is why the first entry covers so much ground.
 
 ### Added
 
+- **`folder-watch doctor`** checks the things a watcher cannot check for
+  itself: notifiers installed, every service loaded and its last exit code,
+  destinations writable with space left, and whether launchd can read the
+  Desktop, Documents and Downloads folders a preset uses, probed with the
+  interpreter the services run. The weekly job runs the service and
+  destination checks and notifies on failure, so a service that dies before
+  folder_watch loads is no longer restarted forever unnoticed.
+
 - **Retention for dead presets.** `prune` now also removes a preset whose
   source has been deleted or renamed for 30 days, along with its LaunchAgent
   and default logs. It never counts a source on an unmounted volume, and never

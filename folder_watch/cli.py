@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from folder_watch import doctor
 from folder_watch._version import __version__
 from folder_watch.actions import ACTION_NAMES, ACTIONS
 from folder_watch.actions.base import Action
@@ -35,7 +36,7 @@ from folder_watch.support.launchd import (
     uninstall_service,
 )
 from folder_watch.support.log import emit, set_json_mode, set_verbose, setup_logging
-from folder_watch.support.notify import DEFAULT_SOUND, ask, available_sounds
+from folder_watch.support.notify import DEFAULT_SOUND, ask, available_sounds, notify
 from folder_watch.support.paths import PRESETS_PATH, STATE_DIR
 from folder_watch.support.pidfile import (
     clear_pidfile,
@@ -73,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  service install|uninstall|status --preset NAME\n"
             "  status [--preset NAME]   # running watchers\n"
             "  prune [--yes]            # drop dead done-state and stale pidfiles\n"
+            "  doctor [--test-notify]   # notifiers, services, destinations, access\n"
             "  presets show NAME            # one preset, with its source files\n"
             "  presets forget NAME [--yes]  # remove a preset\n"
         ),
@@ -628,6 +630,42 @@ def _prune_presets(*, dry: bool) -> list[str]:
     return due
 
 
+def run_doctor_cli(argv: list[str]) -> int:
+    """Run every check; exit 0 when all pass, 1 on warnings, 2 on errors."""
+    ap = argparse.ArgumentParser(prog="folder-watch doctor")
+    ap.add_argument(
+        "--test-notify", action="store_true",
+        help="also send a test notification (whether macOS shows it can only "
+        "be seen, not read back)",
+    )
+    ap.add_argument(
+        "--no-probe", action="store_true",
+        help="skip the launchd probe of Desktop, Documents and Downloads",
+    )
+    args = ap.parse_args(argv)
+    sections = [
+        ("notifications", doctor.check_notifiers),
+        ("services", doctor.check_services),
+        ("destinations", doctor.check_destinations),
+    ]
+    if not args.no_probe:
+        sections.append(
+            ("protected folders", lambda: doctor.check_protected_folders(_program()))
+        )
+    worst = 0
+    marks = {"ok": "ok  ", "warn": "WARN", "error": "FAIL"}
+    for title, check in sections:
+        findings = check()
+        print(f"{title}:")
+        for level, message in findings or [("ok", "nothing to check")]:
+            print(f"  {marks[level]} {message}")
+            worst = max(worst, {"ok": 0, "warn": 1, "error": 2}[level])
+    if args.test_notify:
+        notify("folder-watch doctor", "Notifications reach you.").join(10)
+        print("\nsent a test notification titled 'folder-watch doctor'")
+    return worst
+
+
 def run_prune_cli(argv: list[str]) -> int:
     """Clear out state and presets that no longer refer to anything real."""
     ap = argparse.ArgumentParser(prog="folder-watch prune")
@@ -650,6 +688,16 @@ def run_prune_cli(argv: list[str]) -> int:
         print(f"removed {removed}" if removed else "no weekly job installed")
         return 0
     if args.ask:
+        # A service that crashes before folder_watch even loads writes no log
+        # and launchd restarts it forever; this weekly run is what notices.
+        problems = [
+            message
+            for level, message in doctor.check_services() + doctor.check_destinations()
+            if level == "error"
+        ]
+        if problems:
+            more = f" (+{len(problems) - 1} more)" if len(problems) > 1 else ""
+            notify("folder-watch: run `folder-watch doctor`", problems[0] + more).join(10)
         # One dry pass to see what there is, and nothing removed without the
         # click — the tool's own bookkeeping included.
         state = _prune_state(dry=True)
@@ -845,6 +893,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
         return run_service_cli(argv[1:])
     if argv and argv[0] == "status":
         return run_status_cli(argv[1:])
+    if argv and argv[0] == "doctor":
+        return run_doctor_cli(argv[1:])
     if argv and argv[0] == "prune":
         return run_prune_cli(argv[1:])
     if argv and argv[0] == "presets":

@@ -417,6 +417,34 @@ Done-state files: `~/.local/state/folder-watch/done-*.json`
 Pidfiles: `~/.local/state/folder-watch/pids/*.json`  
 Key = action + src + dest/mode + size + mtime (scheme **B**).
 
+## Doctor
+
+```bash
+folder-watch doctor                 # exit 0 all good, 1 warnings, 2 problems
+folder-watch doctor --test-notify   # also send a test notification
+folder-watch doctor --no-probe      # skip the launchd folder probe
+```
+
+It checks what a watcher needs and cannot check for itself:
+
+- **Notifiers:** whether `alerter` (buttons) and `terminal-notifier` are where
+  a service looks for them. Whether macOS actually shows notifications cannot
+  be read back, so `--test-notify` sends one for you to see.
+- **Services:** every folder-watch LaunchAgent, whether it is loaded, and its
+  last exit code. A watcher that crashes before folder_watch even loads (a
+  wrong interpreter, a missing module) writes no log, and launchd restarts it
+  forever; its exit code is the only trace. It also flags a service whose
+  preset no longer exists, and one whose plist no longer matches its preset.
+- **Destinations:** whether each exists, is writable, and has 2 GB or more
+  free.
+- **Protected folders:** macOS keeps background jobs out of `~/Desktop`,
+  `~/Documents` and `~/Downloads` unless the job's binary is allowed. For each
+  of those a preset uses, a one-shot launchd job running the interpreter your
+  services run tries to list it, so the answer is the one a service would get.
+
+The weekly `prune --schedule` job runs the service and destination checks too,
+and notifies you when one fails.
+
 ## LaunchAgent
 
 ```bash

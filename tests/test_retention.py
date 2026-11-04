@@ -146,9 +146,10 @@ class TestPrunePresets(RetentionCase):
 
 
 class TestWeeklyAsk(RetentionCase):
-    def ask(self, *, clicked: bool, state: int = 0, logs: int = 0):
-        """Run `prune --ask` with the bookkeeping counts fixed, since the
-        shared test state dir can hold debris from other tests."""
+    def ask(self, *, clicked: bool, state: int = 0, logs: int = 0, problems=()):
+        """Run `prune --ask` with the bookkeeping counts and the doctor's
+        findings fixed, since the shared test state dir can hold debris from
+        other tests, and no real notification may be sent."""
         calls: list[str] = []
 
         def fake_state(*, dry):
@@ -163,10 +164,24 @@ class TestWeeklyAsk(RetentionCase):
             mock.patch.object(cli, "ask", return_value=clicked) as ask,
             mock.patch.object(cli, "_prune_state", side_effect=fake_state),
             mock.patch.object(cli, "_prune_logs", side_effect=fake_logs),
+            mock.patch.object(cli.doctor, "check_services", return_value=list(problems)),
+            mock.patch.object(cli.doctor, "check_destinations", return_value=[]),
+            mock.patch.object(cli, "notify") as notify,
         ):
             self.prune("--ask")
         ask.calls = calls
+        ask.notify = notify
         return ask
+
+    def test_a_failing_service_is_reported_weekly(self):
+        """launchd restarts a service that dies on start forever, silently."""
+        ask = self.ask(clicked=False, problems=[("error", "service job: last exit 1")])
+
+        ask.notify.assert_called_once()
+        self.assertIn("last exit 1", ask.notify.call_args.args[1])
+
+        ask = self.ask(clicked=False, problems=[("ok", "service job: running")])
+        ask.notify.assert_not_called()
 
     def test_bookkeeping_alone_waits_for_the_click(self):
         """Nothing is removed without the click, the tool's own state included."""
