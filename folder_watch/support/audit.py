@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import fcntl
 import json
 import os
 import time
@@ -69,6 +70,16 @@ def _jsonable(value: Any) -> Any:
     return str(value) if isinstance(value, Path) else value
 
 
+@contextlib.contextmanager
+def _locked(operation: int) -> Iterator[None]:
+    """Appends share the lock and trim takes it alone, so a line appended
+    while trim rewrites the trail cannot land in the copy being replaced."""
+    AUDIT.parent.mkdir(parents=True, exist_ok=True)
+    with open(AUDIT.with_name(AUDIT.name + ".lock"), "a") as handle:
+        fcntl.flock(handle, operation)
+        yield
+
+
 def record(kind: str, *, preset: str | None = None, **fields: Any) -> None:
     """Append one line. Never raises: an audit trail that could stop a copy
     would cost more than the line it failed to write."""
@@ -81,15 +92,15 @@ def record(kind: str, *, preset: str | None = None, **fields: Any) -> None:
     }
     line = json.dumps(entry, ensure_ascii=False) + "\n"
     try:
-        AUDIT.parent.mkdir(parents=True, exist_ok=True)
         # O_APPEND: lines from several processes land whole, one after another.
-        fd = os.open(AUDIT, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        try:
-            # A trail written before this was 0644; what it records is yours.
-            os.fchmod(fd, 0o600)
-            os.write(fd, line.encode())
-        finally:
-            os.close(fd)
+        with _locked(fcntl.LOCK_SH):
+            fd = os.open(AUDIT, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                # A trail written before this was 0644; what it records is yours.
+                os.fchmod(fd, 0o600)
+                os.write(fd, line.encode())
+            finally:
+                os.close(fd)
     except OSError:
         pass
 
@@ -127,7 +138,9 @@ def parse_since(text: str, now: datetime | None = None) -> datetime:
     units = {"d": "days", "h": "hours", "m": "minutes"}
     if text[-1:] in units and text[:-1].isdigit():
         return now - timedelta(**{units[text[-1]]: int(text[:-1])})
-    return datetime.fromisoformat(text)
+    when = datetime.fromisoformat(text)
+    # Entries carry local time without an offset; compare like with like.
+    return when.astimezone().replace(tzinfo=None) if when.tzinfo else when
 
 
 def trim(keep_days: int = KEEP_DAYS, now: float | None = None, *, dry: bool) -> int:
@@ -136,26 +149,27 @@ def trim(keep_days: int = KEEP_DAYS, now: float | None = None, *, dry: bool) -> 
     cutoff = datetime.fromtimestamp(now if now is not None else time.time()) - timedelta(
         days=keep_days
     )
-    try:
-        lines = AUDIT.read_text("utf-8", errors="replace").splitlines(keepends=True)
-    except OSError:
-        return 0
-    kept = []
-    for line in lines:
+    with _locked(fcntl.LOCK_SH if dry else fcntl.LOCK_EX):
         try:
-            if datetime.fromisoformat(json.loads(line)["ts"]) < cutoff:
-                continue
-        except (ValueError, KeyError, TypeError):
-            pass  # keep what cannot be dated rather than lose it
-        kept.append(line)
-    gone = len(lines) - len(kept)
-    if gone and not dry:
-        tmp = AUDIT.with_suffix(".jsonl.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(fd, 0o600)  # a temp file left by an older run keeps its mode
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("".join(kept))
-        os.replace(tmp, AUDIT)
+            lines = AUDIT.read_text("utf-8", errors="replace").splitlines(keepends=True)
+        except OSError:
+            return 0
+        kept = []
+        for line in lines:
+            try:
+                if datetime.fromisoformat(json.loads(line)["ts"]) < cutoff:
+                    continue
+            except (ValueError, KeyError, TypeError):
+                pass  # keep what cannot be dated rather than lose it
+            kept.append(line)
+        gone = len(lines) - len(kept)
+        if gone and not dry:
+            tmp = AUDIT.with_suffix(".jsonl.tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)  # a temp file left by an older run keeps its mode
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("".join(kept))
+            os.replace(tmp, AUDIT)
     return gone
 
 

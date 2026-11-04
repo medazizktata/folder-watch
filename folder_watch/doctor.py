@@ -9,6 +9,7 @@ the services run, because the answer depends on who is asking.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import plistlib
 import shutil
@@ -64,6 +65,17 @@ def _launchctl_print(label: str) -> dict[str, str]:
     return info
 
 
+def _plist_preset(plist: Path, label: str) -> str:
+    """The preset a service runs: its --preset argument. The label only
+    approximates it, since service_label() turns a space into a dash."""
+    # A corrupt plist must not stop doctor; the label is the fallback.
+    with contextlib.suppress(Exception):
+        args = plistlib.loads(plist.read_bytes())["ProgramArguments"]
+        if "--preset" in args[:-1]:
+            return str(args[args.index("--preset") + 1])
+    return label[len(LABEL_PREFIX) + 1 :]
+
+
 def check_services() -> list[Finding]:
     """Every folder-watch LaunchAgent: loaded, its last exit, and whether its
     preset still exists. A watcher that crashes before folder_watch loads (a
@@ -73,7 +85,7 @@ def check_services() -> list[Finding]:
     found: list[Finding] = []
     for plist in sorted(LAUNCH_AGENTS.glob(f"{LABEL_PREFIX}.*.plist")):
         label = plist.name[: -len(".plist")]
-        name = label[len(LABEL_PREFIX) + 1 :]
+        name = _plist_preset(plist, label)
         info = _launchctl_print(label)
         if not info:
             found.append(

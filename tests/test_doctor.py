@@ -38,10 +38,14 @@ class DoctorCase(unittest.TestCase):
         PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
         PRESETS_PATH.write_text(json.dumps(presets))
 
-    def service(self, name: str) -> None:
+    def service(self, name: str, preset: str | None = None) -> None:
         LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
         path = LAUNCH_AGENTS / f"com.folder-watch.{name}.plist"
-        path.write_bytes(plistlib.dumps({"Label": f"com.folder-watch.{name}"}))
+        job: dict = {"Label": f"com.folder-watch.{name}"}
+        if preset is not None:
+            job["ProgramArguments"] = ["/x/python", "-m", "folder_watch",
+                                       "--preset", preset]
+        path.write_bytes(plistlib.dumps(job))
         self.plists.append(path)
 
     def levels(self, findings, needle: str) -> list[str]:
@@ -70,6 +74,18 @@ class TestServices(DoctorCase):
 
         self.assertIn("error", self.levels(found, "last exit 1 after 40"))
 
+    def test_a_preset_name_with_a_space_is_read_from_the_plist(self):
+        """service_label() makes "blind photos" com.folder-watch.blind-photos;
+        the name read back from the label named a preset that never existed."""
+        self.presets(**{"blind photos": {"action": "copy", "src": "/a", "to": "/b"}})
+        self.service("blind-photos", preset="blind photos")
+
+        found = self.run_check({"com.folder-watch.blind-photos": {
+            "state": "running", "last exit code": "0"}})
+
+        self.assertEqual(self.levels(found, "service blind photos"), ["ok"])
+        self.assertEqual(self.levels(found, "no longer exists"), [])
+
     def test_a_healthy_service_is_ok(self):
         self.presets(job={"action": "copy", "src": "/a", "to": "/b"})
         self.service("job")
@@ -91,6 +107,57 @@ class TestServices(DoctorCase):
 
         self.assertIn("error", self.levels(found, "unloaded: plist installed but not"))
         self.assertIn("error", self.levels(found, "orphan: its preset no longer exists"))
+
+
+    def test_tool_jobs_and_a_drifted_service(self):  # holds on BASE
+        self.presets(job={"action": "copy", "src": "/a", "to": "/b"})
+        self.service("_weekly-prune")
+        self.service("job", preset="job")
+        prints = {lab: {"state": "running", "last exit code": "0"}
+                  for lab in ("com.folder-watch._weekly-prune", "com.folder-watch.job")}
+        with (
+            mock.patch.object(doctor, "_launchctl_print", side_effect=prints.get),
+            mock.patch.object(doctor, "service_status",
+                              return_value={"warning": "plist watches /old"}),
+        ):
+            found = doctor.check_services()
+
+        self.assertIn(("ok", "job _weekly-prune: running"), found)
+        self.assertIn(("warn", "service job: plist watches /old"), found)
+
+    def test_launchctl_print_keeps_the_jobs_own_fields(self):  # holds on BASE
+        """Nested sections repeat `state = `; the job's own comes first."""
+        out = ("gui/501/x = {\n\tstate = running\n\truns = 3\n"
+               "\tlast exit code = 0\n\tendpoints = {\n\t\tstate = idle\n\t}\n}\n")
+        with mock.patch.object(doctor.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout=out)
+            self.assertEqual(doctor._launchctl_print("x"),
+                             {"state": "running", "runs": "3", "last exit code": "0"})
+            run.return_value = mock.Mock(returncode=113, stdout="")
+            self.assertEqual(doctor._launchctl_print("x"), {})
+
+
+class TestProtectedFolders(DoctorCase):
+    def test_one_probe_per_protected_category_in_use(self):  # holds on BASE
+        a, b = self.tmp / "a", self.tmp / "b"
+        a.mkdir()
+        b.mkdir()
+        self.presets(one={"action": "copy", "src": str(a), "to": str(b)},
+                     two={"action": "copy", "src": str(b), "to": "/nowhere"})
+        with (
+            mock.patch.object(doctor, "_resolve_python_and_root",
+                              return_value=(Path("/x/python3"), Path("/x"))),
+            mock.patch.object(doctor, "protected_category",
+                              side_effect={a: "Desktop", b: "Documents"}.get),
+            mock.patch.object(doctor, "probe",
+                              side_effect=["ok", "Operation not permitted"]) as probe,
+        ):
+            found = doctor.check_protected_folders(Path("/x/bin/fw"))
+
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(found[0], ("ok", "launchd can read ~/Desktop (python3)"))
+        self.assertEqual(found[1][0], "error")
+        self.assertIn("~/Documents: Operation not permitted", found[1][1])
 
 
 class TestDestinations(DoctorCase):

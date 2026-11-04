@@ -241,6 +241,28 @@ class TestRetention(AuditCase):
         self.assertEqual(audit.trim(now=now, dry=False), 1)
         self.assertEqual(audit.AUDIT.read_text().splitlines(), lines[1:])
 
+    def test_a_line_appended_during_a_trim_is_kept(self):
+        """trim reads, filters and replaces; an append in between used to go
+        to the file being replaced. Real threads: flock is per open file."""
+        import threading
+
+        old = (datetime.now() - timedelta(days=400)).isoformat(timespec="seconds")
+        audit.AUDIT.write_text(json.dumps({"ts": old, "kind": "copied"}) + "\n")
+        real_replace = os.replace
+        writer = threading.Thread(target=audit.record, args=("copied",),
+                                  kwargs={"name": "during-trim"})
+
+        def replace_while_someone_appends(src, dst):
+            writer.start()
+            writer.join(0.5)  # finishes at once unless the lock holds it back
+            real_replace(src, dst)
+
+        with mock.patch.object(audit.os, "replace", replace_while_someone_appends):
+            self.assertEqual(audit.trim(dry=False), 1)
+        writer.join(10)
+
+        self.assertEqual([e.get("name") for e in self.entries()], ["during-trim"])
+
     def test_prune_trims_it_and_records_that_it_did(self):
         old = (datetime.now() - timedelta(days=400)).isoformat(timespec="seconds")
         audit.AUDIT.write_text(json.dumps({"ts": old, "kind": "copied"}) + "\n")
@@ -270,6 +292,21 @@ class TestAuditCommand(AuditCase):
         self.assertIn("name=a.jpg", out)
         self.assertNotIn("b.zip", out)
         self.assertIn("1 entr(ies)", out)
+
+    def test_a_since_with_a_time_zone_is_read_as_that_moment(self):
+        """Comparing it with the trail's local times raised TypeError."""
+        from datetime import timezone
+
+        audit.record("copied", name="now")
+        here = datetime.now().astimezone().utcoffset()
+        # Ten hours from local, so dropping the offset would get both wrong.
+        east = timezone(here + timedelta(hours=10))
+        west = timezone(here - timedelta(hours=10))
+        an_hour_ago = (datetime.now(east) - timedelta(hours=1)).isoformat()
+        in_an_hour = (datetime.now(west) + timedelta(hours=1)).isoformat()
+
+        self.assertEqual(len(audit.read(since=audit.parse_since(an_hour_ago))), 1)
+        self.assertEqual(audit.read(since=audit.parse_since(in_an_hour)), [])
 
     def test_a_bad_since_is_an_error(self):
         self.assertEqual(self.run_audit("--since", "soon")[0], 2)

@@ -17,6 +17,15 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **`audit --since` with a time zone crashed.** `--since
+  2026-11-01T00:00:00+01:00` raised TypeError against the trail's local
+  times; it is now read as that moment.
+- **An entry recorded while the audit trail was being trimmed was lost.**
+  Trim rewrites the file; an append in between went to the copy being
+  replaced. Appends and trim now share a lock.
+- **`doctor` misnamed services whose preset has a space.** It read the name
+  back from the launchd label, where `blind photos` is `blind-photos`, and
+  reported the preset as gone. It now reads the plist's `--preset`.
 - **Any account on the Mac could use the dashboard.** The token that
   guarded its buttons was written into the page, and the page was served to
   anyone who asked 127.0.0.1 for it, so another user (or a page on another
