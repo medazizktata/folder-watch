@@ -510,7 +510,9 @@ folder-watch audit --since 2026-11-01 --json
 
 Every action, in `~/.local/state/folder-watch/audit.jsonl`, one JSON line
 each, with who or what triggered it: `cli`, `service`, `weekly`, `dashboard`,
-`notification` (a button) or `automatic` (a followed move). Recorded:
+`notification` (a button) or `automatic` (a followed move). The file is
+readable only by you, and a webhook URL in it is reduced to its host, since
+the token is part of the URL. Recorded:
 
 | kind | when |
 |---|---|

@@ -28,6 +28,7 @@ from folder_watch.presets import (
     preset_problems,
     preset_sources,
     preset_status,
+    redacted,
     remove_preset,
     save_preset,
 )
@@ -63,7 +64,6 @@ from folder_watch.support.state import DoneStore
 from folder_watch.support.webhook import InvalidEndpoint
 from folder_watch.support.webhook import configure as configure_webhook
 from folder_watch.support.webhook import current_host as webhook_endpoint_host
-from folder_watch.support.webhook import endpoint_host as webhook_endpoint_host_of
 from folder_watch.support.webhook import flush as webhook_flush
 from folder_watch.support.webhook import stats as webhook_stats
 
@@ -417,19 +417,15 @@ def persist_preset(
         return 2
     if existing is not None:
         print(f"note: preset {name!r} already exists — modifying it, not creating it")
-        changes = [
-            (k, existing.get(k, "<unset>"), v)
-            for k, v in final.items()
-            if existing.get(k) != v
-        ]
+        changes = [k for k, v in final.items() if existing.get(k) != v]
         removed = [k for k in existing if k not in final]
         if not changes and not removed:
             print(f"  no changes; {name!r} left as it was")
             return 0
-        for key, before, after in changes:
-            print(f"  {key}: {before} -> {after}")
+        for key in changes:
+            print(f"  {key}: {shown_in(existing, key)} -> {shown_in(final, key)}")
         for key in removed:
-            print(f"  {key}: {existing[key]} -> <removed>")
+            print(f"  {key}: {shown_in(existing, key)} -> <removed>")
 
     try:
         save_preset(name, final)
@@ -501,7 +497,7 @@ def run_presets_edit(name: str, pairs: list[str], unset: list[str]) -> int:
         return 1
     for key in sorted(set(before) | set(after)):
         if before.get(key) != after.get(key):
-            print(f"  {key}: {before.get(key, '<unset>')} -> {after.get(key, '<unset>')}")
+            print(f"  {key}: {shown_in(before, key)} -> {shown_in(after, key)}")
     print(f"updated preset {name!r}")
     if reinstalled:
         print("reinstalled its service, which now runs with these settings")
@@ -568,18 +564,14 @@ def run_presets_cli(argv: list[str]) -> int:
     return 1
 
 
-# Keys whose value is a credential in disguise. Endpoint URLs carry the token
-# in the path — Slack and Discord both do — so printing a preset verbatim hands
-# out the ability to post as you, to anyone reading over your shoulder or the
-# terminal capture in a bug report.
-SECRET_KEYS = frozenset({"webhook"})
-
-
 def render_preset_value(key: str, value: object) -> str:
     """A preset value as it is safe to show."""
-    if key in SECRET_KEYS and value:
-        return f"{webhook_endpoint_host_of(str(value))} (URL hidden)"
-    return str(value)
+    return str(redacted(key, value))
+
+
+def shown_in(cfg: dict[str, Any], key: str) -> str:
+    """One key of a preset for a before -> after line."""
+    return render_preset_value(key, cfg[key]) if key in cfg else "<unset>"
 
 
 def chosen_sound(args: argparse.Namespace) -> str | None:

@@ -170,6 +170,62 @@ class TestWhatIsRecorded(AuditCase):
             self.assertEqual(load_raw_preset(name)["src"], str(moved))
 
 
+class TestSecrets(AuditCase):
+    """A webhook URL is a credential: Slack and Discord keep the token in it."""
+
+    SECRET = "xoxb-DO-NOT-LEAK"
+    URL = f"https://hooks.slack.com/services/T00/B11/{SECRET}"
+
+    def setUp(self):
+        super().setUp()
+        self.name = f"secret-{id(self)}"
+        self.addCleanup(remove_preset, self.name)
+        self.cfg = {"action": "copy", "src": "/a", "to": "/b"}
+        save_preset(self.name, self.cfg)
+
+    def cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(list(argv))
+        return rc, out.getvalue() + err.getvalue()
+
+    def test_an_edit_shows_and_records_only_the_host(self):
+        rc, out = self.cli("presets", "edit", self.name, f"webhook={self.URL}")
+        self.assertEqual(rc, 0, out)
+        rc, again = self.cli("presets", "edit", self.name, f"webhook={self.URL}x")
+        self.assertEqual(rc, 0, again)
+
+        self.assertNotIn(self.SECRET, out + again)
+        self.assertIn("webhook: <unset> -> hooks.slack.com (URL hidden)", out)
+        self.assertNotIn(self.SECRET, audit.AUDIT.read_text())
+        self.assertEqual(self.entries("preset_saved")[-1]["changes"]["webhook"],
+                         ["hooks.slack.com (URL hidden)"] * 2)
+        self.assertEqual(load_raw_preset(self.name)["webhook"], f"{self.URL}x")
+
+    def test_save_preset_over_an_existing_one_shows_only_the_host(self):
+        save_preset(self.name, {**self.cfg, "webhook": self.URL})
+        rc, out = self.cli("copy", "/a", "--to", "/b", "--webhook", f"{self.URL}x",
+                           "--save-preset", self.name)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("webhook: hooks.slack.com (URL hidden)", out)
+        self.assertNotIn(self.SECRET, out)
+
+    def test_the_trail_is_readable_only_by_its_owner(self):
+        audit.record("copied", name="new-file")
+        self.assertEqual(audit.AUDIT.stat().st_mode & 0o777, 0o600)
+
+        audit.AUDIT.chmod(0o644)  # as written before
+        audit.record("copied", name="old-file")
+        self.assertEqual(audit.AUDIT.stat().st_mode & 0o777, 0o600)
+
+        old = (datetime.now() - timedelta(days=400)).isoformat(timespec="seconds")
+        audit.AUDIT.write_text(json.dumps({"ts": old, "kind": "copied"}) + "\n")
+        audit.AUDIT.chmod(0o644)
+        audit.AUDIT.with_suffix(".jsonl.tmp").write_text("")  # left by a crash
+        self.assertEqual(audit.trim(dry=False), 1)
+        self.assertEqual(audit.AUDIT.stat().st_mode & 0o777, 0o600)
+
+
 class TestRetention(AuditCase):
     def test_a_year_is_kept_and_undated_lines_are_never_dropped(self):
         now = time.time()

@@ -83,8 +83,10 @@ def record(kind: str, *, preset: str | None = None, **fields: Any) -> None:
     try:
         AUDIT.parent.mkdir(parents=True, exist_ok=True)
         # O_APPEND: lines from several processes land whole, one after another.
-        fd = os.open(AUDIT, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        fd = os.open(AUDIT, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
+            # A trail written before this was 0644; what it records is yours.
+            os.fchmod(fd, 0o600)
             os.write(fd, line.encode())
         finally:
             os.close(fd)
@@ -149,7 +151,10 @@ def trim(keep_days: int = KEEP_DAYS, now: float | None = None, *, dry: bool) -> 
     gone = len(lines) - len(kept)
     if gone and not dry:
         tmp = AUDIT.with_suffix(".jsonl.tmp")
-        tmp.write_text("".join(kept), "utf-8")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)  # a temp file left by an older run keeps its mode
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("".join(kept))
         os.replace(tmp, AUDIT)
     return gone
 

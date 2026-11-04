@@ -17,6 +17,11 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A webhook's token was written to the audit trail and printed by edits.**
+  `presets edit` and `--save-preset` printed the old and new URL in full,
+  and the audit trail recorded both, in a file anyone on the Mac could
+  read. Both now show only the host, as `presets show` already did, and
+  `audit.jsonl` is owner-only (0600), including one written before.
 - **A preset could hold values no watcher can use.** `presets edit job to=`
   stored the current folder; `stable=-5`, `poll=nan`, `poll=0` and
   `action=bogus` were saved as typed, and a destination inside a recursive

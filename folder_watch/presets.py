@@ -23,7 +23,7 @@ from typing import Any
 from folder_watch.support import audit
 from folder_watch.support.log import emit
 from folder_watch.support.paths import LEGACY_PRESETS, PRESETS_PATH
-from folder_watch.support.webhook import InvalidEndpoint, check_url
+from folder_watch.support.webhook import InvalidEndpoint, check_url, endpoint_host
 
 # Every key a preset may carry. Nothing derives this automatically from the
 # argument parser, so a flag added without touching cli.py's preset block is
@@ -241,6 +241,19 @@ class PresetsUnreadable(RuntimeError):
     """presets.json exists but does not read as a JSON object."""
 
 
+# Keys whose value is a credential in disguise. Endpoint URLs carry the token
+# in the path (Slack and Discord both do), so a preset value printed or
+# recorded verbatim hands out the ability to post as you.
+SECRET_KEYS = frozenset({"webhook"})
+
+
+def redacted(key: str, value: Any) -> Any:
+    """A preset value as it is safe to show or record."""
+    if key in SECRET_KEYS and value:
+        return f"{endpoint_host(str(value))} (URL hidden)"
+    return value
+
+
 class InvalidPreset(ValueError):
     """A preset a watcher would misread, refused before it is stored."""
 
@@ -338,7 +351,7 @@ def save_preset(name: str, cfg: dict[str, Any]) -> None:
     audit.record(
         "preset_saved", preset=name, created=before is None,
         changes={
-            k: [old.get(k), cfg.get(k)]
+            k: [redacted(k, old.get(k)), redacted(k, cfg.get(k))]
             for k in sorted(set(old) | set(cfg)) if old.get(k) != cfg.get(k)
         },
     )
