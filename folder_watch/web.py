@@ -149,10 +149,11 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line);
   vertical-align: top; }
-th { color: var(--muted); font-weight: 500; font-size: 13px; }
+th { color: var(--muted); font-weight: 500; font-size: 13px; white-space: nowrap; }
+.nowrap, button { white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
 .name { font-weight: 600; }
-.path { color: var(--muted); font-size: 12px; word-break: break-all; }
+.path { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
   margin-right: 6px; vertical-align: 1px; }
 .ok { background: var(--ok); } .warn { background: var(--warn); }
@@ -226,7 +227,7 @@ function row(e) {
   health.append(el("span", "dot " + e.level),
     el("span", "", e.level === "ok" ? "ok" : e.level));
   if (e.note) health.append(el("div", "note", e.note));
-  const service = el("td");
+  const service = el("td", "nowrap");
   service.append(el("span", "dot " + serviceDot(e.service)),
     el("span", "", e.service === "-" ? "no service" : e.service));
   const actions = el("td");
