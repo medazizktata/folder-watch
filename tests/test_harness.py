@@ -97,6 +97,50 @@ class TestNoSleepAsSynchronisation(unittest.TestCase):
         self.assertEqual(sorted(every - in_loop), [4])
 
 
+class TestNoShadowedTestCaseMethods(unittest.TestCase):
+    """A test helper named `fail` once replaced TestCase.fail, which every
+    assert method calls to report a mismatch, so that class's assertions
+    could not fail: they sent a fake notification and passed. Nothing about
+    it looked wrong. Test classes may define only the setup and teardown
+    hooks among TestCase's own names."""
+
+    ALLOWED = frozenset({"setUp", "tearDown", "setUpClass", "tearDownClass"})
+
+    @classmethod
+    def shadowing(cls, tree) -> list[str]:
+        reserved = {n for n in dir(unittest.TestCase) if not n.startswith("__")}
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = [b.id if isinstance(b, ast.Name) else getattr(b, "attr", "")
+                     for b in node.bases]
+            if not any(b.endswith("Case") for b in bases):
+                continue
+            for item in node.body:
+                if (
+                    isinstance(item, ast.FunctionDef)
+                    and item.name in reserved - cls.ALLOWED
+                ):
+                    found.append(f"{node.name}.{item.name} (line {item.lineno})")
+        return found
+
+    def test_no_test_class_shadows_a_testcase_method(self):  # holds on BASE
+        for path in sorted(Path(__file__).parent.rglob("test_*.py")):
+            with self.subTest(file=path.name):
+                self.assertEqual(self.shadowing(ast.parse(path.read_text())), [])
+
+    def test_the_check_can_actually_fail(self):  # holds on BASE
+        tree = ast.parse(
+            "class T(unittest.TestCase):\n"
+            "    def fail(self, name): ...\n"
+            "    def setUp(self): ...\n"
+            "class Helper:\n"
+            "    def run(self): ...\n"
+        )
+        self.assertEqual(self.shadowing(tree), ["T.fail (line 2)"])
+
+
 class TestCapture(unittest.TestCase):
     def test_it_finds_every_module_that_imported_emit(self):
         """Discovered from sys.modules rather than listed, so the next action

@@ -7,7 +7,7 @@ from pathlib import Path
 from folder_watch.actions.base import Action
 from folder_watch.support.copy_io import atomic_copy, verify_copy
 from folder_watch.support.log import emit
-from folder_watch.support.notify import human_size, notify
+from folder_watch.support.notify import human_size, notify, notify_failure
 from folder_watch.support.paths import (
     DestNotADirectory,
     DestUnavailable,
@@ -126,7 +126,7 @@ class CopyAction(Action):
             # Never mark done — the file must be retried once the volume is back.
             emit("fail", name=path.name, reason="dest_unavailable", err=str(e))
             if self.notify_on_done:
-                notify(
+                notify_failure(
                     "folder-watch destination missing",
                     f"{path.name} not copied",
                     sound=self.sound,
@@ -137,7 +137,7 @@ class CopyAction(Action):
         except OSError as e:
             emit("fail", name=path.name, reason="copy_error", err=str(e))
             if self.notify_on_done:
-                notify(
+                notify_failure(
                     "folder-watch copy failed",
                     path.name,
                     reveal=dest,
@@ -158,7 +158,7 @@ class CopyAction(Action):
                 wrote=dest.stat().st_size if dest.is_file() else 0,
             )
             if self.notify_on_done:
-                notify(
+                notify_failure(
                     "folder-watch copy failed",
                     path.name,
                     reveal=dest,
@@ -177,7 +177,7 @@ class CopyAction(Action):
                 except OSError:
                     pass
                 if self.notify_on_done:
-                    notify(
+                    notify_failure(
                         "folder-watch copy corrupt",
                         f"{path.name} — bad copy removed",
                         sound=self.sound,

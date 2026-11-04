@@ -7,7 +7,7 @@ from pathlib import Path
 
 from folder_watch.actions.base import Action
 from folder_watch.support.log import emit, emit_debug
-from folder_watch.support.notify import notify
+from folder_watch.support.notify import notify, notify_failure
 from folder_watch.support.paths import (
     DestNotADirectory,
     DestUnavailable,
@@ -208,7 +208,7 @@ class UnzipAction(Action):
                 sound=self.sound,
             )
         elif result in ("fail", "error", "retry"):
-            notify(
+            notify_failure(
                 "folder-watch extract failed",
                 f"{path.name} — archive kept",
                 reveal=path,

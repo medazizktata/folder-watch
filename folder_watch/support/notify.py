@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 from folder_watch.support.log import emit
@@ -270,3 +271,61 @@ def notify(
     sender.start()
     return sender
 
+
+
+# Failures are grouped per hour: the first one notifies at once, the rest
+# are counted and sent as one summary when the hour is up. One notification
+# per failed file meant a dead drive buried the screen, again on every
+# retry pass.
+FAILURE_WINDOW = 3600.0
+
+
+class _FailureWindow:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.started: float | None = None
+        self.held = 0
+        self.latest = ""
+        self.timer: threading.Timer | None = None
+
+
+_failures = _FailureWindow()
+
+
+def notify_failure(
+    title: str,
+    body: str,
+    *,
+    reveal: Path | None = None,
+    sound: str | None = None,
+) -> threading.Thread | None:
+    """notify() for a failure, grouped: returns the sending thread when it
+    notifies now, None when it holds this one for the hour's summary."""
+    w = _failures
+    now = time.monotonic()
+    with w.lock:
+        if w.started is None or now - w.started >= FAILURE_WINDOW:
+            w.started, w.held = now, 0
+        else:
+            w.held += 1
+            w.latest = f"{title}: {body}"
+            if w.timer is None:
+                w.timer = threading.Timer(
+                    FAILURE_WINDOW - (now - w.started), _flush_failures
+                )
+                w.timer.daemon = True
+                w.timer.start()
+            return None
+    return notify(title, body, reveal=reveal, sound=sound)
+
+
+def _flush_failures() -> None:
+    w = _failures
+    with w.lock:
+        held, latest = w.held, w.latest
+        w.started, w.held, w.timer = None, 0, None
+    if held:
+        notify(
+            "folder-watch: more failures",
+            f"{held} more in the last hour; latest: {latest}",
+        )

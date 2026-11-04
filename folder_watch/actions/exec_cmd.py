@@ -29,7 +29,7 @@ from pathlib import Path
 
 from folder_watch.actions.base import Action
 from folder_watch.support.log import emit
-from folder_watch.support.notify import notify
+from folder_watch.support.notify import notify, notify_failure
 
 # sysexits.h: "temporary failure, indicating something that is not really an
 # error. In sendmail, this means that a mailer could not create a connection,
@@ -233,7 +233,7 @@ class ExecAction(Action):
                 sound=self.sound,
             )
         else:
-            notify(
+            notify_failure(
                 "folder-watch command failed",
                 path.name,
                 reveal=path,

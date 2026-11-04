@@ -289,6 +289,16 @@ off too, and does nothing on a dry run. It can be saved in a preset
 the front, so it suits folders that receive a file now and then rather than a
 busy one. `convx` hands files to another tool, so it has no result to reveal.
 
+### Failure notifications are grouped
+
+The first failure in an hour notifies straight away. Later ones in the same
+hour (a copy that failed, a missing destination, a corrupt copy, an extract or
+command that failed) are counted, and one notification sums them up when the
+hour ends: "12 more in the last hour; latest: …". One notification per failed
+file used to bury the screen when a drive went away, and again on every retry
+pass. Successes still notify one by one, and the log keeps every line. A
+watcher stopped before the hour ends sends no summary, and its log has it all.
+
 ### Telling something else
 
 ```bash

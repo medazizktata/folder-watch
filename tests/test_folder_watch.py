@@ -110,12 +110,15 @@ class TestUnzipAction(unittest.TestCase):
         import folder_watch.actions.unzip as unzip_mod
 
         seen: list[tuple[str, str, Path | None]] = []
-        old = unzip_mod.notify
-        unzip_mod.notify = lambda t, b, **kw: seen.append((t, b, kw.get("reveal")))
+        old = unzip_mod.notify, unzip_mod.notify_failure
+        # Failures go through notify_failure, which groups them per hour.
+        unzip_mod.notify = unzip_mod.notify_failure = (
+            lambda t, b, **kw: seen.append((t, b, kw.get("reveal")))
+        )
         try:
             result = action.run(zip_path)
         finally:
-            unzip_mod.notify = old
+            unzip_mod.notify, unzip_mod.notify_failure = old
         return result, seen
 
     def test_a_successful_extract_is_announced(self):

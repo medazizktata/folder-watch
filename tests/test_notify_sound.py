@@ -294,5 +294,77 @@ class TestAsk(unittest.TestCase):
         self.assertFalse(self._answer(clicked, alerter=None))
 
 
+class TestFailureGrouping(unittest.TestCase):
+    """A dead drive used to send one notification per file, per retry pass."""
+
+    def setUp(self):
+        from unittest import mock
+
+        self.now = [1000.0]
+        self.sent: list[tuple[str, str]] = []
+        self.timers: list = []
+        test = self
+
+        class FakeTimer:
+            def __init__(self, delay, fn):
+                self.delay, self.fn, self.daemon = delay, fn, False
+                test.timers.append(self)
+
+            def start(self):
+                pass
+
+        for target, value in (
+            ("_failures", notify_mod._FailureWindow()),
+            ("notify", lambda t, b, **_k: self.sent.append((t, b))),
+        ):
+            patcher = mock.patch.object(notify_mod, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(notify_mod.time, "monotonic", lambda: self.now[0]),
+            mock.patch.object(notify_mod.threading, "Timer", FakeTimer),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def failure(self, name):
+        return notify_mod.notify_failure("folder-watch copy failed", name)
+
+    def test_the_first_failure_shows_and_the_rest_wait_for_one_summary(self):
+        self.failure("a.mp4")
+        for name in ("b.mp4", "c.mp4", "d.mp4"):
+            self.now[0] += 60
+            self.assertIsNone(self.failure(name))
+
+        self.assertEqual(self.sent, [("folder-watch copy failed", "a.mp4")])
+        self.assertEqual(len(self.timers), 1, "one summary timer per hour")
+        self.assertAlmostEqual(self.timers[0].delay, notify_mod.FAILURE_WINDOW - 60)
+
+        self.timers[0].fn()
+
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("3 more", self.sent[1][1])
+        self.assertIn("d.mp4", self.sent[1][1], "the latest failure is named")
+
+    def test_after_the_summary_the_next_failure_shows_at_once(self):
+        self.failure("a.mp4")
+        self.failure("b.mp4")
+        self.timers[0].fn()
+        self.failure("c.mp4")
+
+        self.assertEqual(self.sent[-1], ("folder-watch copy failed", "c.mp4"))
+
+    def test_a_failure_after_the_hour_starts_a_new_window(self):
+        self.failure("a.mp4")
+        self.now[0] += notify_mod.FAILURE_WINDOW
+        self.failure("b.mp4")
+
+        self.assertEqual([body for _t, body in self.sent], ["a.mp4", "b.mp4"])
+
+    def test_an_hour_with_one_failure_sends_no_summary(self):
+        self.failure("a.mp4")
+        self.assertEqual(self.timers, [])
+
+
 if __name__ == "__main__":
     unittest.main()

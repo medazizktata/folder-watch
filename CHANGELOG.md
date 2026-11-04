@@ -17,6 +17,10 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A dead drive buried the screen in notifications.** Every failed file
+  notified, again on every retry pass. Failure notifications are now grouped
+  per hour: the first notifies at once, the rest are summed up in one
+  notification when the hour ends.
 - **`--no-notify` still raised the move prompt.** When a watcher's source
   moved, it sent a notification, or for a preset the hour-long "Watch new
   path" prompt, even with `--no-notify`. A move is now only logged then.
@@ -171,6 +175,10 @@ which is why the first entry covers so much ground.
 
 ### Testing
 
+- **A test class could no longer fail.** A helper named `fail` replaced
+  `TestCase.fail`, which every assert method calls to report a mismatch; a
+  deliberate break exposed it. A harness rule now refuses any test class that
+  shadows a `TestCase` method, checked against that exact case.
 - **`exec` recipes, run for real** (`tests/e2e/test_recipes.py`): move, rename
   with the date, rclone upload with retry, and a 540p ffmpeg proxy, plus a
   check that a file name passed as `$1` is never executed (calibrated against
