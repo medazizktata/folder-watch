@@ -17,6 +17,10 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A service did not come back when its volume was mounted again.**
+  launchd does not re-check PathState on a mount, so a watcher whose source
+  sits on a drive stayed stopped after the drive returned. Service plists now
+  also carry `StartOnMount`; reinstall a service (`service install`) to get it.
 - **`presets edit` on an unreadable `presets.json` said the preset did not
   exist** (exit 1). It now says the file cannot be read, exit 2, and leaves it
   as it was.
@@ -103,7 +107,8 @@ which is why the first entry covers so much ground.
   of the two was a `convx` preset, which loops the same way. `service install`
   now ties `KeepAlive` to the preset's source folder (`PathState`). A missing
   folder costs one start and one error line, and launchd starts the watcher
-  again by itself when the folder comes back, including a remounted volume. If
+  again by itself when the folder comes back (a remounted volume needed
+  `StartOnMount`, added later). If
   you change a preset's `src`, run `service install` again so the plist follows
   it. Services installed before this fix keep the old plist until you
   reinstall them.

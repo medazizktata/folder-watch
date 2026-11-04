@@ -138,8 +138,13 @@ def build_plist(
     src_missing and launchd restart it every ten seconds, for months, each
     run appending the same error to both logs. With PathState a missing
     source costs one start and one error line, and launchd starts the
-    watcher again by itself when the folder comes back — a remounted volume
-    included.
+    watcher again by itself when the folder comes back.
+
+    Except by a mount: launchd does not re-check PathState when a volume
+    appears (measured: no start in 20 s after attaching the image holding
+    src). StartOnMount runs the job on every mount, so it starts when its
+    volume returns; for a source that is gone for good that is one log line
+    per mount of anything, and no notification.
     """
     x = xml_escape  # paths and preset names are user data going into XML
     keep_alive = (
@@ -153,6 +158,7 @@ def build_plist(
         if src is not None
         else "<true/>"
     )
+    on_mount = "\n  <key>StartOnMount</key>\n  <true/>" if src is not None else ""
     workdir = root if root is not None else Path.home()
     pythonpath = (
         f"""
@@ -195,7 +201,7 @@ def build_plist(
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  {keep_alive}
+  {keep_alive}{on_mount}
   <key>StandardOutPath</key>
   <string>{x(str(stdio_path))}</string>
   <key>StandardErrorPath</key>

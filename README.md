@@ -656,7 +656,10 @@ reason to tag releases at all.
 Keeps the preset running at login (`KeepAlive`), but only while the preset's
 `src` folder exists (`PathState`). A missing source logs one
 `error reason=src_missing` and then stays quiet. launchd starts the watcher
-again when the folder reappears. After changing a preset's `src`, run
+again when the folder reappears, and on any volume mount (`StartOnMount`,
+since launchd does not re-check `PathState` then), so a source on a drive
+comes back with the drive; a source that is gone for good costs one log line
+per mount. After changing a preset's `src`, run
 `service install` again. Logs default to `~/.local/state/folder-watch/<preset>.log`.
 
 ## Usage

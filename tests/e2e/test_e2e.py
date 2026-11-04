@@ -211,6 +211,48 @@ class TestLaunchd(LaunchdCase):
         self.assertIsNone(wait_until(lambda: self.runs(label) > runs, timeout=13),
                           "restarted after its folder moved away")
 
+    def test_a_service_comes_back_when_its_volume_is_mounted_again(self):
+        """PathState alone left it stopped after the volume came back."""
+        image = self.tmp / "vol.dmg"
+        mount_point = self.tmp / "mnt"
+        mount_point.mkdir()
+        subprocess.run(["hdiutil", "create", "-size", "5m", "-fs", "APFS",
+                        "-volname", "fw-e2e", "-quiet", str(image)], check=True)
+
+        def attach():
+            subprocess.run(["hdiutil", "attach", "-nobrowse", "-quiet",
+                            "-mountpoint", str(mount_point), str(image)], check=True)
+            self.addCleanup(subprocess.run, ["hdiutil", "detach", "-force", "-quiet",
+                                             str(mount_point)], capture_output=True)
+
+        def detach():
+            subprocess.run(["hdiutil", "detach", "-quiet", str(mount_point)],
+                           check=True)
+
+        attach()
+        src = mount_point / "in"
+        src.mkdir()
+        name = f"e2e-mount-{os.getpid()}"
+        save_preset(name, {"action": "copy", "src": str(src), "to": str(self.dest)})
+        self.addCleanup(remove_preset, name)
+        detach()
+        log = STATE_DIR / f"{name}.log"
+        plist = plistlib.loads(build_plist(
+            label=self.unique_label("mount"), preset=name,
+            python=Path(sys.executable), root=ROOT,
+            log_path=log, stdio_path=stdio_log_path(log),
+            path_env="/usr/bin:/bin:/usr/sbin", src=src,
+        ).encode())
+        plist["ProgramArguments"].append("--no-notify")
+        label = self.load(plist)
+        self.assertTrue(wait_until(lambda: self.job(label).get("last exit code") == "2"),
+                        f"no src_missing exit: {self.job(label)}")
+
+        attach()
+
+        self.assertTrue(wait_until(lambda: self.job(label).get("state") == "running"),
+                        f"not started when its volume came back: {self.job(label)}")
+
     def test_pause_keeps_a_service_stopped_until_resume(self):
         # A fixed name: launchd keeps an enable/disable record per label for
         # good, so a per-run name would add one more on every run.

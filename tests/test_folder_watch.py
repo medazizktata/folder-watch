@@ -2609,8 +2609,10 @@ class TestLaunchAgentPlist(unittest.TestCase):
             src=src,
         )
 
-        keep_alive = plistlib.loads(body.encode())["KeepAlive"]
-        self.assertEqual(keep_alive, {"PathState": {str(src): True}})
+        job = plistlib.loads(body.encode())
+        self.assertEqual(job["KeepAlive"], {"PathState": {str(src): True}})
+        # PathState is not re-checked when a volume mounts; this is what is.
+        self.assertIs(job["StartOnMount"], True)
 
     def test_install_ties_keep_alive_to_the_presets_source(self):
         """build_plist only helps if install_service hands it the source."""
