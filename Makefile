@@ -2,7 +2,7 @@ PY := .venv/bin/python
 VENV := .venv/bin
 
 .DEFAULT_GOAL := check
-.PHONY: check all lint types test smoke cover install-hooks dev clean-cover release version
+.PHONY: check all feature lint types test smoke cover install-hooks dev clean-cover release version
 
 # The gate: deterministic and safe to run on every commit (~30s). Most of it
 # is the crash-recovery suite, which starts real watchers and kills them
@@ -11,6 +11,11 @@ check: lint types test
 
 # Everything, including the FSEvents smoke suite (~45s).
 all: lint types test smoke cover
+
+# Before committing a feature: `all`, plus coverage of the changed files and
+# proof that every new test fails on BASE (default origin/main).
+feature:
+	@./bin/feature-check $(BASE)
 
 lint:
 	@$(VENV)/ruff check .

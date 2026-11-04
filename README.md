@@ -610,6 +610,7 @@ one of them.
 ```bash
 make check    # lint + types + unit tests (~5s) — what the commit hook runs
 make all      # adds the smoke suite and coverage
+make feature  # before committing a feature: see below (BASE=origin/main)
 make dev      # install the dev dependencies
 make install-hooks
 ```
@@ -619,6 +620,17 @@ make install-hooks
 The smoke suite is deliberately outside the commit gate: it spawns real
 watchers and does FSEvents timing, and a gate that is slow or flaky gets
 bypassed with `--no-verify`, at which point it protects nothing.
+
+**Before committing a feature, run `make feature`** (`bin/feature-check`,
+about 2.5 minutes). It runs everything `make all` does with the bytecode cache
+off, reports coverage of the files changed since `BASE`, and then runs every
+test added since `BASE` against `BASE`'s code. Each one must **fail** there,
+because a new test that passes without the change it was written for is not
+testing it. A test in a module that only exists after the change cannot run on
+`BASE` and is listed as unchecked rather than counted. A test that guards
+behaviour the change must keep, and so passes before and after by design, is
+marked `# holds on BASE` on its `def` line. Deliberate breaks of the new code
+are still done by hand, per feature.
 
 GitHub Actions runs the same checks on **macOS runners** across Python 3.10
 and 3.13 — a linux runner would be cheaper and would prove nothing about a

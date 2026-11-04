@@ -1,0 +1,97 @@
+#!/bin/bash
+# The per-feature gate: everything `make all` runs, plus proof that the tests
+# added since BASE actually test something.
+#
+#   bin/feature-check [BASE]        (default BASE: origin/main)
+#
+# 1. lint and types
+# 2. the unit suite and the FSEvents smoke suite, with no bytecode cache: a
+#    restored file can otherwise keep running stale bytecode compiled in the
+#    same second, which once made a passing test fail with correct source
+# 3. coverage of the files changed since BASE
+# 4. red before green: every test added since BASE is run against BASE's code
+#    and must fail there. A new test that passes without the change it was
+#    written for is not testing that change.
+set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+BASE="${1:-origin/main}"
+VENV="$ROOT/.venv/bin"
+git rev-parse --verify -q "$BASE^{commit}" >/dev/null || { echo "unknown base: $BASE" >&2; exit 2; }
+
+step() { printf '\n== %s\n' "$*"; }
+
+step "lint";  "$VENV/ruff" check .
+step "types"; "$VENV/mypy" folder_watch --ignore-missing-imports
+step "unit tests"
+"$VENV/python" -B -m unittest discover -s tests 2>&1 | tail -3
+step "smoke tests (real watchers, FSEvents)"
+./bin/test-addons
+
+step "coverage of files changed since $BASE"
+changed=()
+while IFS= read -r f; do changed+=("$f"); done < <(
+  git diff --name-only "$BASE" -- 'folder_watch/*.py' 'folder_watch/**/*.py' | sort -u
+)
+if ((${#changed[@]})); then
+  "$VENV/coverage" run --source=folder_watch -m unittest discover -s tests >/dev/null 2>&1
+  includes=$(IFS=,; echo "${changed[*]}")
+  "$VENV/coverage" report --include="$includes"
+else
+  echo "no package files changed"
+fi
+
+step "red before green: new tests against $BASE's code"
+# "module:test_name" for every test added since BASE. Each runs inside its own
+# module only: discovery fails the whole run when any other test module cannot
+# import on BASE, which would make every new test look red.
+names=()
+while IFS= read -r n; do names+=("$n"); done < <(
+  git diff "$BASE" -- 'tests/test_*.py' | awk '
+    /^\+\+\+ b\// { f = $2; sub(/^b\/tests\//, "", f); sub(/\.py$/, "", f) }
+    # "# holds on BASE" on the def line marks a deliberate guard of behaviour
+    # the change must keep, which passes before and after by design.
+    /^\+ *def test_/ && !/# holds on BASE/ {
+      t = $0; sub(/^\+ *def /, "", t); sub(/\(.*/, "", t); print f ":" t
+    }
+  ' | sort -u
+)
+if ((${#names[@]} == 0)); then
+  echo "no new tests since $BASE"
+  exit 0
+fi
+old="$(mktemp -d)/base"
+git worktree add -q --detach "$old" "$BASE"
+trap 'git -C "$ROOT" worktree remove --force "$old"' EXIT
+# BASE's package, today's tests.
+cp -R tests/. "$old/tests/"
+passed=(); red=(); unrun=()
+for n in "${names[@]}"; do
+  # PYTHONPATH pins BASE's package: the venv holds an editable install of
+  # this checkout, which would otherwise be what the old tests import.
+  out=$(cd "$old/tests" && PYTHONPATH="$old" "$VENV/python" -B -m unittest -k "${n#*:}" "${n%%:*}" 2>&1) \
+    && rc=0 || rc=$?
+  ran=$(sed -n 's/^Ran \([0-9]*\) test.*/\1/p' <<<"$out" | tail -1)
+  # Nothing ran is not red: a test in a module that only exists after the
+  # change cannot even be loaded on BASE, so it proves nothing either way.
+  # An unimportable module still "runs" one failing placeholder test.
+  if [[ -z "$ran" || "$ran" == 0 ]] || grep -q "_FailedTest" <<<"$out"; then
+    unrun+=("$n")
+  elif ((rc == 0)); then
+    passed+=("$n")
+  else
+    red+=("$n")
+  fi
+done
+echo "${#names[@]} new test(s): ${#red[@]} fail on $BASE as they should"
+if ((${#unrun[@]})); then
+  echo "${#unrun[@]} cannot run on $BASE (their module or import is new), so unchecked here:"
+  printf '  %s\n' "${unrun[@]}"
+fi
+if ((${#passed[@]})); then
+  echo "PASS ON THE OLD CODE (they do not test the change):"
+  printf '  %s\n' "${passed[@]}"
+  exit 1
+fi

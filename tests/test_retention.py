@@ -317,7 +317,7 @@ class TestLogFile(unittest.TestCase):
         self.assertEqual(self.emitted(log_file=f, tty=False), "")
         self.assertIn("probe n=1", f.read_text())
 
-    def test_a_terminal_and_runs_without_a_log_still_print(self):
+    def test_a_terminal_and_runs_without_a_log_still_print(self):  # holds on BASE
         self.assertIn("probe", self.emitted(log_file=self.tmp / "w.log", tty=True))
         self.assertIn("probe", self.emitted(log_file=None, tty=False))
 

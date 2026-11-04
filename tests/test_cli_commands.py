@@ -268,7 +268,7 @@ class TestPresetResolution(CliCase):
         # Compared with before, not with none: the directory is shared scratch.
         self.assertEqual(set(self.presets_path.parent.glob("presets-*.json.tmp")), temps)
 
-    def test_an_empty_presets_file_still_takes_a_save(self):
+    def test_an_empty_presets_file_still_takes_a_save(self):  # holds on BASE
         self.presets_path.parent.mkdir(parents=True, exist_ok=True)
         self.presets_path.write_text("")
 
