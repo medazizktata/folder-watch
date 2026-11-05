@@ -5,6 +5,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A dry run from the Actions tab or `gh workflow run release.yml`: every
+  # step but the publish, so the pipeline can be checked without a release.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -54,8 +57,13 @@ jobs:
       # mode a release process exists to prevent.
       - name: Tag matches the packaged version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           pkg=$(.venv/bin/python -c "from folder_watch._version import __version__; print(__version__)")
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "dry run on $GITHUB_REF_NAME: no tag to check; version $pkg"
+            echo "version=$pkg" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          tag="${GITHUB_REF_NAME#v}"
           if [ "$tag" != "$pkg" ]; then
             echo "tag v$tag does not match __version__ $pkg" >&2
             exit 1
@@ -117,7 +125,12 @@ jobs:
           echo "releasing the build from $passed"
           echo "dist=legs/dist-$passed" >> "$GITHUB_ENV"
 
+      - name: Dry run - what would be published
+        if: github.ref_type != 'tag'
+        run: ls -l "$dist"; head -5 "$dist/release-notes.md"
+
       - uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
         with:
           body_path: ${{ env.dist }}/release-notes.md
           files: |
