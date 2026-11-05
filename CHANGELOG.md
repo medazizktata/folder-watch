@@ -28,6 +28,11 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **An empty `dashboard.key` let anyone in.** The key file read as empty
+  (created but never written, say) matched a request with no cookie at all.
+  A key shorter than 16 characters is now replaced with a new one, the key is
+  synced to disk before it is linked into place, and an empty cookie never
+  matches. A non-ASCII `?key=` is refused instead of crashing the request.
 - A `--dry-run` wrote the volume note retention keeps; it now writes nothing.
 
 ## [0.3.1] - 2026-11-05

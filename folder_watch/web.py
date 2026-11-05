@@ -41,25 +41,44 @@ COOKIE = "fw_key"
 COOKIE_DAYS = 365
 
 
+MIN_KEY_LENGTH = 16
+
+
 def dashboard_key() -> str:
     """The secret that admits a browser, created on first use. Shared by every
     dashboard you start, including the one at login, so a link opened once
     keeps working across restarts; another account cannot read the file."""
     with contextlib.suppress(FileNotFoundError):
         key = KEY_FILE.read_text().strip()
-        if key:
+        if len(key) >= MIN_KEY_LENGTH:
             return key
+    # Missing, or empty or cut short (a crash mid-write): an empty key would
+    # match a request with no cookie at all, so make a real one.
     KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=KEY_FILE.parent, prefix=".dashboard-key-")
     try:
         with os.fdopen(fd, "w") as f:  # mkstemp: 0600
             f.write(secrets.token_urlsafe(24))
-        # Two dashboards starting at once: the first key written is the key.
-        with contextlib.suppress(FileExistsError):
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            # Two dashboards starting at once: the first key written is the key.
             os.link(tmp, KEY_FILE)
+        except FileExistsError:
+            if len(KEY_FILE.read_text().strip()) < MIN_KEY_LENGTH:
+                os.replace(tmp, KEY_FILE)
     finally:
-        os.unlink(tmp)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
     return KEY_FILE.read_text().strip()
+
+
+def key_matches(given: str) -> bool:
+    """Never true for an empty `given`; bytes, so a non-ASCII guess is a
+    refusal rather than a TypeError that drops the connection."""
+    return bool(given) and secrets.compare_digest(
+        given.encode(), dashboard_key().encode()
+    )
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -267,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
         except CookieError:
             return False
         sent = jar[COOKIE].value if COOKIE in jar else ""
-        return secrets.compare_digest(sent, dashboard_key())
+        return key_matches(sent)
 
     def _origin_ok(self) -> bool:
         # Browsers always send Origin on a POST; a script that has the key
@@ -281,7 +300,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path == "/" and "key" in parse_qs(url.query):
             given = parse_qs(url.query)["key"][0]
-            if not secrets.compare_digest(given, dashboard_key()):
+            if not key_matches(given):
                 return self._send(403, LOCKED.encode(), "text/html; charset=utf-8")
             cookie = (f"{COOKIE}={given}; Path=/; HttpOnly; SameSite=Strict; "
                       f"Max-Age={COOKIE_DAYS * 86400}")

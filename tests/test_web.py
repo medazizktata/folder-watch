@@ -139,16 +139,39 @@ class TestKey(WebCase):
     def test_two_dashboards_starting_at_once_agree_on_the_key(self):
         """The one that writes first wins; the other must not replace it, or
         the link the first one opened stops working."""
+        first, second = "f" * 32, "s" * 32  # real keys are 32 characters
+
         def another_dashboard_wins(_n):
-            web.KEY_FILE.write_text("first")
-            return "second"
+            web.KEY_FILE.write_text(first)
+            return second
 
         with mock.patch.object(web.secrets, "token_urlsafe",
                                side_effect=another_dashboard_wins):
-            self.assertEqual(web.dashboard_key(), "first")
-        self.assertEqual(web.KEY_FILE.read_text(), "first")
+            self.assertEqual(web.dashboard_key(), first)
+        self.assertEqual(web.KEY_FILE.read_text(), first)
         self.assertEqual(sorted(p.name for p in self.tmp.iterdir()
                                 if p.name.startswith(".dashboard-key")), [])
+
+    def test_an_empty_or_short_key_file_is_replaced_not_trusted(self):
+        """An empty key matched a request with no cookie: no login at all."""
+        for leftover in ("", "short"):
+            with self.subTest(leftover=leftover):
+                web.KEY_FILE.write_text(leftover)
+                self.assertEqual(self.request("GET", "/api/rows", key=None)[0], 403)
+                self.assertEqual(self.request("GET", "/api/rows", key="")[0], 403)
+                key = web.dashboard_key()
+                self.assertGreaterEqual(len(key), web.MIN_KEY_LENGTH)
+                self.assertEqual(web.KEY_FILE.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(self.request("GET", "/api/rows")[0], 200)
+
+    def test_an_empty_cookie_never_matches_even_an_empty_key(self):
+        """The second guard, should the key ever come back empty again."""
+        with mock.patch.object(web, "dashboard_key", return_value=""):
+            self.assertFalse(web.key_matches(""))
+
+    def test_a_non_ascii_key_is_a_refusal_not_a_crash(self):
+        self.assertEqual(self.request("GET", "/?key=%C3%A9", key=None)[0], 403)
+        self.assertEqual(self.request("GET", "/api/rows", key="é")[0], 403)
 
     def test_the_page_cannot_be_framed(self):
         self.request("GET", "/")
