@@ -42,8 +42,14 @@ PRESET_KEYS = frozenset(
         # exactly the ones you want to hear, and they are started from a
         # preset with no other flags.
         "sound", "sound_name", "verify", "webhook", "reveal", "follow_moves",
+        # action=route: [{"ext": [...], "action": "copy", "to": ...}, ...]
+        "rules",
     }
 )
+
+# Keys with no flag on purpose: too structured for one, set in the preset
+# (`presets edit NAME rules='[...]'`).
+PRESET_ONLY = frozenset({"rules"})
 
 # Per-invocation by nature: persisting them would mean a preset that always
 # runs once, or always previews, or never writes its log where you asked.
@@ -380,7 +386,7 @@ _PATH_KEYS = frozenset({"src", "to", "convx_bin"})
 
 
 _CHOICES = {
-    "action": ("copy", "unzip", "exec", "convx"),
+    "action": ("copy", "unzip", "exec", "convx", "route"),
     "mode": ("named", "same", "to"),
     "backend": ("event", "poll"),
 }
@@ -443,6 +449,8 @@ def preset_problems(cfg: dict[str, Any]) -> list[str]:
     action = cfg.get("action", "copy")
     if not cfg.get("src"):
         problems.append("no src")
+    if action == "route":
+        problems += _rule_problems(cfg)
     if action == "copy" and not cfg.get("to"):
         problems.append("copy requires 'to'")
     if action == "unzip" and cfg.get("mode") == "to" and not cfg.get("to"):
@@ -453,6 +461,42 @@ def preset_problems(cfg: dict[str, Any]) -> list[str]:
             and dest_inside_src(cfg["src"], cfg["to"]):
         problems.append("'to' is inside 'src' and recursive is on, so every copy "
                         "would be copied again")
+    return problems
+
+
+# What a rule may set for its own files; the rest comes from the preset.
+RULE_KEYS = frozenset({
+    "ext", "action", "to", "mode", "cmd", "exec_timeout",
+    "no_clobber", "create_dest", "verify",
+})
+
+
+def _rule_problems(cfg: dict[str, Any]) -> list[str]:
+    """Each rule is checked as the preset it amounts to for its own files, so
+    every check above (a copy needs 'to', a destination inside a recursive
+    source) applies to it unchanged."""
+    rules = cfg.get("rules")
+    if not isinstance(rules, list) or not rules:
+        return ["route needs 'rules': a list of {ext, action, ...}"]
+    base = {k: v for k, v in cfg.items() if k not in ("rules", "action", "ext")}
+    problems = []
+    for n, rule in enumerate(rules, 1):
+        if not isinstance(rule, dict):
+            problems.append(f"rule {n} is not an object")
+            continue
+        unknown = sorted(set(rule) - RULE_KEYS)
+        if unknown:
+            problems.append(f"rule {n}: unknown key(s) {', '.join(unknown)}")
+        if rule.get("action") not in ("copy", "unzip", "exec"):
+            problems.append(f"rule {n}: action must be copy, unzip or exec, "
+                            f"not {rule.get('action')!r}")
+            continue
+        problems += [f"rule {n}: {p}" for p in preset_problems({**base, **rule})]
+    catch_all = [n for n, r in enumerate(rules, 1)
+                 if isinstance(r, dict) and r.get("ext") == []]
+    if catch_all and catch_all[0] != len(rules):
+        problems.append(f"rule {catch_all[0]} matches every file, so the rules after "
+                        "it are never reached; move it last")
     return problems
 
 
@@ -472,6 +516,12 @@ def parse_setting(key: str, raw: str) -> Any:
         return int(raw)
     if key in _FLOAT_KEYS:
         return float(raw)
+    if key == "rules":
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"rules takes JSON, as in rules='[{{\"ext\": [\"zip\"], "
+                             f"\"action\": \"unzip\"}}]' ({e})") from None
     if key == "ext":
         return [e.strip().lstrip(".").lower() for e in raw.split(",") if e.strip()]
     if key in _PATH_KEYS:

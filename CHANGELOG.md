@@ -15,6 +15,21 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Added
+
+- **`route`: one folder, a different action per kind of file.** A preset's
+  `rules` send zips to unzip, videos to a Drive folder and the rest elsewhere,
+  first match wins. Each rule is validated as a preset of its own.
+- **Dashboard: Test button** — a dry run of a preset against its folder now,
+  showing what it would do, changing nothing.
+- **Dashboard: History** — files done and failed per preset per day, 30 days.
+- CI and releases run on Apple-silicon and Intel macOS runners; a release no
+  longer waits on one pool that has no machine free.
+
+### Fixed
+
+- A `--dry-run` wrote the volume note retention keeps; it now writes nothing.
+
 ## [0.3.1] - 2026-11-05
 
 ### Fixed

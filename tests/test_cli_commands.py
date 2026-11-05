@@ -741,6 +741,97 @@ class TestPresetValidation(CliCase):
         self.assertEqual(_CHOICES["backend"], parser["backend"])
 
 
+class TestRoute(CliCase):
+    """One folder, a different action per kind of file."""
+
+    def rules(self, *rules):
+        self.write_presets(job={"action": "route", "src": str(self.src),
+                                "rules": list(rules)})
+
+    def test_each_file_goes_to_the_first_rule_that_matches_it(self):
+        import zipfile
+
+        self.rules({"ext": ["zip"], "action": "unzip", "mode": "named"},
+                   {"ext": ["mp4", "mov"], "action": "copy", "to": str(self.dest)})
+        self.make_file("clip.mp4")
+        with zipfile.ZipFile(self.src / "pack.zip", "w") as z:
+            z.writestr("a.txt", "hello")
+        self.make_file("notes.txt", size=10)
+
+        rc, out, err = self.run_cli("--preset", "job", "--once", "--no-notify")
+
+        self.assertEqual(rc, 0, err)
+        # Only what some rule takes is watched at all, so a .txt never even
+        # reaches the done-store, and a rule added later still sees it.
+        self.assertIn("ext=\"['mov', 'mp4', 'zip']\"", out + err)
+        self.assertTrue((self.dest / "clip.mp4").is_file())
+        self.assertEqual((self.src / "pack" / "a.txt").read_text(), "hello")
+        self.assertFalse((self.src / "pack.zip").exists())
+        self.assertTrue((self.src / "notes.txt").is_file(), "no rule takes .txt")
+        self.assertFalse((self.dest / "notes.txt").exists())
+
+    def test_a_catch_all_rule_takes_the_rest(self):
+        other = self.tmp / "other"
+        other.mkdir()
+        self.rules({"ext": ["mp4"], "action": "copy", "to": str(self.dest)},
+                   {"ext": [], "action": "copy", "to": str(other)})
+        self.make_file("clip.mp4")
+        self.make_file("notes.txt", size=10)
+
+        rc, _out, err = self.run_cli("--preset", "job", "--once", "--no-notify")
+
+        self.assertEqual(rc, 0, err)
+        self.assertTrue((self.dest / "clip.mp4").is_file())
+        self.assertFalse((other / "clip.mp4").exists(), "the first match decides")
+        self.assertTrue((other / "notes.txt").is_file())
+
+    def test_rules_are_checked_like_presets(self):
+        from folder_watch.presets import preset_problems
+
+        base = {"action": "route", "src": str(self.src)}
+        inside = self.src / "done"
+        for rules, expected in (
+            (None, "route needs 'rules'"),
+            ([], "route needs 'rules'"),
+            ([{"ext": ["mp4"], "action": "copy"}], "rule 1: copy requires 'to'"),
+            ([{"ext": ["mp4"], "action": "convx"}], "rule 1: action must be"),
+            ([{"ext": ["mp4"], "action": "copy", "to": "/x", "sound": True}],
+             "rule 1: unknown key(s) sound"),
+            ([{"ext": [], "action": "copy", "to": "/x"},
+              {"ext": ["mp4"], "action": "copy", "to": "/y"}], "move it last"),
+            ([{"ext": ["mp4"], "action": "copy", "to": str(inside)}],
+             None),
+        ):
+            with self.subTest(rules=rules):
+                cfg = {**base, **({"rules": rules} if rules is not None else {})}
+                problems = preset_problems(cfg)
+                if expected is None:
+                    self.assertEqual(problems, [])
+                else:
+                    self.assertTrue(any(expected in p for p in problems), problems)
+        recursive = {**base, "recursive": True,
+                     "rules": [{"ext": ["mp4"], "action": "copy", "to": str(inside)}]}
+        self.assertTrue(any("inside 'src'" in p for p in preset_problems(recursive)))
+
+    def test_rules_can_be_set_with_presets_edit(self):
+        self.write_presets(job={"action": "copy", "src": str(self.src),
+                                "to": str(self.dest)})
+        rules = '[{"ext": ["zip"], "action": "unzip"}]'
+
+        rc, _out, err = self.run_cli("presets", "edit", "job", "action=route",
+                                     f"rules={rules}")
+
+        self.assertEqual(rc, 0, err)
+        cfg = json.loads(self.presets_path.read_text())["job"]
+        self.assertEqual(cfg["rules"], [{"ext": ["zip"], "action": "unzip"}])
+        self.assertEqual(self.run_cli("presets", "edit", "job", "rules=[oops")[0], 2)
+
+    def test_route_without_a_preset_says_where_rules_come_from(self):
+        rc, _out, err = self.run_cli("route", str(self.src), "--once", "--no-notify")
+        self.assertEqual(rc, 2)
+        self.assertIn("rules from a preset", err)
+
+
 class TestReveal(CliCase):
     """--reveal opens Finder on each result by itself, notification or not."""
 

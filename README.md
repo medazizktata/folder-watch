@@ -41,11 +41,34 @@ tool** that does its own watching. See [Wrapping another tool](#wrapping-another
 | `copy` | Atomic copy → `--to DIR` (retry on OSError); never deletes source; macOS notif. Mirrors subdirectories under `--recursive` | `--ext mp4 --min-bytes 1000000` |
 | `unzip` | Extract `.zip`; delete zip only after **every** member is verified present. `--no-clobber` refuses an archive that would overwrite; macOS notif | `--ext zip --min-bytes 1` |
 | `exec` | Run any command per finished file; exit code decides done/retry/fail | `--ext * --min-bytes 1` |
+| `route` | A different action per kind of file in one folder, from a preset's `rules` | the rules' extensions |
 
 `copy` and `unzip` notify on success and failure with a **Show in folder**
 button, off with `--no-notify`. A failed extract says the archive was kept — a
 folder where nothing happened and one where something went wrong look identical
 otherwise.
+
+### One folder, several actions (`route`)
+
+A `route` preset gives each kind of file its own action. Rules are tried in
+order and the first whose `ext` matches decides; `"ext": []` matches every
+file, so it goes last. A file no rule takes is not watched at all, so a rule
+added later still sees it.
+
+```json
+"inbox": {"action": "route", "src": "~/Inbox", "rules": [
+  {"ext": ["zip"], "action": "unzip", "mode": "named"},
+  {"ext": ["mov", "mp4"], "action": "copy", "to": "~/Drive/Video"},
+  {"ext": [], "action": "copy", "to": "~/Archive"}
+]}
+```
+
+A rule may set `to`, `mode`, `cmd`, `exec_timeout`, `no_clobber`,
+`create_dest` and `verify` for its own files; everything else (`stable`,
+`recursive`, `sound`, …) comes from the preset. Each rule is checked as the
+preset it amounts to, so a copy rule without `to`, or one whose destination
+sits inside a recursive source, is refused when saved. Set them with
+`folder-watch presets edit inbox rules='[...]'`.
 
 ### Notification sound
 
@@ -559,7 +582,11 @@ Above the table, **Run doctor** shows `doctor`'s findings inline (without its
 launchd folder probe, which takes seconds), and **Clean up…** shows what the
 weekly prune would remove as a dry run, with an **Apply** button that is the
 only thing that removes anything. Each row with a log has a **Log** toggle for
-its last 20 lines. `--install` runs the dashboard at login on a fixed port with
+its last 20 lines, and a **Test** button: a `--once --dry-run` run of that
+preset against its folder as it is now, listing what it would copy, extract or
+run, with nothing written. **History** charts each preset's files done and
+failed per day over the last 30 days, from the audit trail (open it directly
+at `/#history`). `--install` runs the dashboard at login on a fixed port with
 `--strict-port`: if something else holds the port it fails instead of moving
 to a random one, and launchd retries every five minutes rather than in a loop.
 
@@ -891,9 +918,12 @@ to the new heading with today's date, commits and tags — and stops.
 machine. `git tag -d v0.5.0 && git reset --soft HEAD~1` undoes the lot.
 
 Once the tag lands, `.github/workflows/release.yml` re-runs the full gate at
-that commit, checks the tag against `__version__`, builds the sdist and wheel,
-and opens a GitHub Release using that version's changelog section as the notes.
-A release is never published from a build that did not pass.
+that commit on two runner pools, Apple silicon and Intel, checks the tag
+against `__version__`, builds the sdist and wheel, and opens a GitHub Release
+using that version's changelog section as the notes. A leg that never gets a
+machine (0.3.0 waited hours for one) is skipped; a leg that runs and fails
+stops the release. A release is never published from a build that did not
+pass.
 
 The first tag is a bootstrap — `bin/release` bumps, and 0.1.0 is already the
 version in the tree:

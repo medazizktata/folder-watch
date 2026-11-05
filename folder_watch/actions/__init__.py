@@ -4,6 +4,7 @@ from __future__ import annotations
 from folder_watch.actions.base import Action
 from folder_watch.actions.copy import CopyAction
 from folder_watch.actions.exec_cmd import ExecAction
+from folder_watch.actions.route import RouteAction
 from folder_watch.actions.unzip import UnzipAction
 
 ACTIONS: dict[str, type[Action]] = {
@@ -13,7 +14,8 @@ ACTIONS: dict[str, type[Action]] = {
 }
 # convx is here but not in ACTIONS: it wraps another tool rather than running
 # inside the settle loop, so the CLI dispatches it before an Action is built.
-ACTION_NAMES = ("copy", "unzip", "exec", "convx")
+# route is neither: it is built from a preset's rules, one action per rule.
+ACTION_NAMES = ("copy", "unzip", "exec", "convx", "route")
 
 __all__ = [
     "ACTIONS",
@@ -21,5 +23,6 @@ __all__ = [
     "Action",
     "CopyAction",
     "ExecAction",
+    "RouteAction",
     "UnzipAction",
 ]

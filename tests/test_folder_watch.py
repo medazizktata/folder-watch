@@ -1940,10 +1940,11 @@ class TestPresetCoverage(unittest.TestCase):
     def test_no_stale_entries(self):
         """A key nothing can set is dead weight that still silences a warning."""
         from folder_watch.cli import build_parser
-        from folder_watch.presets import NOT_PERSISTED, PRESET_KEYS
+        from folder_watch.presets import NOT_PERSISTED, PRESET_KEYS, PRESET_ONLY
 
         dests = {a.dest for a in build_parser()._actions if a.option_strings}
         dests |= {"action", "src"}  # positionals
+        dests |= PRESET_ONLY
         both = (("PRESET_KEYS", PRESET_KEYS), ("NOT_PERSISTED", NOT_PERSISTED))
         for name, keys in both:
             stale = sorted(keys - dests)

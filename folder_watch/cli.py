@@ -11,7 +11,7 @@ from typing import Any
 
 from folder_watch import dashboard, digest, doctor, web
 from folder_watch._version import __version__
-from folder_watch.actions import ACTION_NAMES, ACTIONS
+from folder_watch.actions import ACTION_NAMES, ACTIONS, RouteAction
 from folder_watch.actions.base import Action
 from folder_watch.actions.convx import build_convx_watch_cmd, run_convx_watch
 from folder_watch.actions.copy import CopyAction
@@ -591,6 +591,20 @@ def build_action(
     name: str, args: argparse.Namespace, *, src_root: Path | None = None
 ) -> Action:
     dry = getattr(args, "dry_run", False)
+    if name == "route":
+        rules = getattr(args, "rules", None)
+        if not rules:
+            raise SystemExit("error: route takes its rules from a preset (--preset NAME)")
+        built = []
+        for rule in rules:
+            # The preset's settings, with what this rule sets on top.
+            per_rule = argparse.Namespace(**vars(args))
+            for key, value in rule.items():
+                if key not in ("ext", "action"):
+                    setattr(per_rule, key, value)
+            built.append((list(rule.get("ext", [])),
+                          build_action(rule["action"], per_rule, src_root=src_root)))
+        return RouteAction(built)
     if name == "copy":
         if not args.to:
             raise SystemExit("error: copy requires --to DEST")
@@ -1143,6 +1157,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
             "(in-place convert; ConvX owns FSEvents)"
         )
         print("         --format EXT and/or --convx-preset; --ext → --filter")
+        print("route — per-file rules from a preset: first rule whose ext matches")
+        print("         decides (copy, unzip or exec); other files are left alone")
         print("service install|uninstall|status --preset NAME  — LaunchAgent")
         print("status  [--preset NAME]  — running watchers (pidfile + log tail)")
         print("backend — copy/unzip only: event (default) | poll")
@@ -1305,6 +1321,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
                 setattr(args, key, True)
         if "--retry-hours" not in passed and cfg.get("retry_hours") is not None:
             args.retry_hours = float(cfg["retry_hours"])
+        if cfg.get("rules") is not None:
+            args.rules = cfg["rules"]
 
     if not action_name or src is None:
         build_parser().print_help()
@@ -1434,11 +1452,20 @@ def _dispatch(argv: list[str] | None = None) -> int:
         finally:
             clear_pidfile(watch_name)
 
-    action_cls = ACTIONS[action_name]
+    if action_name == "route":
+        # The watcher picks up what some rule wants: the union of their exts,
+        # or everything when one rule takes every file.
+        rule_exts = [r.get("ext", []) for r in getattr(args, "rules", None) or []]
+        default_ext = "*" if any(not e for e in rule_exts) else ",".join(
+            sorted({e for exts in rule_exts for e in exts}))
+        default_min_bytes = 1
+    else:
+        default_ext = ACTIONS[action_name].default_ext
+        default_min_bytes = ACTIONS[action_name].default_min_bytes
     if exts_raw is None:
-        exts_raw = action_cls.default_ext
+        exts_raw = default_ext
     if min_bytes is None:
-        min_bytes = action_cls.default_min_bytes
+        min_bytes = default_min_bytes
 
     if args.save_preset:
         cfg = {

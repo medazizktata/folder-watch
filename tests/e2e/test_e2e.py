@@ -122,6 +122,24 @@ class TestWatcher(WatcherCase):
         edits = [e for e in entries if e["kind"] == "preset_saved" and not e["created"]]
         self.assertEqual(edits[-1]["changes"], {"stable": [None, 4]})
 
+    def test_a_route_preset_sends_each_kind_of_file_its_own_way(self):
+        name = f"e2e-route-{os.getpid()}"
+        save_preset(name, {"action": "route", "src": str(self.src), "rules": [
+            {"ext": ["zip"], "action": "unzip", "mode": "named"},
+            {"ext": ["mp4"], "action": "copy", "to": str(self.dest)},
+        ]})
+        self.addCleanup(remove_preset, name)
+        self.start("--preset", name)
+
+        self.drop_zip("pack.zip", {"a.txt": b"hello"})
+        self.drop("clip.mp4")
+
+        self.wait_for("extracted", name="pack.zip")
+        self.wait_for("copied", name="clip.mp4")
+        self.assertEqual((self.src / "pack" / "a.txt").read_bytes(), b"hello")
+        self.assertTrue((self.dest / "clip.mp4").is_file())
+        self.assertFalse((self.dest / "pack.zip").exists(), "a zip was copied too")
+
     def test_a_renamed_source_stops_the_watcher_with_its_new_path(self):
         """Watching for a name that will not come back used to wait forever."""
         self.start("copy", str(self.src), "--to", str(self.dest))
