@@ -28,6 +28,11 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A webhook URL sat in a world-readable `presets.json`.** The file keeps
+  the mode you gave it, but once a preset holds a webhook it is written
+  readable by you only.
+- **A route rule without `ext` took every file**, hiding the rules after
+  it. Each rule must now say `ext`, with `[]` for every file.
 - **A service restarted every 10 seconds while its volume was ejected.** With
   the job loaded while the volume was mounted, launchd kept treating the
   ejected source as present, so a watcher that exited for it (after a

@@ -318,8 +318,13 @@ def _write_presets(path: Path, presets: dict[str, Any]) -> None:
             f.write(json.dumps(presets, indent=2) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        if path.exists():
-            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        # Keep the file's mode (mkstemp's 0600 for a new one), but never let
+        # others read a webhook URL: the token is part of it.
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+        if any(isinstance(cfg, dict) and cfg.get(key)
+               for cfg in presets.values() for key in SECRET_KEYS):
+            mode &= 0o700
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -487,6 +492,9 @@ def _rule_problems(cfg: dict[str, Any]) -> list[str]:
         unknown = sorted(set(rule) - RULE_KEYS)
         if unknown:
             problems.append(f"rule {n}: unknown key(s) {', '.join(unknown)}")
+        if "ext" not in rule:
+            # Left out, it matched every file and hid the rules after it.
+            problems.append(f"rule {n} needs 'ext' (use [] to take every file)")
         if rule.get("action") not in ("copy", "unzip", "exec"):
             problems.append(f"rule {n}: action must be copy, unzip or exec, "
                             f"not {rule.get('action')!r}")

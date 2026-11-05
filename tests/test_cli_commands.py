@@ -661,6 +661,20 @@ class TestWebhookDrain(CliCase):
         flush.assert_called_once()
 
 
+class TestPresetsFileMode(CliCase):
+    def test_a_webhook_makes_the_file_private_and_otherwise_its_mode_is_kept(self):
+        self.write_presets(job={"action": "copy", "src": str(self.src),
+                                "to": str(self.dest)})
+        self.presets_path.chmod(0o644)
+        self.run_cli("presets", "edit", "job", "stable=4")
+        self.assertEqual(self.presets_path.stat().st_mode & 0o777, 0o644,
+                         "no secret in it: the mode you chose stays")
+
+        self.run_cli("presets", "edit", "job",
+                      "webhook=https://hooks.slack.com/services/T/B/secret")
+        self.assertEqual(self.presets_path.stat().st_mode & 0o777, 0o600)
+
+
 class TestPresetValidation(CliCase):
     """Values a watcher would misread are refused before they are stored,
     installed or run, wherever they come from."""
@@ -904,6 +918,8 @@ class TestRoute(CliCase):
              "rule 1: unknown key(s) sound"),
             ([{"ext": [], "action": "copy", "to": "/x"},
               {"ext": ["mp4"], "action": "copy", "to": "/y"}], "move it last"),
+            ([{"action": "copy", "to": "/x"},
+              {"ext": ["zip"], "action": "unzip"}], "rule 1 needs 'ext'"),
             ([{"ext": ["mp4"], "action": "copy", "to": str(inside)}],
              None),
         ):
