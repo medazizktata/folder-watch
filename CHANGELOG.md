@@ -15,6 +15,24 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A source on a volume mounted outside `/Volumes` counted as deleted once
+  ejected**, so `prune` would eventually offer to remove its preset. The
+  watcher and each `prune` now note the mount a source sits on while it
+  exists; a source last seen on a volume that is no longer mounted is not
+  counted. Checked with a disk image that `hdiutil` mounted on a folder of
+  its own and removed on eject.
+- **The dashboard could hang at start on a machine with slow DNS**: Python's
+  HTTP server looked up the host's full name, which nothing used. Seen on CI
+  runners.
+
+### Testing
+
+- `make feature` red-checks new e2e tests too, against `BASE`'s code.
+- A crash-recovery test that misses its kill now says whether the copy
+  finished first or never started.
+
 ## [0.3.0] - 2026-11-04
 
 ### Fixed

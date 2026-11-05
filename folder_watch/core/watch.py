@@ -16,7 +16,7 @@ from typing import Any
 from folder_watch.actions.base import Action
 from folder_watch.core.util import is_open, should_watch_name
 from folder_watch.presets import PresetsUnreadable, load_raw_preset, save_preset
-from folder_watch.support import audit
+from folder_watch.support import audit, retention
 from folder_watch.support.launchd import service_label
 from folder_watch.support.log import emit, emit_debug, is_verbose
 from folder_watch.support.notify import ask, notify
@@ -1290,6 +1290,9 @@ def run_watch(
     if not src_dir.is_dir():
         emit("error", reason="src_missing", src=src_dir)
         return 2
+    if preset:
+        # While it can be seen: once gone, an ejected volume looks deleted.
+        retention.remember_volume(preset, src_dir)
     src_fd: int | None = None
 
     emit(

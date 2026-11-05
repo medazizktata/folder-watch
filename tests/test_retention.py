@@ -75,6 +75,37 @@ class TestReview(RetentionCase):
         shutil.rmtree(self.src)
         self.assertGreater(self.since(), time.time() - 60, "the old clock survived")
 
+    def test_a_source_last_seen_on_an_ejected_volume_never_counts(self):
+        """Mounted outside /Volumes, an ejected volume looks deleted; the mount
+        the source was last seen on, no longer mounted, says otherwise."""
+        self.assertIsNone(self.since())  # seen: its mount is noted
+        seen = retention._read_json(retention.VOLUMES)
+        self.assertTrue(os.path.ismount(seen[self.name]))
+        # As if it had lived on a volume mounted at a folder that is now gone.
+        seen[self.name] = str(self.tmp / "mnt")
+        retention._write_json(retention.VOLUMES, seen)
+        self.src.rename(self.tmp / "elsewhere")
+
+        self.assertIsNone(self.since())
+
+    def test_a_source_gone_from_a_volume_still_mounted_counts(self):  # holds on BASE
+        self.assertIsNone(self.since())
+        self.src.rename(self.tmp / "elsewhere")
+
+        self.assertIsNotNone(self.since())
+
+    def test_a_watcher_notes_its_volume_and_forget_drops_it(self):
+        (self.src / "a.mp4").write_bytes(b"x" * 2_000_000)
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            cli.main(["--preset", self.name, "--once", "--no-notify"])
+
+        mount = retention._read_json(retention.VOLUMES)[self.name]
+        self.assertTrue(os.path.ismount(mount))
+        self.assertTrue(str(self.src).startswith(mount.rstrip("/") + "/"))
+        retention.forget(self.name)
+        self.assertNotIn(self.name, retention._read_json(retention.VOLUMES))
+
     def test_an_unmounted_volume_never_counts(self):
         """Waiting is right for a drive that is not plugged in."""
         save_preset(

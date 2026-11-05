@@ -12,41 +12,83 @@ import json
 import os
 import tempfile
 import time
+from pathlib import Path
+from typing import Any
 
 from folder_watch.presets import load_presets, preset_status
 from folder_watch.support.paths import STATE_DIR
 
 RETENTION_DAYS = 30
 RECORD = STATE_DIR / "dead-presets.json"
+# Which mount each preset's source was last seen on. Once the folder is gone
+# nothing on disk tells an ejected volume from a deleted folder (hdiutil even
+# takes away a mount point it made), so it is remembered while it can be seen.
+VOLUMES = STATE_DIR / "preset-volumes.json"
 
 
-def _dead(cfg: dict) -> bool:
+def _dead(name: str, cfg: dict) -> bool:
     # Only a source deleted or renamed in place. An unmounted volume is "warn";
     # a bad destination or config is something to fix, not to collect.
     level, note = preset_status(cfg)
-    return level == "error" and note.startswith("source missing")
+    if not (level == "error" and note.startswith("source missing")):
+        if level == "ok":
+            remember_volume(name, Path(str(cfg["src"])).expanduser())
+        return False
+    seen_on = _read_json(VOLUMES).get(name)
+    # Last seen on a volume that is not mounted now: ejected, not deleted.
+    return seen_on is None or os.path.ismount(seen_on)
+
+
+def _mount_point(path: Path) -> Path:
+    for candidate in (path, *path.parents):
+        if os.path.ismount(candidate):
+            return candidate
+    return Path("/")
+
+
+def remember_volume(preset: str, src: Path) -> None:
+    """Note the mount `src` sits on, while it exists. Never raises.
+
+    shortcut: read-modify-write without a lock; two watchers starting at once
+    can drop one note, which only means that preset is judged as before
+    (missing = deleted) until it is seen again."""
+    try:
+        mount = str(_mount_point(src.resolve()))
+        record = _read_json(VOLUMES)
+        if record.get(preset) != mount:
+            record[preset] = mount
+            _write_json(VOLUMES, record)
+    except OSError:
+        pass
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # ".json.tmp", so a crash mid-write leaves debris prune already knows.
+    fd, tmp = tempfile.mkstemp(
+        prefix=f"{path.stem}-", suffix=".json.tmp", dir=str(path.parent)
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, path)
 
 
 def _load() -> dict[str, float]:
-    try:
-        data = json.loads(RECORD.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+    data = _read_json(RECORD)
     return {k: float(v) for k, v in data.items() if isinstance(v, (int, float))}
 
 
 def _save(record: dict[str, float]) -> None:
-    RECORD.parent.mkdir(parents=True, exist_ok=True)
-    # ".json.tmp", so a crash mid-write leaves debris prune already knows.
-    fd, tmp = tempfile.mkstemp(
-        prefix="dead-presets-", suffix=".json.tmp", dir=str(RECORD.parent)
-    )
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2, sort_keys=True)
-        f.write("\n")
-    os.replace(tmp, RECORD)
+    _write_json(RECORD, record)
 
 
 def review(now: float | None = None) -> list[tuple[str, float]]:
@@ -58,7 +100,7 @@ def review(now: float | None = None) -> list[tuple[str, float]]:
     dead = {
         name: record.get(name, now)
         for name, cfg in load_presets().items()
-        if _dead(cfg)
+        if _dead(name, cfg)
     }
     if dead != record:
         _save(dead)
@@ -73,3 +115,6 @@ def forget(name: str) -> None:
     record = _load()
     if record.pop(name, None) is not None:
         _save(record)
+    volumes = _read_json(VOLUMES)
+    if volumes.pop(name, None) is not None:
+        _write_json(VOLUMES, volumes)
