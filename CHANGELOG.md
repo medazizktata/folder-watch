@@ -15,6 +15,8 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-05
+
 ### Fixed
 
 - **A source on a volume mounted outside `/Volumes` counted as deleted once
@@ -478,7 +480,8 @@ which is why the first entry covers so much ground.
   pre-commit hook; GitHub Actions runs the same on macOS across Python 3.10
   and 3.13.
 
-[Unreleased]: https://github.com/medazizktata/folder-watch/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/medazizktata/folder-watch/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/medazizktata/folder-watch/releases/tag/v0.3.1
 [0.3.0]: https://github.com/medazizktata/folder-watch/releases/tag/v0.3.0
 [0.2.2]: https://github.com/medazizktata/folder-watch/releases/tag/v0.2.2
 [0.2.1]: https://github.com/medazizktata/folder-watch/releases/tag/v0.2.1
