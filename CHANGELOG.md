@@ -38,7 +38,10 @@ which is why the first entry covers so much ground.
   A key shorter than 16 characters is now replaced with a new one, the key is
   synced to disk before it is linked into place, and an empty cookie never
   matches. A non-ASCII `?key=` is refused instead of crashing the request.
-- A `--dry-run` wrote the volume note retention keeps; it now writes nothing.
+- **A dry run left traces as if it had run.** A `--dry-run` (and so the
+  dashboard's Test button) recorded its failures in the audit trail, where
+  the History chart counted them, posted them to the webhook, and wrote the
+  volume note retention keeps. It now only logs what it would do.
 
 ## [0.3.1] - 2026-11-05
 

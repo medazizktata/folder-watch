@@ -74,6 +74,17 @@ def set_verbose(on: bool) -> None:
     _VERBOSE = on
 
 
+_DRY_RUN = False
+
+
+def set_dry_run(on: bool) -> None:
+    """A preview: still logged, but never recorded as having happened and
+    never sent anywhere. A dry run's "fail" reached the audit trail, the
+    History chart and the webhook as if a real file had failed."""
+    global _DRY_RUN
+    _DRY_RUN = on
+
+
 def is_verbose() -> bool:
     return _VERBOSE
 
@@ -131,12 +142,15 @@ AUDITED_REASONS = frozenset(
 
 def emit(event: str, **fields: Any) -> None:
     payload = {"event": event, **{k: _jsonable(v) for k, v in fields.items()}}
-    if event in AUDITED:
+    if _DRY_RUN:
+        pass
+    elif event in AUDITED:
         audit.record(event, **fields)
     elif event in ("error", "warn") and fields.get("reason") in AUDITED_REASONS:
         audit.record(str(fields["reason"]), **fields)
-    # Fire-and-forget; returns immediately whether or not anything is listening.
-    webhook.post(event, payload)
+    if not _DRY_RUN:
+        # Fire-and-forget; returns immediately whether or not anything listens.
+        webhook.post(event, payload)
     if _JSON_MODE:
         stamped = {"ts": datetime.now().isoformat(timespec="seconds"), **payload}
         line = json.dumps(stamped, ensure_ascii=False)

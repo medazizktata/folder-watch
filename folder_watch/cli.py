@@ -48,7 +48,13 @@ from folder_watch.support.launchd import (
     stdio_log_path,
     uninstall_service,
 )
-from folder_watch.support.log import emit, set_json_mode, set_verbose, setup_logging
+from folder_watch.support.log import (
+    emit,
+    set_dry_run,
+    set_json_mode,
+    set_verbose,
+    setup_logging,
+)
 from folder_watch.support.notify import (
     DEFAULT_SOUND,
     ask,
@@ -1081,6 +1087,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _dispatch(argv)
     finally:
+        set_dry_run(False)  # in-process callers (tests, the dashboard) go on
         summary = flush_failures()
         if summary is not None:
             summary.join(10)
@@ -1128,6 +1135,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
     setup_logging(level=level, log_file=args.log, json_mode=args.json)
     set_json_mode(args.json)
     set_verbose(args.verbose)
+    set_dry_run(args.dry_run)
     if getattr(args, "webhook", None):
         try:
             configure_webhook(args.webhook)

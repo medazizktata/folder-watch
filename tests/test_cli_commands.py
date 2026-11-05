@@ -741,6 +741,44 @@ class TestPresetValidation(CliCase):
         self.assertEqual(_CHOICES["backend"], parser["backend"])
 
 
+class TestDryRunLeavesNoTrace(CliCase):
+    def test_a_dry_run_failure_is_logged_but_not_recorded_or_sent(self):
+        """The dashboard's Test button is a dry run: its "fail" reached the
+        audit trail, the History chart and the webhook as if real."""
+        from unittest import mock
+
+        from folder_watch.support import audit
+        from folder_watch.support import log as log_mod
+
+        (self.src / "bad.zip").write_bytes(b"not a zip at all")
+        trail = self.tmp / "audit.jsonl"
+        with mock.patch.object(audit, "AUDIT", trail), \
+                mock.patch.object(log_mod.webhook, "post") as post:
+            _rc, out, err = self.run_cli("unzip", str(self.src), "--once",
+                                        "--dry-run", "--no-notify")
+            self.assertIn("bad.zip", out + err, "the dry run did not see the file")
+            self.assertFalse(trail.exists() and trail.read_text(), "audited")
+            post.assert_not_called()
+
+            # The same run for real is recorded and sent: the check can fail.
+            self.run_cli("unzip", str(self.src), "--once", "--no-notify")
+            self.assertIn('"kind": "fail"', trail.read_text())
+            self.assertTrue(post.called)
+
+    def test_a_dry_run_does_not_silence_what_runs_after_it(self):  # holds on BASE
+        """The flag is process-wide: once main() returns, events emitted in
+        the same process must be recorded again."""
+        from unittest import mock
+
+        from folder_watch.support import audit
+        from folder_watch.support.log import emit
+
+        trail = self.tmp / "audit.jsonl"
+        with mock.patch.object(audit, "AUDIT", trail):
+            self.run_cli("unzip", str(self.src), "--once", "--dry-run", "--no-notify")
+            emit("copied", name="after.mp4")
+        self.assertIn("after.mp4", trail.read_text())
+
 class TestRetryWiring(CliCase):
     """The done-store and retry queue are built in one place in the CLI, and
     exec and route were missing from it: tested with the queue passed in by
