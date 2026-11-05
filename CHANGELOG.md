@@ -59,6 +59,13 @@ which is why the first entry covers so much ground.
   A key shorter than 16 characters is now replaced with a new one, the key is
   synced to disk before it is linked into place, and an empty cookie never
   matches. A non-ASCII `?key=` is refused instead of crashing the request.
+- **The dashboard's cookie reached every program on 127.0.0.1.** Browsers
+  send a cookie to every port of a host, so any local program that got your
+  browser to open a page on its own port received the key. The dashboard now
+  lives under a path derived from the key (`http://127.0.0.1:8765/` plus 16
+  characters) and its cookie is scoped to that path. The plain address still
+  takes the `--link` key, or a cookie from before, swaps it for the new one,
+  expires the old one, and sends you on: bookmark the address it lands on.
 - **A dry run left traces as if it had run.** A `--dry-run` (and so the
   dashboard's Test button) recorded its failures in the audit trail, where
   the History chart counted them, posted them to the webhook, and wrote the

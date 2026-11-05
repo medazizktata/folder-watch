@@ -42,8 +42,12 @@ class WebCase(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
-    def request(self, method, path, *, host=None, key="ok", origin=None, body=None):
-        """As the page would send it: with the cookie, unless key is None."""
+    def request(self, method, path, *, host=None, key="ok", origin=None, body=None,
+                root=False):
+        """As the page would send it: with the cookie, unless key is None, to
+        `path` under the dashboard's base path, or as given with root=True."""
+        if not root:
+            path = web.base_path() + path
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         headers = {"Host": host or f"127.0.0.1:{self.port}"}
         if key is not None:
@@ -117,17 +121,49 @@ class TestKey(WebCase):
 
     def test_the_link_trades_the_key_for_a_cookie_once(self):
         key = web.dashboard_key()
-        status, _ = self.request("GET", f"/?key={key}", key=None)
+        status, _ = self.request("GET", f"/?key={key}", key=None, root=True)
         self.assertEqual(status, 303)
-        self.assertEqual(self.headers["Location"], "/")
-        cookie = self.headers["Set-Cookie"]
+        self.assertEqual(self.headers["Location"], web.base_path() + "/")
+        cookie, old = self.headers.get_all("Set-Cookie")
         self.assertIn(f"{web.COOKIE}={key}", cookie)
-        for attribute in ("HttpOnly", "SameSite=Strict", "Path=/"):
+        for attribute in ("HttpOnly", "SameSite=Strict", f"Path={web.base_path()};"):
             self.assertIn(attribute, cookie)
+        self.assertEqual(old, f"{web.COOKIE}=; Path=/; Max-Age=0")
 
-        status, _ = self.request("GET", "/?key=guess", key=None)
+        status, _ = self.request("GET", "/?key=guess", key=None, root=True)
         self.assertEqual(status, 403)
         self.assertIsNone(self.headers["Set-Cookie"])
+
+    def test_the_cookie_is_never_sent_to_another_port(self):
+        """Browsers send a cookie to every port of a host (RFC 6265 8.5), so
+        one scoped to / reached any program listening on 127.0.0.1. Its path
+        is the only thing that keeps it here: one only the key reveals."""
+        prefix = web.base_path()
+        self.assertRegex(prefix, r"^/[0-9a-f]{16}$")
+        self.assertNotIn(web.dashboard_key(), prefix)
+        with mock.patch.object(web, "dashboard_key", return_value="k" * 32):
+            self.assertNotEqual(web.base_path(), prefix)
+        for path in ("/api/rows", "/api/history", "/api/audit"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request("GET", path, root=True)[0], 404)
+        self.assertEqual(self.act_at("/api/pause")[0], 404)
+        # The page's own requests, relative so they resolve under the path.
+        self.assertNotIn('"/api/', web.PAGE)
+
+    def test_a_cookie_from_before_the_move_is_swapped_at_the_plain_address(self):
+        """Bookmarks of the plain address keep working, and the old cookie
+        (Path=/, sent everywhere) is expired on the way."""
+        status, _ = self.request("GET", "/", root=True)
+        self.assertEqual(status, 303)
+        self.assertEqual(self.headers["Location"], web.base_path() + "/")
+        self.assertIn(f"{web.COOKIE}=; Path=/; Max-Age=0",
+                      self.headers.get_all("Set-Cookie"))
+        for key in (None, "guess", ""):
+            with self.subTest(key=key):
+                self.assertEqual(self.request("GET", "/", key=key, root=True)[0], 403)
+
+    def act_at(self, path):
+        return self.request("POST", path, root=True, body={"preset": self.preset})
 
     def test_the_key_is_owner_only_and_the_same_for_every_dashboard(self):
         self.assertFalse(web.KEY_FILE.exists())
@@ -157,8 +193,9 @@ class TestKey(WebCase):
         for leftover in ("", "short"):
             with self.subTest(leftover=leftover):
                 web.KEY_FILE.write_text(leftover)
-                self.assertEqual(self.request("GET", "/api/rows", key=None)[0], 403)
-                self.assertEqual(self.request("GET", "/api/rows", key="")[0], 403)
+                # At the plain address, before anything else reads the key file.
+                self.assertEqual(self.request("GET", "/", key=None, root=True)[0], 403)
+                self.assertEqual(self.request("GET", "/", key="", root=True)[0], 403)
                 key = web.dashboard_key()
                 self.assertGreaterEqual(len(key), web.MIN_KEY_LENGTH)
                 self.assertEqual(web.KEY_FILE.stat().st_mode & 0o777, 0o600)
@@ -170,7 +207,7 @@ class TestKey(WebCase):
             self.assertFalse(web.key_matches(""))
 
     def test_a_non_ascii_key_is_a_refusal_not_a_crash(self):
-        self.assertEqual(self.request("GET", "/?key=%C3%A9", key=None)[0], 403)
+        self.assertEqual(self.request("GET", "/?key=%C3%A9", key=None, root=True)[0], 403)
         self.assertEqual(self.request("GET", "/api/rows", key="é")[0], 403)
 
     def test_the_page_cannot_be_framed(self):
@@ -355,7 +392,7 @@ class TestPreview(WebCase):
     def test_the_page_has_the_button(self):
         _status, page = self.request("GET", "/")
         self.assertIn('"Test"', page)
-        self.assertIn("/api/test", page)
+        self.assertIn('"api/test"', page)
 
 
 class TestHomeRelative(unittest.TestCase):

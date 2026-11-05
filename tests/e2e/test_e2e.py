@@ -210,20 +210,24 @@ class TestDashboardCommand(IsolatedCase):
         from folder_watch.web import dashboard_key
         browser = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(CookieJar()))
-        page = browser.open(f"{base}?key={dashboard_key()}", timeout=10).read().decode()
-        rows = json.loads(browser.open(base + "api/rows", timeout=10).read())
+        opened = browser.open(f"{base}?key={dashboard_key()}", timeout=10)
+        page = opened.read().decode()
+        # The page lives under a secret path, the only one its cookie goes to.
+        home = opened.geturl()
+        self.assertRegex(home, r"^http://127\.0\.0\.1:\d+/[0-9a-f]{16}/$")
+        rows = json.loads(browser.open(home + "api/rows", timeout=10).read())
 
         self.assertIn("<title>folder-watch</title>", page)
         self.assertIn(name, [r["preset"] for r in rows])
 
         # As the Run doctor button sends it.
         request = urllib.request.Request(
-            base + "api/doctor", data=b"{}", method="POST",
+            home + "api/doctor", data=b"{}", method="POST",
             headers={"Content-Type": "application/json", "Origin": base.rstrip("/")},
         )
         findings = json.loads(browser.open(request, timeout=30).read())
         self.assertIn("notifications", {f["section"] for f in findings["findings"]})
-        log = json.loads(browser.open(base + f"api/log?preset={name}", timeout=10).read())
+        log = json.loads(browser.open(home + f"api/log?preset={name}", timeout=10).read())
         self.assertEqual(log["lines"], [])
 
 

@@ -587,7 +587,7 @@ its last 20 lines, and a **Test** button: a `--once --dry-run` run of that
 preset against its folder as it is now, listing what it would copy, extract or
 run, with nothing written. **History** charts each preset's files done and
 failed per day over the last 30 days, from the audit trail (open it directly
-at `/#history`). `--install` runs the dashboard at login on a fixed port with
+by adding `#history` to the dashboard's address). `--install` runs the dashboard at login on a fixed port with
 `--strict-port`: if something else holds the port it fails instead of moving
 to a random one, and launchd retries every five minutes rather than in a loop.
 
@@ -601,8 +601,11 @@ It listens on 127.0.0.1 only, which every account on the Mac and every page
 in your browser can still reach. So nothing is shown without a key, kept in
 `~/.local/state/folder-watch/dashboard.key` where only you can read it.
 `folder-watch dashboard` opens the address with the key; the page swaps it
-for a cookie (HttpOnly, SameSite=Strict, a year) and drops it from the
-address bar, so after that the plain address works in that browser. For the
+for a cookie (HttpOnly, SameSite=Strict, a year) and takes you to the
+dashboard's own address, `http://127.0.0.1:8765/` followed by 16 characters
+derived from the key: bookmark that one. The cookie is sent only to that
+address, because a browser sends a cookie to every port of 127.0.0.1, so one
+for the whole host would reach any program listening on any port. For the
 one started at login, `--install` prints that link once, and `--link` prints
 it again whenever you need it; the dashboard's own log only ever gets the
 plain address. A button press must also come from the dashboard's own page,

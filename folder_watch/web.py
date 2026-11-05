@@ -5,7 +5,9 @@ It listens on 127.0.0.1 only, which every account on the Mac and every page
 in the browser can reach. So nothing is served without a key kept in a file
 only you can read: the link `folder-watch dashboard` opens carries it once,
 the page swaps it for an HttpOnly, SameSite=Strict cookie, and every request
-after that needs the cookie. An action also needs to come from this page's
+after that needs the cookie. The page lives under a path derived from the key,
+and the cookie is scoped to it, since a browser sends a cookie to every port
+of 127.0.0.1. An action also needs to come from this page's
 own origin (another port on localhost counts as the same site to a
 browser), and a request addressed to any host other than this one is
 refused, which stops a rebound domain from posing as localhost.
@@ -13,6 +15,7 @@ refused, which stops a rebound domain from posing as localhost.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -71,6 +74,14 @@ def dashboard_key() -> str:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp)
     return KEY_FILE.read_text().strip()
+
+
+def base_path() -> str:
+    """Where the page and its API live, e.g. /3f9c…: the cookie is scoped to
+    it, so a program on another port of 127.0.0.1 never receives it (cookies
+    ignore ports). A hash of the key, not the key, as it shows in history."""
+    digest = hashlib.sha256(b"folder-watch dashboard path " + dashboard_key().encode())
+    return "/" + digest.hexdigest()[:16]
 
 
 def key_matches(given: str) -> bool:
@@ -294,30 +305,45 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         return origin is None or origin in [f"http://{o}" for o in self._origins()]
 
+    def _enter(self, given: str) -> None:
+        """The plain address: the link's key, or a cookie from before the
+        dashboard moved under base_path(), buys a cookie for that path only."""
+        if not (key_matches(given) if given else self._key_ok()):
+            return self._send(403, LOCKED.encode(), "text/html; charset=utf-8")
+        prefix = base_path()
+        cookie = (f"{COOKIE}={dashboard_key()}; Path={prefix}; HttpOnly; "
+                  f"SameSite=Strict; Max-Age={COOKIE_DAYS * 86400}")
+        self.send_response(303)
+        # Off the address bar and out of the history, now that it is a cookie.
+        self.send_header("Location", prefix + "/")
+        self.send_header("Set-Cookie", cookie)
+        # The old cookie, sent to every port on 127.0.0.1, is dropped.
+        self.send_header("Set-Cookie", f"{COOKIE}=; Path=/; Max-Age=0")
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def do_GET(self) -> None:
         if not self._host_ok():
             return self._json(403, {"error": "wrong host"})
         url = urlsplit(self.path)
-        if url.path == "/" and "key" in parse_qs(url.query):
-            given = parse_qs(url.query)["key"][0]
-            if not key_matches(given):
-                return self._send(403, LOCKED.encode(), "text/html; charset=utf-8")
-            cookie = (f"{COOKIE}={given}; Path=/; HttpOnly; SameSite=Strict; "
-                      f"Max-Age={COOKIE_DAYS * 86400}")
-            # Off the address bar and out of the history, now that it is a cookie.
-            return self._send(303, b"", "text/plain",
-                              {"Location": "/", "Set-Cookie": cookie})
+        if url.path == "/":
+            return self._enter(parse_qs(url.query).get("key", [""])[0])
+        prefix = base_path()
+        if not url.path.startswith(prefix + "/"):
+            return self._json(404, {"error": "not found"})
+        path = url.path.removeprefix(prefix)
         if not self._key_ok():
-            if url.path == "/":
+            if path == "/":
                 return self._send(403, LOCKED.encode(), "text/html; charset=utf-8")
             return self._json(403, {"error": "no key: run folder-watch dashboard --link"})
-        if url.path == "/":
+        if path == "/":
             return self._send(200, page().encode(), "text/html; charset=utf-8")
-        if url.path == "/api/rows":
+        if path == "/api/rows":
             return self._json(200, dashboard.entries())
-        if url.path == "/api/history":
+        if path == "/api/history":
             return self._json(200, history())
-        if url.path == "/api/audit":
+        if path == "/api/audit":
             try:
                 since = audit.parse_since(parse_qs(url.query).get("since", ["7d"])[0])
             except ValueError as e:
@@ -327,7 +353,7 @@ class Handler(BaseHTTPRequestHandler):
                 {**e, "details": dashboard.home_relative(audit.describe(e))}
                 for e in reversed(entries)
             ])
-        if url.path == "/api/log":
+        if path == "/api/log":
             preset = parse_qs(url.query).get("preset", [""])[0]
             try:
                 return self._json(200, {"lines": log_tail(preset)})
@@ -342,7 +368,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"error": "no key: run folder-watch dashboard --link"})
         if not self._origin_ok():
             return self._json(403, {"error": "not from this dashboard's page"})
-        action = self.path.removeprefix("/api/")
+        prefix = base_path() + "/api/"
+        if not self.path.startswith(prefix):
+            return self._json(404, {"error": "not found"})
+        action = self.path.removeprefix(prefix)
         # One request per thread, so this attributes just this request.
         audit.set_trigger("dashboard")
         try:
@@ -376,7 +405,7 @@ LOCKED = """<!doctype html>
 <meta charset="utf-8"><title>folder-watch</title>
 <p>This dashboard needs its key. In Terminal, run
 <code>folder-watch dashboard --link</code> and open the link it prints, once;
-after that this browser can use the plain address.</p>
+then bookmark the address it takes you to.</p>
 """
 
 
@@ -497,7 +526,7 @@ const serviceDot = (s) => s === "running" ? "ok" : s === "paused" ? "idle"
 async function act(action, preset, extra) {
   const toast = document.getElementById("toast");
   try {
-    const r = await fetch("/api/" + action, {
+    const r = await fetch("api/" + action, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({preset, ...(extra || {})}),
@@ -570,7 +599,7 @@ function showPanel(title, ...nodes) {
 
 async function runDoctor() {
   showPanel("Doctor", el("div", "note", "Running…"));
-  const [ok, data] = await post("/api/doctor");
+  const [ok, data] = await post("api/doctor");
   if (!ok) return showPanel("Doctor", el("div", "note", data.error));
   const list = el("ul", "findings");
   for (const f of data.findings) {
@@ -585,16 +614,16 @@ async function runDoctor() {
 async function testPreset(preset) {
   const title = "Test " + preset + " — dry run, nothing is changed";
   showPanel(title, el("div", "note", "Running…"));
-  const [ok, data] = await post("/api/test", {preset});
+  const [ok, data] = await post("api/test", {preset});
   showPanel(title, el("pre", "", ok ? data.lines.join("\\n") : data.error));
 }
 
 async function cleanUp() {
-  const [ok, data] = await post("/api/cleanup", {apply: false});
+  const [ok, data] = await post("api/cleanup", {apply: false});
   if (!ok) return showPanel("Clean up", el("div", "note", data.error));
   const apply = el("button", "", "Apply");
   apply.addEventListener("click", async () => {
-    const [done, result] = await post("/api/cleanup", {apply: true});
+    const [done, result] = await post("api/cleanup", {apply: true});
     showPanel("Cleaned up", el("pre", "", done ? result.report : result.error));
     refresh();
   });
@@ -603,7 +632,7 @@ async function cleanUp() {
 
 async function showLog(e, tr) {
   if (editing) return;
-  const r = await fetch("/api/log?preset=" + encodeURIComponent(e.preset));
+  const r = await fetch("api/log?preset=" + encodeURIComponent(e.preset));
   const data = await r.json();
   const row = el("tr", "editor");
   const td = el("td");
@@ -651,7 +680,7 @@ function historyChart(days, row, max) {
 }
 
 async function showHistory() {
-  const r = await fetch("/api/history");
+  const r = await fetch("api/history");
   const data = await r.json();
   if (!r.ok) return showPanel("History", el("div", "note", data.error));
   const names = Object.keys(data.presets).sort();
@@ -682,7 +711,7 @@ async function showHistory() {
 }
 
 async function showAudit() {
-  const r = await fetch("/api/audit?since=7d", {cache: "no-store"});
+  const r = await fetch("api/audit?since=7d", {cache: "no-store"});
   const entries = await r.json();
   if (!r.ok) return showPanel("Audit", el("div", "note", entries.error));
   if (!entries.length) {
@@ -743,7 +772,7 @@ function openEditor(e, tr) {
 async function refresh() {
   if (editing) return;
   try {
-    const r = await fetch("/api/rows", {cache: "no-store"});
+    const r = await fetch("api/rows", {cache: "no-store"});
     const entries = await r.json();
     const body = document.getElementById("rows");
     body.replaceChildren(...(entries.length ? entries.map(row)
