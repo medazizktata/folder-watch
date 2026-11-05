@@ -36,6 +36,11 @@ for _d in (STATE_DIR, CONFIG_DIR, LAUNCH_AGENTS):
 # on PATH, which every watcher a test spawns inherits; `launchctl print`
 # answers as for an unknown job. The e2e suite drives the real ones on purpose
 # and opts out.
+# A prefix set in the shell would rename every label the unit tests expect;
+# the e2e suite sets its own on purpose.
+if not os.environ.get("FOLDER_WATCH_E2E"):
+    os.environ.pop("FOLDER_WATCH_LABEL_PREFIX", None)
+
 STUBS = SCRATCH / "stub-bin"
 if not os.environ.get("FOLDER_WATCH_E2E"):
     STUBS.mkdir(parents=True, exist_ok=True)

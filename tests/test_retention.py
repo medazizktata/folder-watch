@@ -268,6 +268,25 @@ class TestWeeklyAsk(RetentionCase):
         self.assertEqual(job["EnvironmentVariables"]["PYTHONPATH"], "/x")
 
 
+class TestPruneTemps(unittest.TestCase):
+    def test_only_old_save_temps_are_removed(self):
+        """A fresh .json.tmp may be a save in progress, about to be renamed
+        into place by its writer; prune took every one."""
+        fresh = STATE_DIR / f"done-fresh-{os.getpid()}.json.tmp"
+        old = STATE_DIR / f"done-old-{os.getpid()}.json.tmp"
+        for path in (fresh, old):
+            path.write_text("{}")
+            self.addCleanup(path.unlink, True)
+        hours_ago = time.time() - 2 * 3600
+        os.utime(old, (hours_ago, hours_ago))
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli._prune_state(dry=False)
+
+        self.assertTrue(fresh.exists(), "a save in progress was removed")
+        self.assertFalse(old.exists(), "real debris was left")
+
+
 class TestPruneLogs(unittest.TestCase):
     """Logs in the state folder: orphans removed after the retention window,
     oversized launchd .out logs cut to their tail."""

@@ -73,8 +73,10 @@ def service_column(name: str) -> tuple[str, str]:
 
 
 def home_relative(text: str) -> str:
-    home = str(Path.home())
-    return text.replace(home + "/", "~/").replace(home, "~")
+    """Home as ~, only where it is a whole path: /Users/me-archive is not
+    under /Users/me, and as ~-archive it means another user's home."""
+    home = re.escape(str(Path.home()))
+    return re.sub(home + r"(?=/|$|[\s\"'),;])", "~", text)
 
 
 def entries() -> list[dict[str, Any]]:

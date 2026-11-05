@@ -725,7 +725,12 @@ function openEditor(e, tr) {
   const cancel = el("button", "", "Cancel");
   const close = () => { form.remove(); editing = null; refresh(); };
   save.addEventListener("click", () => {
-    act("edit", e.preset, {src: src.value, to: to ? to.value : ""}).then(close);
+    // Only what was changed: re-sending a path re-resolves it (a symlink
+    // became its target) even when you did not touch it.
+    const changed = {};
+    if (src.value !== e.src) changed.src = src.value;
+    if (to && to.value !== e.to) changed.to = to.value;
+    act("edit", e.preset, changed).then(close);
   });
   cancel.addEventListener("click", close);
   td.append(save, cancel);

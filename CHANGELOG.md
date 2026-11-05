@@ -23,11 +23,21 @@ which is why the first entry covers so much ground.
 - **Dashboard: Test button** — a dry run of a preset against its folder now,
   showing what it would do, changing nothing.
 - **Dashboard: History** — files done and failed per preset per day, 30 days.
-- CI and releases run on Apple-silicon and Intel macOS runners; a release no
-  longer waits on one pool that has no machine free.
+- CI and releases run on Apple-silicon and Intel macOS runners. A release
+  still goes out when one pool has no machine free: publish waits until
+  GitHub gives up on that leg (about 15 minutes in practice), then releases
+  the build from the other. `gh workflow run release.yml` is a dry run.
 
 ### Fixed
 
+- **The dashboard's Edit broke on a folder next to your home.**
+  `/Users/me-archive` was shown as `~-archive` (another user's home, to the
+  shell), so saving failed with "Could not determine home directory". Home is
+  now shortened only where it is a whole path, and Edit sends only the fields
+  you changed, so an untouched folder is not re-resolved (a symlink used to
+  be swapped for its target).
+- `prune` removes only save temps older than an hour; a fresh one may be a
+  save about to be renamed into place.
 - **A webhook URL sat in a world-readable `presets.json`.** The file keeps
   the mode you gave it, but once a preset holds a webhook it is written
   readable by you only.

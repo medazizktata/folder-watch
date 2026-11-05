@@ -33,6 +33,7 @@ from folder_watch.presets import (
     save_preset,
 )
 from folder_watch.support import audit
+from folder_watch.support.copy_io import STALE_TMP_AGE
 from folder_watch.support.launchd import (
     DASHBOARD_JOB,
     PRUNE_JOB,
@@ -983,6 +984,13 @@ def _prune_logs(*, dry: bool) -> int:
     return count
 
 
+def _modified_before(path: Path, cutoff: float) -> bool:
+    try:
+        return path.stat().st_mtime < cutoff
+    except OSError:  # renamed into place since the glob: not debris
+        return False
+
+
 def _prune_state(*, dry: bool) -> int:
     """Clear out state that no longer refers to anything real. Returns how
     many items it removed, or would remove."""
@@ -992,7 +1000,12 @@ def _prune_state(*, dry: bool) -> int:
     stores = sorted(
         p for p in STATE_DIR.glob("done-*.json") if not p.name.endswith(".json.tmp")
     )
-    orphan_temps = sorted(STATE_DIR.glob("*.json.tmp"))
+    # Only temps older than an hour: a fresh one may be a save in progress,
+    # about to be renamed into place by the process writing it.
+    cutoff = time.time() - STALE_TMP_AGE
+    orphan_temps = sorted(
+        p for p in STATE_DIR.glob("*.json.tmp") if _modified_before(p, cutoff)
+    )
     dropped_entries = 0
     emptied: list[Path] = []
     for path in stores:

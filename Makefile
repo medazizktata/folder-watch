@@ -4,7 +4,7 @@ VENV := .venv/bin
 .DEFAULT_GOAL := check
 .PHONY: check all feature e2e lint types test smoke cover install-hooks dev clean-cover release version
 
-# The gate: deterministic and safe to run on every commit (~30s). Most of it
+# The gate: deterministic and safe to run on every commit (~3 min). Most of it
 # is the crash-recovery suite, which starts real watchers and kills them
 # mid-write; it earns its seconds — it has caught two bugs nothing else did.
 check: lint types test
@@ -32,7 +32,7 @@ test:
 smoke:
 	@./bin/test-addons
 
-# Real watchers on FSEvents and real launchd jobs (tests/e2e, ~40s). Outside
+# Real watchers on FSEvents and real launchd jobs (tests/e2e, ~2 min). Outside
 # `check` for the same reason as smoke; launchd tests skip with no GUI session.
 e2e:
 	@$(PY) -B -m unittest discover -s tests/e2e

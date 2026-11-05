@@ -358,6 +358,25 @@ class TestPreview(WebCase):
         self.assertIn("/api/test", page)
 
 
+class TestHomeRelative(unittest.TestCase):
+    def test_home_becomes_tilde_only_where_it_is_a_whole_path(self):
+        from folder_watch.dashboard import home_relative
+
+        with mock.patch.object(Path, "home", return_value=Path("/Users/me")):
+            for given, shown in (
+                ("/Users/me/in", "~/in"),
+                ("/Users/me", "~"),
+                ("copy · /Users/me/in → /Users/me/out", "copy · ~/in → ~/out"),
+                ("src missing: /Users/me", "src missing: ~"),
+                # Another folder that only starts with the same letters:
+                # as ~-archive it would name another user's home.
+                ("/Users/me-archive/in", "/Users/me-archive/in"),
+                ("/Users/meg/in", "/Users/meg/in"),
+            ):
+                with self.subTest(given=given):
+                    self.assertEqual(home_relative(given), shown)
+
+
 class TestHistory(WebCase):
     def setUp(self):
         super().setUp()

@@ -38,6 +38,23 @@ class TestNoRealDesktopOrLaunchd(unittest.TestCase):
             self.assertEqual(Path(found).parent, _isolate.STUBS, tool)
 
 
+class TestLabelPrefixIsPinned(unittest.TestCase):
+    def test_a_shell_prefix_does_not_reach_the_unit_suite(self):  # holds on BASE
+        """With FOLDER_WATCH_LABEL_PREFIX exported, ten tests that expect
+        com.folder-watch.* labels failed."""
+        import os
+        import subprocess
+
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import _isolate; from folder_watch.support.launchd import service_label;"
+             "print(service_label('x'))"],
+            cwd=Path(__file__).parent, capture_output=True, text=True, check=False,
+            env={**os.environ, "FOLDER_WATCH_LABEL_PREFIX": "com.example.elsewhere"},
+        )
+        self.assertEqual(r.stdout.strip(), "com.folder-watch.x", r.stderr)
+
+
 class TestNoSleepAsSynchronisation(unittest.TestCase):
     """The smoke suite spawns real watchers, so it is the one place that can
     be tempted to sleep and hope.

@@ -52,8 +52,9 @@ otherwise.
 
 A `route` preset gives each kind of file its own action. Rules are tried in
 order and the first whose `ext` matches decides; `"ext": []` matches every
-file, so it goes last. A file no rule takes is not watched at all, so a rule
-added later still sees it.
+file, so it goes last. A file no rule takes is not watched at all, so it is
+never marked done; once you add a rule for it, a file already in the folder
+is like any file present at startup, and `--catch-up` picks it up.
 
 ```json
 "inbox": {"action": "route", "src": "~/Inbox", "rules": [
@@ -812,9 +813,9 @@ one of them.
 ```
 
 ```bash
-make check    # lint + types + unit tests (~5s) — what the commit hook runs
+make check    # lint + types + unit tests (~3 min) — what the commit hook runs
 make all      # adds the smoke suite, end-to-end tests and coverage
-make e2e      # real watchers and real launchd jobs (tests/e2e, ~40s)
+make e2e      # real watchers and real launchd jobs (tests/e2e, ~2 min)
 make feature  # before committing a feature: see below (BASE=origin/main)
 make dev      # install the dev dependencies
 make install-hooks
@@ -838,14 +839,15 @@ and `doctor` reading a crashing service's exit code. The launchd tests skip
 themselves where there is no GUI login session, as on CI runners.
 
 **Before committing a feature, run `make feature`** (`bin/feature-check`,
-about 2.5 minutes). It runs everything `make all` does with the bytecode cache
+about 8 minutes). It runs everything `make all` does with the bytecode cache
 off, reports coverage of the files changed since `BASE`, and then runs every
 test added since `BASE` against `BASE`'s code. Each one must **fail** there,
 by assertion, because a new test that passes without the change it was written
 for is not testing it. One that only raises there (usually because what it
 calls is new) never reached its assertion, so it is listed to check by hand,
 as is a test in a module that only exists after the change. Coverage of the
-changed files must be at least 80%, and the e2e suite is not red-checked. A test that guards
+changed files, taken together, must be at least 80%; new e2e tests are
+red-checked too, from `BASE`'s own `tests/e2e`. A test that guards
 behaviour the change must keep, and so passes before and after by design, is
 marked `# holds on BASE` on its `def` line. Deliberate breaks of the new code
 are still done by hand, per feature.
