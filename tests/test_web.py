@@ -81,6 +81,15 @@ class TestReading(WebCase):
         self.assertEqual(status, 200)
         self.assertIn(self.preset, [r["preset"] for r in json.loads(rows)])
 
+    def test_starting_does_no_reverse_dns_lookup(self):
+        import socket
+
+        with mock.patch.object(socket, "getfqdn",
+                               side_effect=AssertionError("reverse DNS lookup")):
+            server = web.DashboardServer(0)
+        server.server_close()
+        self.assertEqual(server.server_name, "127.0.0.1")
+
     def test_it_listens_on_this_machine_only(self):
         """Bound to every interface, anyone on the same Wi-Fi could load it."""
         self.assertEqual(self.server.server_address[0], "127.0.0.1")

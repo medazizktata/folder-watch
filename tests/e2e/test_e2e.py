@@ -10,6 +10,7 @@ import os
 import plistlib
 import re
 import select
+import signal
 import subprocess
 import sys
 import unittest
@@ -135,8 +136,8 @@ class TestDashboardCommand(IsolatedCase):
         save_preset(name, {"action": "copy", "src": str(self.src), "to": str(self.dest)})
         self.addCleanup(remove_preset, name)
         proc = subprocess.Popen(
-            [sys.executable, "-B", "-m", "folder_watch", "dashboard", "--no-open",
-             "--port", "0"],
+            [sys.executable, "-B", "-X", "faulthandler", "-m", "folder_watch",
+             "dashboard", "--no-open", "--port", "0"],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env=dict(os.environ),
         )
@@ -147,7 +148,8 @@ class TestDashboardCommand(IsolatedCase):
         # is the first interpreter start, and 20 s was once not enough there.
         ready, _, _ = select.select([proc.stdout], [], [], DEADLINE)
         if not ready:
-            proc.terminate()
+            # faulthandler prints every thread's stack on SIGABRT: where it hung.
+            proc.send_signal(signal.SIGABRT)
             said = proc.communicate(timeout=10)[0]
             self.fail(f"the dashboard printed no address in {DEADLINE:.0f} s; "
                       f"exit {proc.returncode}, output: {said!r}")

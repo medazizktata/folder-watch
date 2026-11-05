@@ -17,6 +17,7 @@ import io
 import json
 import os
 import secrets
+import socketserver
 import subprocess
 import tempfile
 from http.cookies import CookieError, SimpleCookie
@@ -64,6 +65,15 @@ class DashboardServer(ThreadingHTTPServer):
 
     def __init__(self, port: int = 0) -> None:
         super().__init__(("127.0.0.1", port), Handler)
+
+    def server_bind(self) -> None:
+        # HTTPServer's own version also asks for the host's full name, a
+        # reverse DNS lookup that nothing here uses and that can stall on a
+        # machine with slow DNS (suspected on CI, where the dashboard printed
+        # nothing for 30 s).
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
 
     @property
     def url(self) -> str:
