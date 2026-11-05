@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -197,6 +198,28 @@ class DoneStore:
     def __len__(self) -> int:
         return len(self._data)
 
+    def adopt(self, path: Path, old: Path, new: Path) -> int:
+        """Take over the store at `path`, kept while the folder was at `old`,
+        now that it is at `new`: the same files under new paths. Without it a
+        followed folder started from an empty store. Returns entries added."""
+        if path == self.path or not path.is_file():
+            return 0
+        # A path field (src or dest) at or under `old`; size and mtime never
+        # start with "/".
+        under_old = re.compile(rf"(?<=\|){re.escape(str(old))}(?=[/|])")
+        added = 0
+        for key, meta in DoneStore(path)._data.items():
+            moved = under_old.sub(lambda _m: str(new), key)
+            if moved in self._data:
+                continue
+            if isinstance(meta.get("src"), str):
+                meta = {**meta, "src": repath(meta["src"], old, new)}
+            self._data[moved] = meta
+            added += 1
+        if added:
+            self.save()
+        return added
+
     def __bool__(self) -> bool:
         """A store is a store even when empty.
 
@@ -221,6 +244,13 @@ class DoneStore:
         if not self.is_done(key):
             self.mark(key, baseline=True, name=src.name, src=str(src))
         return key
+
+
+def repath(path: str, old: Path, new: Path) -> str:
+    """`path` as it reads once `old` became `new`; one outside it unchanged."""
+    if path == str(old) or path.startswith(f"{old}/"):
+        return f"{new}{path[len(str(old)):]}"
+    return path
 
 
 def file_identity(path: Path) -> tuple[int, int]:

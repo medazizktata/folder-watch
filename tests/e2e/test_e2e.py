@@ -84,18 +84,66 @@ class TestWatcher(WatcherCase):
         self.src.rename(moved)
 
         self.wait_for("src_followed", automatic=True)
-        # The watcher restarts itself, in place, on the new path. Its second
-        # baseline, not its start: a file that lands before that scan is old
-        # news to it, skipped as pending (as on any start).
+        # The watcher restarts itself, in place, on the new path, carrying
+        # over what it knew instead of taking a baseline.
         self.wait_for("start", src=moved)
-        self.assertTrue(wait_until(lambda: len(self.events("baseline")) >= 2),
-                        "the restarted watcher took no baseline")
+        self.wait_for("follow_resumed", src=moved)
         self.src = moved
         self.drop("after-the-move.mp4")
         self.wait_for("copied", name="after-the-move.mp4")
 
         self.assertEqual(load_raw_preset(name)["src"], str(moved))
         self.assertTrue((self.dest / "after-the-move.mp4").is_file())
+
+    def test_a_follow_takes_what_landed_meanwhile_and_redoes_nothing(self):
+        """The restarted watcher started from an empty done-store with a
+        fresh baseline: a file dropped between the move and the restart was
+        old news to it, never copied. Carrying the store over must not make
+        it redo what was copied, or seen as already there, before."""
+        name = f"e2e-follow-gap-{os.getpid()}"
+        (self.src / "already-there.mp4").write_bytes(os.urandom(2_000_000))
+        save_preset(name, {"action": "copy", "src": str(self.src), "to": str(self.dest),
+                           "follow_moves": True})
+        self.addCleanup(remove_preset, name)
+        self.start("--preset", name)
+        self.drop("done-before.mp4")
+        self.wait_for("copied", name="done-before.mp4")
+
+        moved = self.tmp / "renamed"
+        self.src.rename(moved)
+        self.src = moved
+        # Before the watcher notices the move (it checks every 5 s).
+        self.drop("in-the-gap.mp4")
+
+        self.wait_for("follow_resumed", src=moved)
+        self.wait_for("copied", name="in-the-gap.mp4")
+        self.assertIsNone(wait_until(
+            lambda: self.events("copied", name="already-there.mp4")
+            or len(self.events("copied", name="done-before.mp4")) > 1, timeout=3))
+        self.assertFalse((self.dest / "already-there.mp4").exists())
+
+    def test_a_follow_keeps_a_queued_retry(self):
+        """A file waiting for its destination was forgotten when the watcher
+        followed: the restarted one took it for old news."""
+        name = f"e2e-follow-retry-{os.getpid()}"
+        later = self.tmp / "not-yet"
+        save_preset(name, {"action": "copy", "src": str(self.src),
+                           "to": str(later / "out"), "follow_moves": True})
+        self.addCleanup(remove_preset, name)
+        self.start("--preset", name)
+        self.drop("clip.mp4")
+        self.wait_for("retry_scheduled", name="clip.mp4")
+
+        moved = self.tmp / "renamed"
+        self.src.rename(moved)
+        self.wait_for("follow_resumed", src=moved)
+        # Still away when the restarted watcher tries: queued again.
+        self.assertTrue(wait_until(
+            lambda: len(self.events("retry_scheduled", name="clip.mp4")) >= 2),
+            "the restarted watcher did not queue it")
+        later.mkdir()
+
+        self.wait_for("copied", name="clip.mp4", timeout=60)
 
     def test_the_audit_trail_records_a_real_copy_and_an_edit(self):
         name = f"e2e-audit-{os.getpid()}"

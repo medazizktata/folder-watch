@@ -15,6 +15,16 @@ which is why the first entry covers so much ground.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A followed folder lost files.** The watcher that restarted on a moved
+  folder started from an empty done-store (it is named after the folder's
+  path) and took a fresh baseline, so a file dropped between the move and the
+  restart (up to 5 s, the move check's interval) was skipped as already
+  there, and a file waiting to be retried for its destination was dropped. It
+  now takes over the old done-store and scans as after a restore: those files
+  are processed, and nothing handled or already there before is redone.
+
 ## [0.3.2] - 2026-11-05
 
 ### Added

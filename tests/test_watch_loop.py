@@ -1360,6 +1360,56 @@ class TestFollowMovedSource(LoopCase):
         ask.assert_not_called()
         note.assert_called_once()
 
+    # The done-store is named after the folder's path, so the watcher that
+    # followed a move started from nothing and took what landed in the
+    # meantime for old news.
+
+    def test_a_follow_leaves_a_note_the_next_watcher_takes_once(self):
+        self._offer(clicked=True, under_launchd=False)
+
+        self.assertEqual(watch_mod.take_follow_note(self.preset, self.moved), self.src)
+        self.assertIsNone(watch_mod.take_follow_note(self.preset, self.moved))
+
+    def test_a_note_for_another_path_is_dropped_not_used(self):
+        """The preset was pointed elsewhere since: not this folder's history."""
+        self._offer(clicked=True, under_launchd=False)
+
+        self.assertIsNone(watch_mod.take_follow_note(self.preset, self.tmp / "other"))
+        self.assertIsNone(watch_mod.take_follow_note(self.preset, self.moved))
+
+    def test_a_declined_follow_leaves_no_note(self):
+        self._offer(clicked=False, under_launchd=False)
+
+        self.assertIsNone(watch_mod.take_follow_note(self.preset, self.moved))
+
+    def test_the_store_moves_with_the_folder_and_nothing_else_does(self):
+        old, new = self.tmp / "a" / "src", self.tmp / "b" / "in"
+        before = DoneStore(self.tmp / "before.json")
+        key = DoneStore.make_key
+        # unzip "named": the destination is inside the folder too.
+        inside = key("unzip", old / "x.zip", size=1, mtime_ns=2, dest=old / "x",
+                     mode="named")
+        before.mark(inside, src=str(old / "x.zip"))
+        before.mark_baseline_file("unzip", old / "y.zip", size=3, mtime_ns=4,
+                                  mode="named")
+        # A sibling whose name starts with the folder's is not inside it.
+        sibling = key("unzip", self.tmp / "a" / "src2" / "z.zip", size=5, mtime_ns=6)
+        before.mark(sibling)
+        after = DoneStore(self.tmp / "after.json")
+        mine = key("unzip", new / "x.zip", size=1, mtime_ns=2, dest=new / "x",
+                   mode="named")
+        after.mark(mine, src="kept")
+
+        self.assertEqual(after.adopt(before.path, old, new), 2)
+
+        self.assertEqual(after._data[mine]["src"], "kept", "its own entry was replaced")
+        baseline = key("unzip", new / "y.zip", size=3, mtime_ns=4, mode="named")
+        self.assertTrue(after.is_baseline(baseline))
+        self.assertEqual(after._data[baseline]["src"], str(new / "y.zip"))
+        self.assertTrue(after.is_done(sibling))
+        self.assertEqual(DoneStore(after.path)._data.keys(), after._data.keys())
+        self.assertEqual(after.adopt(self.tmp / "missing.json", old, new), 0)
+
 
 class TestEventSourceLoss(LoopCase):
     """FSEvents goes quiet when the directory is deleted or its volume

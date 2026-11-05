@@ -18,7 +18,7 @@ from folder_watch.actions.copy import CopyAction
 from folder_watch.actions.exec_cmd import ExecAction
 from folder_watch.actions.unzip import UnzipAction
 from folder_watch.core.util import parse_exts
-from folder_watch.core.watch import list_pending, run_watch
+from folder_watch.core.watch import list_pending, run_watch, take_follow_note
 from folder_watch.presets import (
     PresetsUnreadable,
     dest_inside_src,
@@ -1575,6 +1575,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
 
     done_store = None
     retries = None
+    resume = False
     # --dry-run is documented as "no writes"; it was still seeding baseline
     # entries into the done-store and writing a pidfile.
     # Every action that runs in the settle loop: exec and route were left out,
@@ -1598,6 +1599,16 @@ def _dispatch(argv: list[str] | None = None) -> int:
                 retry_path_for(action_name, src, to=to_s, mode=mode_s),
                 give_up_after=args.retry_hours * 3600,
             )
+            here = src.expanduser().resolve()
+            was = take_follow_note(args.preset, here) if args.preset else None
+            if was is not None:
+                # The folder moved and this watcher follows it: its done-store
+                # is named after the old path. A queued retry needs no carrying:
+                # not done, so the resumed scan tries it and queues it again.
+                old = DoneStore.path_for(action_name, was, to=to_s, mode=mode_s)
+                emit("follow_resumed", src=here, was=was,
+                     done=done_store.adopt(old, was, here))
+                resume = True
 
     try:
         return run_watch(
@@ -1622,6 +1633,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
             exclusive=args.exclusive,
             dry_run=args.dry_run,
             notify_moves=getattr(args, "notify", True),
+            resume=resume,
         )
     except KeyboardInterrupt:
         print("\nstopped", flush=True)

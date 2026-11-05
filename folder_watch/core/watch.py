@@ -1,7 +1,9 @@
 """Watch loops: settle, poll, event."""
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import json
 import os
 import signal
 import subprocess
@@ -157,6 +159,28 @@ def wait_for_src(src_dir: Path) -> float:
     return waited
 
 
+def _follow_note(preset: str) -> Path:
+    from folder_watch.support.paths import STATE_DIR
+
+    return STATE_DIR / f"followed-{preset}.json"
+
+
+def take_follow_note(preset: str, src_dir: Path) -> Path | None:
+    """Where this preset's folder was before a follow that restarted the
+    watcher on `src_dir`, once: the note is gone after this. None when
+    there was no follow, or it was to some other path since."""
+    note = _follow_note(preset)
+    try:
+        data = json.loads(note.read_text())
+    except (OSError, ValueError):
+        return None
+    with contextlib.suppress(FileNotFoundError):
+        note.unlink()
+    if not isinstance(data, dict) or data.get("to") != str(src_dir):
+        return None
+    return Path(str(data.get("from")))
+
+
 def offer_to_follow(
     preset: str | None, src_dir: Path, moved: Path, *, notify_user: bool = True
 ) -> None:
@@ -199,6 +223,11 @@ def offer_to_follow(
             notify("folder-watch: preset not updated", str(e)).join(10)
             return
         emit("src_followed", preset=preset, src=moved, automatic=auto)
+    # For the watcher that starts on `moved`, however it starts (exec here or
+    # launchd after a reinstall): what it knew lives under the old path.
+    with contextlib.suppress(OSError):
+        note = {"from": str(src_dir), "to": str(moved)}
+        _follow_note(preset).write_text(json.dumps(note))
     if auto and notify_user:
         notify("folder-watch followed a move", f"{preset} now watches {moved}").join(10)
     module = [sys.executable, "-m", "folder_watch"]
@@ -865,9 +894,11 @@ def run_watch_poll(
     recursive: bool = False,
     retries: RetryQueue | None = None,
     src_fd: int | None = None,
+    resume: bool = False,
 ) -> int:
     state: dict[str, dict] = {}
-    if not catch_up:
+    # resume: no baseline; the first scan does what the done-store lacks.
+    if not catch_up and not resume:
         seed_baseline(
             src_dir,
             action,
@@ -933,6 +964,7 @@ def run_watch_event(
     done_store: DoneStore | None = None,
     retries: RetryQueue | None = None,
     src_fd: int | None = None,
+    resume: bool = False,
 ) -> int:
     try:
         from watchdog.events import FileSystemEventHandler
@@ -954,6 +986,7 @@ def run_watch_event(
             catch_up=catch_up,
             done_store=done_store,
             recursive=recursive,
+            resume=resume,
         )
 
     state: dict[str, dict] = {}
@@ -1089,7 +1122,9 @@ def run_watch_event(
 
     handler = Handler()
     observer = _start_observer()
-    _prime()
+    # After a follow, as after a restore: the done-store came along, so what
+    # landed in the meantime is work, not the baseline.
+    _prime(restoring=resume)
 
     debounce_s = max(debounce_ms, 50) / 1000.0
     last_src_check = time.monotonic()
@@ -1286,6 +1321,7 @@ def run_watch(
     exclusive: bool = False,
     dry_run: bool = False,
     notify_moves: bool = True,
+    resume: bool = False,
 ) -> int:
     src_dir = src_dir.expanduser().resolve()
     name = watch_name or preset or f"{action.name}-{src_dir.name}"
@@ -1418,6 +1454,7 @@ def run_watch(
                 stable_needed=stable_needed,
                 min_bytes=min_bytes,
                 catch_up=catch_up,
+                resume=resume,
                 done_store=done_store,
                 recursive=recursive,
                 retries=retries,
@@ -1434,6 +1471,7 @@ def run_watch(
                 settle_interval=settle_interval,
                 recursive=recursive,
                 catch_up=catch_up,
+                resume=resume,
                 done_store=done_store,
                 retries=retries,
                 src_fd=src_fd,

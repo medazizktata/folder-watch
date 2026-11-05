@@ -455,6 +455,12 @@ A restore always does a **catch-up** scan, even without `--catch-up`: anything
 that landed while the directory was gone is work that hasn't been done. The
 done-store makes that safe — files already handled are skipped, not redone.
 
+The same goes for a follow, either way it happens: the restarted watcher takes
+over the done-store kept under the old path (logged as `follow_resumed`) and
+scans instead of taking a fresh baseline, so a file dropped in the seconds
+between the move and the restart, or one waiting for its destination, is
+still processed, while what was handled or already there before is not.
+
 **Destination missing** — `--to` is *not* created recursively. On an unmounted
 drive `mkdir -p` happily rebuilds the whole path as ordinary local folders, so
 files land on the boot disk, get reported `copied`, and get recorded as done —
