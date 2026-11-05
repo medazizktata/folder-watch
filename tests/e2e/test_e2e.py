@@ -83,8 +83,12 @@ class TestWatcher(WatcherCase):
         self.src.rename(moved)
 
         self.wait_for("src_followed", automatic=True)
-        # The watcher restarts itself, in place, on the new path.
+        # The watcher restarts itself, in place, on the new path. Its second
+        # baseline, not its start: a file that lands before that scan is old
+        # news to it, skipped as pending (as on any start).
         self.wait_for("start", src=moved)
+        self.assertTrue(wait_until(lambda: len(self.events("baseline")) >= 2),
+                        "the restarted watcher took no baseline")
         self.src = moved
         self.drop("after-the-move.mp4")
         self.wait_for("copied", name="after-the-move.mp4")
