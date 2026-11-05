@@ -28,6 +28,11 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **`route` and `exec` presets never retried anything.** The done-store and
+  retry queue were only built for copy and unzip, so a route rule's failed
+  copy was dropped, and an `exec` command's exit 75 ("retry later") was
+  logged and then forgotten, though the README promised both. They now get
+  the same done-store and 72-hour retry queue as copy.
 - **An empty `dashboard.key` let anyone in.** The key file read as empty
   (created but never written, say) matched a request with no cookie at all.
   A key shorter than 16 characters is now replaced with a new one, the key is

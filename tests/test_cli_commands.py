@@ -741,6 +741,33 @@ class TestPresetValidation(CliCase):
         self.assertEqual(_CHOICES["backend"], parser["backend"])
 
 
+class TestRetryWiring(CliCase):
+    """The done-store and retry queue are built in one place in the CLI, and
+    exec and route were missing from it: tested with the queue passed in by
+    hand, both looked fine."""
+
+    def test_every_settle_loop_action_gets_a_done_store_and_retry_queue(self):
+        from unittest import mock
+
+        from folder_watch import cli
+
+        self.write_presets(
+            copy={"action": "copy", "src": str(self.src), "to": str(self.dest)},
+            unzip={"action": "unzip", "src": str(self.src)},
+            exec={"action": "exec", "src": str(self.src), "cmd": "/bin/echo {path}"},
+            route={"action": "route", "src": str(self.src), "rules": [
+                {"ext": ["mp4"], "action": "copy", "to": str(self.dest)}]},
+        )
+        for name in ("copy", "unzip", "exec", "route"):
+            with self.subTest(action=name), \
+                    mock.patch.object(cli, "run_watch", return_value=0) as run:
+                rc, _out, err = self.run_cli("--preset", name, "--no-notify")
+                self.assertEqual(rc, 0, err)
+                kwargs = run.call_args.kwargs
+                self.assertIsNotNone(kwargs["done_store"], name)
+                self.assertIsNotNone(kwargs["retries"], name)
+
+
 class TestRoute(CliCase):
     """One folder, a different action per kind of file."""
 

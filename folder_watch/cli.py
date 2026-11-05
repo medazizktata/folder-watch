@@ -1556,7 +1556,13 @@ def _dispatch(argv: list[str] | None = None) -> int:
     retries = None
     # --dry-run is documented as "no writes"; it was still seeding baseline
     # entries into the done-store and writing a pidfile.
-    if not args.no_done_store and not args.dry_run and action_name in ("copy", "unzip"):
+    # Every action that runs in the settle loop: exec and route were left out,
+    # so a failed route copy was dropped and an exec exit 75 never retried.
+    # shortcut: a route's store is not keyed by its rules, so editing a rule's
+    # cmd does not re-process files; reprocess with --catch-up if needed.
+    if not args.no_done_store and not args.dry_run and action_name in (
+        "copy", "unzip", "exec", "route",
+    ):
         # Resolve, so `--to ./dst` and `--to /abs/dst` hash to one store
         # instead of fragmenting the done-state and retry queue in two.
         to_s = str(Path(to).expanduser().resolve()) if to else None

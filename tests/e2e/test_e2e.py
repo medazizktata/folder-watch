@@ -140,6 +140,27 @@ class TestWatcher(WatcherCase):
         self.assertTrue((self.dest / "clip.mp4").is_file())
         self.assertFalse((self.dest / "pack.zip").exists(), "a zip was copied too")
 
+    def test_a_route_retries_a_copy_that_failed(self):
+        """Its rules' failures used to be dropped: no retry queue at all."""
+        name = f"e2e-route-retry-{os.getpid()}"
+        later = self.tmp / "not-yet" / "out"
+        save_preset(name, {"action": "route", "src": str(self.src), "rules": [
+            {"ext": ["mp4"], "action": "copy", "to": str(later)}]})
+        self.addCleanup(remove_preset, name)
+        self.start("--preset", name)
+
+        self.drop("clip.mp4")
+
+        self.wait_for("retry_scheduled", name="clip.mp4")
+
+    def test_an_exec_exit_75_is_queued_for_a_retry(self):
+        self.start("exec", str(self.src), "--cmd", "/bin/sh -c 'exit 75'",
+                   "--stable", "1")
+
+        self.drop("clip.mp4")
+
+        self.wait_for("retry_scheduled", name="clip.mp4")
+
     def test_a_renamed_source_stops_the_watcher_with_its_new_path(self):
         """Watching for a name that will not come back used to wait forever."""
         self.start("copy", str(self.src), "--to", str(self.dest))
