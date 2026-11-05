@@ -51,7 +51,7 @@ step "red before green: new tests against $BASE's code"
 # import on BASE, which would make every new test look red.
 names=()
 while IFS= read -r n; do names+=("$n"); done < <(
-  git diff "$BASE" -- 'tests/test_*.py' | awk '
+  git diff "$BASE" -- 'tests/test_*.py' 'tests/e2e/test_*.py' | awk '
     /^\+\+\+ b\// { f = $2; sub(/^b\/tests\//, "", f); sub(/\.py$/, "", f) }
     # "# holds on BASE" on the def line marks a deliberate guard of behaviour
     # the change must keep, which passes before and after by design.
@@ -76,7 +76,11 @@ for n in "${names[@]}"; do
   # "*.name": with a wildcard -k is an exact fnmatch on the full test id;
   # without one it is a substring, and a longer-named test that failed
   # would count as red for this one.
-  out=$(cd "$old/tests" && PYTHONPATH="$old" "$VENV/python" -B -m unittest -k "*.${n#*:}" "${n%%:*}" 2>&1) \
+  # e2e tests ("e2e/test_x:name") run from their own directory, where their
+  # fixtures put BASE's checkout on sys.path, like the unit tests' PYTHONPATH.
+  mod="${n%%:*}"; dir="$old/tests"
+  if [[ "$mod" == e2e/* ]]; then dir="$old/tests/e2e"; mod="${mod#e2e/}"; fi
+  out=$(cd "$dir" && PYTHONPATH="$old" "$VENV/python" -B -m unittest -k "*.${n#*:}" "$mod" 2>&1) \
     && rc=0 || rc=$?
   ran=$(sed -n 's/^Ran \([0-9]*\) test.*/\1/p' <<<"$out" | tail -1)
   # Nothing ran is not red: a test in a module that only exists after the

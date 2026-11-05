@@ -195,10 +195,11 @@ class LaunchdCase(IsolatedCase):
         launchd job inherits nothing from this process."""
         label = plist["Label"]
         env = dict(plist.get("EnvironmentVariables", {}))
-        from folder_watch.support.paths import OVERRIDES
-
-        for var in OVERRIDES:
-            env[var] = os.environ[var]
+        # From this process, not the package: `make feature` runs these tests
+        # against older code, which may not know every variable.
+        for var, value in os.environ.items():
+            if var.startswith("FOLDER_WATCH_"):
+                env[var] = value
         plist = {**plist, "EnvironmentVariables": env}
         path = self.tmp / f"{label}.plist"
         path.write_bytes(plistlib.dumps(plist))
@@ -209,9 +210,8 @@ class LaunchdCase(IsolatedCase):
         return label
 
     def unique_label(self, what: str) -> str:
-        from folder_watch.support.paths import LABEL_PREFIX
-
-        return f"{LABEL_PREFIX}.{what}-{os.getpid()}-{time.monotonic_ns()}"
+        prefix = os.environ["FOLDER_WATCH_LABEL_PREFIX"]
+        return f"{prefix}.{what}-{os.getpid()}-{time.monotonic_ns()}"
 
     def job(self, label: str) -> dict[str, str]:
         """launchctl's view of a job: state, runs, last exit code."""

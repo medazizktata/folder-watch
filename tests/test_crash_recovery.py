@@ -60,6 +60,7 @@ class CrashCase(unittest.TestCase):
         self.src.mkdir()
         self.dest.mkdir()
         self.proc: subprocess.Popen | None = None
+        self.missed = ""
         self.assert_isolated()
 
     def assert_isolated(self) -> None:
@@ -105,18 +106,24 @@ class CrashCase(unittest.TestCase):
         """
         assert self.proc is not None
         deadline = time.time() + DEADLINE
+        polls = 0
         while time.time() < deadline:
+            polls += 1
             if condition():
                 self.proc.send_signal(signal.SIGKILL)
                 self.proc.wait(timeout=10)
                 return True
             if self.proc.poll() is not None:
+                # Said in the failure, so a rare miss shows which way it went.
+                self.missed = (f"the child exited {self.proc.returncode} after "
+                               f"{polls} polls without the condition being seen")
                 return False
             # No sleep here, deliberately. This is aiming at the interval
             # between two syscalls, and a 2 ms poll was coarse enough that a
             # fast runner finished the whole copy between checks — the kill
             # never landed mid-flight and four tests failed on CI while passing
             # locally. Spinning is the cost of aiming at a window this narrow.
+        self.missed = f"the condition was not seen in {DEADLINE:.0f} s ({polls} polls)"
         return False
 
     def make_payload(self, name="big.mp4") -> Path:
@@ -159,7 +166,7 @@ class TestKilledMidCopy(CrashCase):
         the name that means "this one is finished"."""
         src = self.make_payload()
 
-        self.assertTrue(self.copy_until_temp_appears(), "never caught it copying")
+        self.assertTrue(self.copy_until_temp_appears(), self.missed)
 
         landed = self.dest / src.name
         self.assertFalse(landed.exists(), "a partial file is sitting at the destination")
@@ -179,7 +186,7 @@ class TestKilledMidCopy(CrashCase):
         what matters is that it is parked under a hidden temp name rather than
         the real one, and that the next copy to this destination clears it."""
         src = self.make_payload()
-        self.assertTrue(self.copy_until_temp_appears())
+        self.assertTrue(self.copy_until_temp_appears(), self.missed)
 
         leftover = self.temps()
         self.assertEqual(len(leftover), 1, "expected exactly one temp to remain")
@@ -206,7 +213,7 @@ class TestKilledMidCopy(CrashCase):
         """The recovery that matters: an interrupted copy is not a lost file,
         it is a file that has not been copied yet."""
         src = self.make_payload()
-        self.assertTrue(self.copy_until_temp_appears())
+        self.assertTrue(self.copy_until_temp_appears(), self.missed)
 
         subprocess.run(
             [sys.executable, "-m", "folder_watch", "copy", str(self.src),
