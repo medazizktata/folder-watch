@@ -270,10 +270,110 @@ class TestExtras(WebCase):
             self.assertEqual(state.call_args.kwargs, {"dry": dry}, extra)
             self.assertEqual(data["applied"], not dry)
 
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_the_page_script_parses(self):  # holds on BASE
+        """An escape that Python, not JavaScript, turned into a real newline
+        once broke the whole script: no rows, no buttons, and every test that
+        only looked for text in the page still passed."""
+        import re
+        import subprocess
+
+        _status, page = self.request("GET", "/")
+        script = self.tmp / "page.js"
+        script.write_text(re.search(r"<script>(.*)</script>", page, re.S).group(1))
+        r = subprocess.run(["node", "--check", str(script)], capture_output=True,
+                           text=True, check=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_the_page_has_the_tools(self):
         _status, page = self.request("GET", "/")
         for label in ("Run doctor", "Clean up", "showLog"):
             self.assertIn(label, page)
+
+
+class TestPreview(WebCase):
+    """The Test button: a real --once --dry-run run, nothing written."""
+
+    def setUp(self):
+        super().setUp()
+        self.src = self.tmp / "in"
+        self.dest = self.tmp / "out"
+        self.src.mkdir()
+        self.dest.mkdir()
+        save_preset(self.preset, {"action": "copy", "src": str(self.src),
+                                  "to": str(self.dest)})
+
+    def test_it_says_what_would_happen_and_does_none_of_it(self):
+        (self.src / "clip.mp4").write_bytes(b"x" * 2_000_000)
+
+        status, data = self.act("test")
+
+        self.assertEqual(status, 200, data)
+        self.assertTrue(any("would copy" in line and "clip.mp4" in line
+                            for line in data["lines"]), data["lines"])
+        self.assertEqual(list(self.dest.iterdir()), [])
+        from folder_watch.support import retention
+
+        self.assertNotIn(self.preset, retention._read_json(retention.VOLUMES),
+                         "a dry run wrote the volume note")
+
+    def test_an_empty_folder_says_so(self):
+        status, data = self.act("test")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(len(data["lines"]), 1)
+        self.assertIn("nothing to do", data["lines"][0])
+
+    def test_unknown_or_convx_presets_are_refused(self):
+        self.assertEqual(self.act("test", preset="no-such-preset")[0], 404)
+        save_preset(self.preset, {"action": "convx", "src": str(self.src),
+                                  "format": "wav"})
+        self.assertEqual(self.act("test")[0], 400)
+
+    def test_the_page_has_the_button(self):
+        _status, page = self.request("GET", "/")
+        self.assertIn('"Test"', page)
+        self.assertIn("/api/test", page)
+
+
+class TestHistory(WebCase):
+    def setUp(self):
+        super().setUp()
+        from folder_watch.support import audit
+
+        self.audit = audit
+        patcher = mock.patch.object(audit, "AUDIT", self.tmp / "audit.jsonl")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, ts, kind, preset):
+        with self.audit.AUDIT.open("a") as f:
+            f.write(json.dumps({"ts": ts, "kind": kind, "preset": preset}) + "\n")
+
+    def test_files_per_preset_per_day(self):
+        from datetime import date
+
+        today = date(2026, 11, 5)
+        for ts, kind in (("2026-11-05T09:00:00", "copied"),
+                         ("2026-11-05T10:00:00", "copied"),
+                         ("2026-11-05T11:00:00", "fail"),
+                         ("2026-11-04T09:00:00", "extracted"),
+                         ("2026-11-03T09:00:00", "give_up"),
+                         ("2026-11-05T12:00:00", "preset_saved"),  # not a file
+                         ("2026-10-01T09:00:00", "copied")):       # too old
+            self.write(ts, kind, "a")
+        self.write("2026-11-05T09:30:00", "ran", "b")
+
+        data = web.history(days=3, today=today)
+
+        self.assertEqual(data["days"], ["2026-11-03", "2026-11-04", "2026-11-05"])
+        self.assertEqual(data["presets"]["a"], {"done": [0, 1, 2], "failed": [1, 0, 1]})
+        self.assertEqual(data["presets"]["b"], {"done": [0, 0, 1], "failed": [0, 0, 0]})
+
+    def test_the_endpoint_needs_the_key_and_serves_30_days(self):
+        self.assertEqual(self.request("GET", "/api/history", key=None)[0], 403)
+        status, payload = self.request("GET", "/api/history")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(json.loads(payload)["days"]), web.HISTORY_DAYS)
 
 
 class TestAuditFromTheDashboard(WebCase):

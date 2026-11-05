@@ -1290,7 +1290,7 @@ def run_watch(
     if not src_dir.is_dir():
         emit("error", reason="src_missing", src=src_dir)
         return 2
-    if preset:
+    if preset and not dry_run:
         # While it can be seen: once gone, an ejected volume looks deleted.
         retention.remember_volume(preset, src_dir)
     src_fd: int | None = None

@@ -19,7 +19,9 @@ import os
 import secrets
 import socketserver
 import subprocess
+import sys
 import tempfile
+from datetime import date, datetime, timedelta
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -140,6 +142,65 @@ def log_tail(preset: str) -> list[str]:
         return []
 
 
+PREVIEW_TIMEOUT = 60.0
+HISTORY_DAYS = 30
+DONE_KINDS = frozenset({"copied", "extracted", "ran"})
+FAILED_KINDS = frozenset({"fail", "give_up"})
+
+
+def history(days: int = HISTORY_DAYS, today: date | None = None) -> dict[str, Any]:
+    """Files done and failed per preset per day, from the audit trail, oldest
+    day first. Days with nothing are zeros, so every row lines up."""
+    first = (today or date.today()) - timedelta(days=days - 1)
+    dates = [(first + timedelta(days=i)).isoformat() for i in range(days)]
+    column = {day: i for i, day in enumerate(dates)}
+    presets: dict[str, dict[str, list[int]]] = {}
+    since = datetime.combine(first, datetime.min.time())
+    for entry in audit.read(since=since, kinds=set(DONE_KINDS | FAILED_KINDS)):
+        i = column.get(str(entry.get("ts", ""))[:10])
+        name = entry.get("preset")
+        if i is None or not name:
+            continue
+        row = presets.setdefault(str(name), {"done": [0] * days, "failed": [0] * days})
+        row["done" if entry["kind"] in DONE_KINDS else "failed"][i] += 1
+    return {"days": dates, "presets": presets}
+
+
+
+def preview(preset: str) -> list[str]:
+    """What the preset would do to its folder right now: a --once --dry-run
+    run in a child process, which copies, extracts, runs and records nothing.
+    One line per file, as the watcher reported it."""
+    cfg = load_presets().get(preset)
+    if cfg is None:
+        raise LookupError(f"no preset {preset!r}")
+    if cfg.get("action") == "convx":
+        # convx watch does the work itself; there is nothing to dry-run here.
+        raise ValueError("a convx preset has no dry run; try it with convx itself")
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "folder_watch", "--preset", preset, "--once",
+             "--dry-run", "--no-notify", "--json"],
+            capture_output=True, text=True, timeout=PREVIEW_TIMEOUT, check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"the dry run took over {PREVIEW_TIMEOUT:.0f} s") from e
+    lines = []
+    for raw in r.stdout.splitlines():
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        kind = str(event.get("event", ""))
+        if kind.startswith("would_") or kind in ("error", "fail"):
+            details = " ".join(
+                f"{k}={v}" for k, v in event.items()
+                if k not in ("event", "ts", "level", "time")
+            )
+            lines.append(dashboard.home_relative(f"{kind.replace('_', ' ')}: {details}"))
+    return lines or ["nothing to do: no file in the folder is ready for it"]
+
+
 def run_doctor() -> list[dict[str, str]]:
     """The doctor's checks without the launchd probe, which takes seconds
     per protected folder and belongs to `folder-watch doctor`."""
@@ -235,6 +296,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page().encode(), "text/html; charset=utf-8")
         if url.path == "/api/rows":
             return self._json(200, dashboard.entries())
+        if url.path == "/api/history":
+            return self._json(200, history())
         if url.path == "/api/audit":
             try:
                 since = audit.parse_since(parse_qs(url.query).get("since", ["7d"])[0])
@@ -270,6 +333,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("expected a JSON object")
             if action == "doctor":
                 return self._json(200, {"findings": run_doctor()})
+            if action == "test":
+                return self._json(200, {"lines": preview(str(body.get("preset", "")))})
             if action == "cleanup":
                 apply = body.get("apply") is True
                 report = run_cleanup(apply=apply)
@@ -306,12 +371,14 @@ PAGE = """<!doctype html>
 :root {
   --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
   --line: #e4e4df; --ok: #2f7d4f; --warn: #a3650c; --bad: #b3261e; --idle: #6b6b66;
+  --chart-done: #8a8a84;
   --button: #efefea; --button-hover: #e4e4de;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #161615; --panel: #1f1f1d; --text: #ecece8; --muted: #9a9a93;
     --line: #2f2f2c; --ok: #6cc28f; --warn: #e0a74a; --bad: #f08a80; --idle: #9a9a93;
+    --chart-done: #6b6b66;
     --button: #2a2a27; --button-hover: #34342f;
   }
 }
@@ -338,6 +405,15 @@ tr:last-child td { border-bottom: 0; }
 .ok { background: var(--ok); } .warn { background: var(--warn); }
 .error { background: var(--bad); } .idle { background: var(--idle); }
 .note { color: var(--muted); font-size: 12px; }
+.history-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px;
+  align-items: end; padding: 8px 0; border-top: 1px solid var(--line); }
+.history-row svg { grid-column: 1 / -1; width: 100%; max-width: 420px; height: 48px; }
+.history-row .bar-done { fill: var(--chart-done); }
+.history-row .bar-failed { fill: var(--bad); }
+.legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted);
+  margin-bottom: 4px; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 6px; vertical-align: -1px; }
 button { font: inherit; font-size: 13px; color: var(--text); background: var(--button);
   border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer;
   margin: 0 6px 6px 0; }
@@ -373,6 +449,7 @@ pre { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     <div class="tools">
       <button id="run-doctor">Run doctor</button>
       <button id="clean-up">Clean up…</button>
+      <button id="show-history">History</button>
       <button id="show-audit">Audit</button>
     </div>
   </header>
@@ -445,7 +522,9 @@ function row(e) {
   }
   const edit = el("button", "", "Edit");
   edit.addEventListener("click", () => openEditor(e, tr));
-  actions.append(edit);
+  const test = el("button", "", "Test");
+  test.addEventListener("click", () => testPreset(e.preset));
+  actions.append(edit, test);
   tr.append(name, health, service, el("td", "", e.exit), el("td", "", e.last),
     el("td", "", e.log_bytes ? size(e.log_bytes) : "-"), actions);
   return tr;
@@ -484,6 +563,13 @@ async function runDoctor() {
   showPanel("Doctor", list);
 }
 
+async function testPreset(preset) {
+  const title = "Test " + preset + " — dry run, nothing is changed";
+  showPanel(title, el("div", "note", "Running…"));
+  const [ok, data] = await post("/api/test", {preset});
+  showPanel(title, el("pre", "", ok ? data.lines.join("\\n") : data.error));
+}
+
 async function cleanUp() {
   const [ok, data] = await post("/api/cleanup", {apply: false});
   if (!ok) return showPanel("Clean up", el("div", "note", data.error));
@@ -512,6 +598,70 @@ async function showLog(e, tr) {
   editing = row;
 }
 
+const SVG = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+}
+
+// One row per preset, the same scale for all: bars are comparable down the
+// panel. Failures sit on top of the done count, after a 2px gap.
+function historyChart(days, row, max) {
+  const w = 14, gap = 4, h = 44;
+  const svg = svgEl("svg", {viewBox: `0 0 ${days.length * w} ${h}`, role: "img",
+                            preserveAspectRatio: "none"});
+  days.forEach((day, i) => {
+    const done = row.done[i], failed = row.failed[i];
+    if (!done && !failed) return;
+    const g = svgEl("g", {});
+    const title = svgEl("title", {});
+    title.textContent = `${day}: ${done} done, ${failed} failed`;
+    g.append(title);
+    const x = i * w + gap / 2, bw = w - gap;
+    const doneH = done ? Math.max(2, done / max * (h - 4)) : 0;
+    const failH = failed ? Math.max(2, failed / max * (h - 4)) : 0;
+    if (done) g.append(svgEl("rect", {class: "bar-done", x, y: h - doneH, width: bw,
+                                      height: doneH, rx: failed ? 0 : 2}));
+    if (failed) g.append(svgEl("rect", {class: "bar-failed", x,
+                                        y: h - doneH - (done ? 2 : 0) - failH,
+                                        width: bw, height: failH, rx: 2}));
+    svg.append(g);
+  });
+  return svg;
+}
+
+async function showHistory() {
+  const r = await fetch("/api/history");
+  const data = await r.json();
+  if (!r.ok) return showPanel("History", el("div", "note", data.error));
+  const names = Object.keys(data.presets).sort();
+  const title = "History — files per day, last " + data.days.length + " days";
+  if (!names.length) return showPanel(title, el("div", "note", "Nothing recorded yet."));
+  const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+  const max = Math.max(1, ...names.flatMap((n) =>
+    data.presets[n].done.map((d, i) => d + data.presets[n].failed[i])));
+  const legend = el("div", "legend");
+  for (const [cls, label] of [["bar-done", "done"], ["bar-failed", "failed"]]) {
+    const item = el("span");
+    const sw = el("span", "swatch");
+    sw.style.background = cls === "bar-done" ? "var(--chart-done)" : "var(--bad)";
+    item.append(sw, label);
+    legend.append(item);
+  }
+  const rows = names.map((n) => {
+    const p = data.presets[n];
+    const box = el("div", "history-row");
+    box.append(el("strong", "", n),
+      el("span", "note", `${sum(p.done)} done, ${sum(p.failed)} failed`),
+      historyChart(data.days, p, max));
+    return box;
+  });
+  const span = el("div", "note", data.days[0] + " to " + data.days[data.days.length - 1]
+    + ", one bar per day; hover a bar for its counts");
+  showPanel(title, legend, span, ...rows);
+}
+
 async function showAudit() {
   const r = await fetch("/api/audit?since=7d", {cache: "no-store"});
   const entries = await r.json();
@@ -531,6 +681,8 @@ async function showAudit() {
 }
 
 document.getElementById("show-audit").addEventListener("click", showAudit);
+document.getElementById("show-history").addEventListener("click", showHistory);
+if (location.hash === "#history") showHistory();  // bookmarkable
 document.getElementById("run-doctor").addEventListener("click", runDoctor);
 document.getElementById("clean-up").addEventListener("click", cleanUp);
 
