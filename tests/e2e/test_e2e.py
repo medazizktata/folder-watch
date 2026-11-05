@@ -425,6 +425,50 @@ class TestLaunchd(LaunchdCase):
         attach()
         self.assertTrue(wait_until(lambda: self.job(label).get("state") == "running"))
 
+    def test_a_service_that_follows_a_move_carries_its_done_store_over(self):
+        """Under launchd a follow reinstalls the service, so the watcher on
+        the new path is a job launchd starts, not this process's exec: it
+        must find the note and take over what the old one knew. (What the
+        resumed scan then does is the same as in TestWatcher; nothing is
+        dropped here, as the new job is not --no-notify.)"""
+        # A fixed name: install leaves an enable record per label for good.
+        name = "e2e-follow-service"
+        save_preset(name, {"action": "copy", "src": str(self.src), "to": str(self.dest),
+                           "follow_moves": True})
+        self.addCleanup(remove_preset, name)
+        log = STATE_DIR / f"{name}.log"
+        self.addCleanup(log.unlink, True)
+        installed = service_plist_path(name)  # in the scratch LaunchAgents
+        self.addCleanup(installed.unlink, True)
+        plist = plistlib.loads(build_plist(
+            label=service_label(name), preset=name,
+            python=Path(sys.executable), root=ROOT,
+            log_path=log, stdio_path=stdio_log_path(log),
+            path_env="/usr/bin:/bin:/usr/sbin", src=self.src,
+        ).encode())
+        plist["ProgramArguments"].append("--no-notify")
+        label = self.load(plist)
+        started = wait_until(lambda: log.is_file() and "baseline" in log.read_text())
+        self.assertTrue(started, f"never started: {self.job(label)}")
+        self.drop("done-before.mp4")
+        self.assertTrue(wait_until(lambda: "done-before.mp4" in self.dest_names()))
+
+        moved = self.tmp / "renamed"
+        self.src.rename(moved)
+
+        resumed = wait_until(lambda: [line for line in log.read_text().splitlines()
+                                      if "follow_resumed" in line])
+        self.assertTrue(resumed, f"no follow_resumed: {self.job(label)}")
+        self.assertIn(f"src={moved} ", resumed[-1])
+        done = re.search(r"\bdone=(\d+)", resumed[-1])
+        self.assertTrue(done and int(done[1]) >= 1, resumed[-1])
+        self.assertEqual(load_raw_preset(name)["src"], str(moved))
+        # Reinstalled by launchd's path, not restarted in place.
+        self.assertIn(str(moved), installed.read_text())
+
+    def dest_names(self) -> set[str]:
+        return {p.name for p in self.dest.iterdir()}
+
     def test_pause_keeps_a_service_stopped_until_resume(self):
         # A fixed name: launchd keeps an enable/disable record per label for
         # good, so a per-run name would add one more on every run.
