@@ -34,9 +34,15 @@ def _dead(name: str, cfg: dict) -> bool:
         if level == "ok":
             remember_volume(name, Path(str(cfg["src"])).expanduser())
         return False
-    seen_on = _read_json(VOLUMES).get(name)
     # Last seen on a volume that is not mounted now: ejected, not deleted.
-    return seen_on is None or os.path.ismount(seen_on)
+    return not volume_ejected(name)
+
+
+def volume_ejected(preset: str) -> bool:
+    """The mount the preset's source was last seen on is not mounted now.
+    False when it was never seen, or seen on one still mounted."""
+    seen_on = _read_json(VOLUMES).get(preset)
+    return bool(seen_on) and not os.path.ismount(str(seen_on))
 
 
 def _mount_point(path: Path) -> Path:

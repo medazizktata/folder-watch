@@ -28,6 +28,12 @@ which is why the first entry covers so much ground.
 
 ### Fixed
 
+- **A service restarted every 10 seconds while its volume was ejected.** With
+  the job loaded while the volume was mounted, launchd kept treating the
+  ejected source as present, so a watcher that exited for it (after a
+  `kickstart -k` or an upgrade) was started again and again. Under launchd,
+  a watcher whose source's volume is ejected now waits for it instead of
+  exiting; a missing folder on a mounted disk still exits once.
 - **`route` and `exec` presets never retried anything.** The done-store and
   retry queue were only built for copy and unzip, so a route rule's failed
   copy was dropped, and an `exec` command's exit 75 ("retry later") was

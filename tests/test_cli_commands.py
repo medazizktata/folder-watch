@@ -779,6 +779,46 @@ class TestDryRunLeavesNoTrace(CliCase):
             emit("copied", name="after.mp4")
         self.assertIn("after.mp4", trail.read_text())
 
+class TestEjectedVolumeAtStart(CliCase):
+    """launchd misses a source that vanished by unmount and restarted a
+    watcher that exited for it every 10 s; under launchd it waits instead."""
+
+    class Waiting(Exception):
+        pass
+
+    def start(self, *, launchd: bool, note: str | None, once: bool = False):
+        from unittest import mock
+
+        from folder_watch.core import watch as watch_mod
+        from folder_watch.support import retention
+        from folder_watch.support.launchd import service_label
+
+        gone = self.tmp / "mnt" / "in"
+        self.write_presets(job={"action": "copy", "src": str(gone), "to": str(self.dest)})
+        retention._write_json(retention.VOLUMES, {"job": note} if note else {})
+        self.addCleanup(retention.forget, "job")
+        env = {"XPC_SERVICE_NAME": service_label("job")} if launchd else {}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(watch_mod, "wait_for_src", side_effect=self.Waiting):
+            if not launchd:
+                os.environ.pop("XPC_SERVICE_NAME", None)
+            argv = ["--preset", "job", "--no-notify", *(["--once"] if once else [])]
+            try:
+                return self.run_cli(*argv)[0]
+            except self.Waiting:
+                return "waits"
+
+    def test_under_launchd_it_waits_for_an_ejected_volume(self):
+        self.assertEqual(self.start(launchd=True, note=str(self.tmp / "mnt")), "waits")
+
+    def test_everywhere_else_a_missing_source_still_exits(self):  # holds on BASE
+        ejected = str(self.tmp / "mnt")
+        self.assertEqual(self.start(launchd=False, note=ejected), 2, "by hand")
+        self.assertEqual(self.start(launchd=True, note="/"), 2, "volume mounted")
+        self.assertEqual(self.start(launchd=True, note=None), 2, "never seen")
+        self.assertEqual(self.start(launchd=True, note=ejected, once=True), 2, "--once")
+
+
 class TestRetryWiring(CliCase):
     """The done-store and retry queue are built in one place in the CLI, and
     exec and route were missing from it: tested with the queue passed in by

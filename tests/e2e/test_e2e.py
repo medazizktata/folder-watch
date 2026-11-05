@@ -306,6 +306,55 @@ class TestLaunchd(LaunchdCase):
         self.assertTrue(wait_until(lambda: self.job(label).get("state") == "running"),
                         f"not started when its volume came back: {self.job(label)}")
 
+    def test_a_volume_ejected_under_a_loaded_service_does_not_make_it_loop(self):
+        """Loaded while mounted, then ejected, then restarted (kickstart -k,
+        as for an upgrade): launchd misses a path that vanished by unmount,
+        and a watcher that exited for it was restarted every 10 s."""
+        image = self.tmp / "vol.dmg"
+        mount_point = self.tmp / "mnt"
+        mount_point.mkdir()
+        subprocess.run(["hdiutil", "create", "-size", "5m", "-fs", "APFS",
+                        "-volname", "fw-e2e-ej", "-quiet", str(image)], check=True)
+
+        def attach():
+            subprocess.run(["hdiutil", "attach", "-nobrowse", "-quiet",
+                            "-mountpoint", str(mount_point), str(image)], check=True)
+
+        self.addCleanup(subprocess.run, ["hdiutil", "detach", "-force", "-quiet",
+                                         str(mount_point)], capture_output=True)
+        attach()
+        src = mount_point / "in"
+        src.mkdir()
+        name = f"e2e-eject-{os.getpid()}"
+        save_preset(name, {"action": "copy", "src": str(src), "to": str(self.dest)})
+        self.addCleanup(remove_preset, name)
+        log = STATE_DIR / f"{name}.log"
+        # The label service install gives it: how the watcher knows launchd
+        # started it (launchd sets XPC_SERVICE_NAME to it).
+        plist = plistlib.loads(build_plist(
+            label=service_label(name), preset=name,
+            python=Path(sys.executable), root=ROOT,
+            log_path=log, stdio_path=stdio_log_path(log),
+            path_env="/usr/bin:/bin:/usr/sbin", src=src,
+        ).encode())
+        plist["ProgramArguments"].append("--no-notify")
+        label = self.load(plist)
+        # "running" comes as the process spawns; the baseline line means the
+        # watcher is up and has noted the volume its source is on.
+        started = wait_until(lambda: log.is_file() and "baseline" in log.read_text())
+        self.assertTrue(started, f"never started: {self.job(label)}")
+
+        subprocess.run(["hdiutil", "detach", "-force", "-quiet", str(mount_point)],
+                       check=True)
+        subprocess.run(["launchctl", "kickstart", "-k", f"{self.domain}/{label}"],
+                       check=True)
+
+        # Longer than launchd's 10 s restart throttle, so a loop would show.
+        self.assertIsNone(wait_until(lambda: self.runs(label) > 3, timeout=25),
+                          f"restarting in a loop: {self.job(label)}")
+        attach()
+        self.assertTrue(wait_until(lambda: self.job(label).get("state") == "running"))
+
     def test_pause_keeps_a_service_stopped_until_resume(self):
         # A fixed name: launchd keeps an enable/disable record per label for
         # good, so a per-run name would add one more on every run.

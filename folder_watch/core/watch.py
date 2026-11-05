@@ -143,6 +143,20 @@ def follow_refusal(src_dir: Path, moved: Path) -> str | None:
     return None
 
 
+def wait_for_src(src_dir: Path) -> float:
+    """Sleep until `src_dir` is a folder again, saying so at a doubling
+    interval. Returns the seconds waited."""
+    waited = 0.0
+    next_log = SRC_WAIT_LOG_INTERVAL
+    while not src_dir.is_dir():
+        time.sleep(SRC_WAIT_INTERVAL)
+        waited += SRC_WAIT_INTERVAL
+        if waited >= next_log:
+            emit("src_waiting", src=src_dir, waited_s=int(waited))
+            next_log += min(next_log, SRC_WAIT_LOG_MAX)
+    return waited
+
+
 def offer_to_follow(
     preset: str | None, src_dir: Path, moved: Path, *, notify_user: bool = True
 ) -> None:
@@ -1101,14 +1115,7 @@ def run_watch_event(
                         pending.clear()
                         watching.clear()
                         state.clear()
-                    waited = 0.0
-                    next_log = SRC_WAIT_LOG_INTERVAL
-                    while not src_dir.is_dir():
-                        time.sleep(SRC_WAIT_INTERVAL)
-                        waited += SRC_WAIT_INTERVAL
-                        if waited >= next_log:
-                            emit("src_waiting", src=src_dir, waited_s=int(waited))
-                            next_log += min(next_log, SRC_WAIT_LOG_MAX)
+                    waited = wait_for_src(src_dir)
                     reopen_src(src_fd, src_dir)
                     emit("src_restored", src=src_dir, waited_s=int(waited))
                     observer = _start_observer()
@@ -1288,8 +1295,18 @@ def run_watch(
     # A source that isn't there is a typo or an unmounted volume, not an empty
     # folder. Reporting "done failed=0" made those indistinguishable.
     if not src_dir.is_dir():
-        emit("error", reason="src_missing", src=src_dir)
-        return 2
+        if (preset and not once and not dry_run
+                and os.environ.get("XPC_SERVICE_NAME") == service_label(preset)
+                and retention.volume_ejected(preset)):
+            # Exiting is what tells launchd to wait (PathState), but a path that
+            # vanished by unmount is not noticed: it restarted the watcher every
+            # 10 s for as long as the volume was away. Wait here instead.
+            emit("src_lost", src=src_dir, action="its volume is not mounted; waiting")
+            waited = wait_for_src(src_dir)
+            emit("src_restored", src=src_dir, waited_s=int(waited))
+        else:
+            emit("error", reason="src_missing", src=src_dir)
+            return 2
     if preset and not dry_run:
         # While it can be seen: once gone, an ejected volume looks deleted.
         retention.remember_volume(preset, src_dir)

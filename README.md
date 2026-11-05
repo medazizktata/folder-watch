@@ -686,7 +686,13 @@ Keeps the preset running at login (`KeepAlive`), but only while the preset's
 again when the folder reappears, and on any volume mount (`StartOnMount`,
 since launchd does not re-check `PathState` then), so a source on a drive
 comes back with the drive; a source that is gone for good costs one log line
-per mount. After changing a preset's `src`, run
+per mount. One case launchd gets wrong: a volume ejected while the service is
+loaded still counts as present to `PathState`, so a watcher that then exits
+(after a `kickstart -k`, say) was restarted every 10 seconds. A service whose
+source's volume is ejected (the mount it was last seen on is not mounted)
+waits for it in-process instead, logging `src_lost` and then `src_waiting` at
+a doubling interval, and carries on when it is back. After changing a
+preset's `src`, run
 `service install` again. Logs default to `~/.local/state/folder-watch/<preset>.log`.
 
 ## Usage
