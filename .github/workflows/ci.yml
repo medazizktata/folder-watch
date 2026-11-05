@@ -10,10 +10,13 @@ on:
 
 jobs:
   check:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # Apple silicon and Intel: two runner pools, so a shortage of one (it
+        # held up 0.3.0 for hours) leaves the other reporting.
+        os: [macos-latest, macos-15-intel]
         # The floor declared in pyproject, and the version actually in use.
         python-version: ["3.10", "3.13"]
 

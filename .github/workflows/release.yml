@@ -10,10 +10,25 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: macos-latest
+  # One build per runner pool. 0.3.0 waited hours because no Apple-silicon
+  # runner could be had; whichever pool has room now carries the release.
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
 
     steps:
+      # First, so publish can tell a leg that ran and failed (which blocks
+      # the release) from one that never got a machine (which does not).
+      - name: Mark this leg as started
+        run: echo "${{ matrix.os }}" > started.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: started-${{ matrix.os }}
+          path: started.txt
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -52,7 +67,7 @@ jobs:
 
       - name: Notes from the changelog
         run: |
-          .venv/bin/python - <<'PY' > release-notes.md
+          .venv/bin/python - <<'PY' > dist/release-notes.md
           import os, re
           from pathlib import Path
           version = os.environ["version"]
@@ -65,10 +80,47 @@ jobs:
           )
           print((match.group(1).strip() if match else "See CHANGELOG.md."))
           PY
-          cat release-notes.md
+          cat dist/release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: dist/
+
+  publish:
+    needs: build
+    # Also when a leg failed: whether that blocks is decided below.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: legs
+
+      - name: Every leg that ran passed, and at least one did
+        run: |
+          shopt -s nullglob  # no leg started: an empty loop, not a literal "*"
+          ls legs
+          passed=""
+          for started in legs/started-*; do
+            os="${started#legs/started-}"
+            if [ ! -f "legs/dist-$os/release-notes.md" ]; then
+              echo "$os ran but did not pass; not releasing" >&2
+              exit 1
+            fi
+            passed="$os"
+          done
+          if [ -z "$passed" ]; then
+            echo "no leg got a runner; re-run this workflow" >&2
+            exit 1
+          fi
+          echo "releasing the build from $passed"
+          echo "dist=legs/dist-$passed" >> "$GITHUB_ENV"
 
       - uses: softprops/action-gh-release@v2
         with:
-          body_path: release-notes.md
-          files: dist/*
+          body_path: ${{ env.dist }}/release-notes.md
+          files: |
+            ${{ env.dist }}/*.whl
+            ${{ env.dist }}/*.tar.gz
           fail_on_unmatched_files: true
