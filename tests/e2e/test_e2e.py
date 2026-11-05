@@ -13,6 +13,7 @@ import select
 import signal
 import subprocess
 import sys
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -231,6 +232,25 @@ class TestDashboardCommand(IsolatedCase):
         self.assertEqual(log["lines"], [])
 
 
+def make_disk_image(image: Path, volname: str) -> None:
+    """hdiutil create fails now and then on a CI runner (exit 1 on an Intel
+    leg, fine on the rerun), so it gets three tries two seconds apart, and
+    its own message if all fail: -quiet would leave only the exit status."""
+    tries: list[subprocess.CompletedProcess[str]] = []
+    while len(tries) < 3:
+        if tries:
+            time.sleep(2)
+        # -ov: a failed try may leave a partial image behind.
+        tries.append(subprocess.run(
+            ["hdiutil", "create", "-ov", "-size", "5m", "-fs", "APFS",
+             "-volname", volname, str(image)], capture_output=True, text=True))
+        if tries[-1].returncode == 0:
+            return
+    last = tries[-1]
+    raise AssertionError(f"hdiutil create failed 3 times (exit {last.returncode}): "
+                         f"{(last.stderr or last.stdout).strip()}")
+
+
 class TestLaunchd(LaunchdCase):
     def test_a_missing_source_costs_one_start_and_returns_with_its_folder(self):
         """A bare KeepAlive restarted a watcher with no folder every ten
@@ -273,8 +293,7 @@ class TestLaunchd(LaunchdCase):
         image = self.tmp / "vol.dmg"
         mount_point = self.tmp / "mnt"
         mount_point.mkdir()
-        subprocess.run(["hdiutil", "create", "-size", "5m", "-fs", "APFS",
-                        "-volname", "fw-e2e", "-quiet", str(image)], check=True)
+        make_disk_image(image, "fw-e2e")
 
         def attach():
             subprocess.run(["hdiutil", "attach", "-nobrowse", "-quiet",
@@ -317,8 +336,7 @@ class TestLaunchd(LaunchdCase):
         image = self.tmp / "vol.dmg"
         mount_point = self.tmp / "mnt"
         mount_point.mkdir()
-        subprocess.run(["hdiutil", "create", "-size", "5m", "-fs", "APFS",
-                        "-volname", "fw-e2e-ej", "-quiet", str(image)], check=True)
+        make_disk_image(image, "fw-e2e-ej")
 
         def attach():
             subprocess.run(["hdiutil", "attach", "-nobrowse", "-quiet",
